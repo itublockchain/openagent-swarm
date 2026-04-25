@@ -1,30 +1,21 @@
 {
   "name": "swarm",
   "version": "1.0.0",
-  "description": "��#\u0000 \u0000I\u0000n\u0000i\u0000t\u0000i\u0000a\u0000l\u0000 \u0000R\u0000E\u0000A\u0000D\u0000M\u0000E\u0000.\u0000m\u0000d\u0000\r\u0000 \u0000I\u0000n\u0000i\u0000t\u0000i\u0000a\u0000l\u0000 \u0000R\u0000E\u0000A\u0000D\u0000M\u0000E\u0000.\u0000m\u0000d\u0000\r\u0000 \u0000",
+  "description": "Swarm multi-agent execution system",
   "main": "index.js",
-  "directories": {
-    "test": "tests"
-  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npx tsx tests/layer1_test.ts && npx tsx tests/katman2/katman2_test.ts && npx tsx tests/katman3/katman3_test.ts && npx tsx tests/katman4/katman4_test.ts"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/itublockchain/openagent-swarm.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/itublockchain/openagent-swarm/issues"
-  },
-  "homepage": "https://github.com/itublockchain/openagent-swarm#readme",
   "devDependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^25.6.0",
+    "dockerode": "^5.0.0",
     "dotenv": "^17.4.2",
+    "fastify": "^5.8.5",
     "ts-node": "^10.9.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6",
+    "tsx": "^4.19.3"
   }
 }

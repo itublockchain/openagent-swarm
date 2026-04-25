@@ -11,9 +11,10 @@ export class EventBus implements INetworkPort {
     const serialized = JSON.stringify(event);
     console.log(`[AXL] → ${event.type}`, event.payload);
     this.emitter.emit(event.type, serialized);
+    this.emitter.emit('*', serialized); // Wildcard emit
   }
 
-  on<T>(type: EventType, handler: (event: AXLEvent<T>) => void): void {
+  on<T>(type: EventType | '*', handler: (event: AXLEvent<T>) => void): void {
     this.emitter.on(type, (serialized: string) => {
       const event = JSON.parse(serialized) as AXLEvent<T>;
       handler(event);
