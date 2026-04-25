@@ -15,7 +15,10 @@ export interface ServerDeps {
 export default async function createServer(deps: ServerDeps) {
   const fastify = Fastify({ logger: true });
 
-  await fastify.register(websocket);
+  // Health check
+  fastify.get('/health', async () => {
+    return { status: 'ok', timestamp: Date.now() };
+  });
 
   // POST /task
   fastify.post('/task', async (request, reply) => {

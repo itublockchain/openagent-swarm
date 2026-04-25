@@ -1,21 +1,13 @@
 {
-  "name": "swarm",
-  "version": "1.0.0",
-  "description": "Swarm multi-agent execution system",
-  "main": "index.js",
+  "name": "swarm-monorepo",
+  "private": true,
   "scripts": {
-    "test": "npx tsx tests/layer1_test.ts && npx tsx tests/katman2/katman2_test.ts && npx tsx tests/katman3/katman3_test.ts && npx tsx tests/katman4/katman4_test.ts"
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "npm test --workspace=@swarm/agent && npm test --workspace=@swarm/api"
   },
   "devDependencies": {
-    "@fastify/websocket": "^11.2.0",
-    "@types/dockerode": "^4.0.1",
-    "@types/node": "^25.6.0",
-    "dockerode": "^5.0.0",
-    "dotenv": "^17.4.2",
-    "fastify": "^5.8.5",
-    "ts-node": "^10.9.2",
-    "typescript": "^6.0.3",
-    "zod": "^4.3.6",
-    "tsx": "^4.19.3"
+    "turbo": "2.5.3"
   }
 }
