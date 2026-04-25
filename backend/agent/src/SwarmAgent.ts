@@ -1,5 +1,6 @@
 import { IStoragePort, IComputePort, INetworkPort, IChainPort } from '../../../shared/ports';
 import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types';
+import { ConfirmationTimeoutError, TransactionFailedError } from './core/ConfirmationGuard';
 
 export interface AgentDeps {
   storage: IStoragePort;
@@ -32,6 +33,10 @@ export class SwarmAgent {
         this.waitForDAG();
       }
     } catch (err) {
+      if (err instanceof ConfirmationTimeoutError || err instanceof TransactionFailedError) {
+        console.warn(`[Agent ${this.deps.config.agentId}] L2 confirmation failed, pulling out of task: ${err.message}`);
+        return;
+      }
       console.error(`[Agent ${this.deps.config.agentId}] onTaskSubmitted error:`, err);
     }
   }
@@ -59,6 +64,10 @@ export class SwarmAgent {
 
       this.deps.network.on(EventType.DAG_COMPLETED, () => this.runAsKeeper());
     } catch (err) {
+      if (err instanceof ConfirmationTimeoutError || err instanceof TransactionFailedError) {
+        console.warn(`[Agent ${this.deps.config.agentId}] L2 confirmation failed as Planner: ${err.message}`);
+        return;
+      }
       console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner error:`, err);
     }
   }
@@ -109,6 +118,10 @@ export class SwarmAgent {
 
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_DONE, { nodeId: node.id, outputHash, agentId, taskId }));
     } catch (err) {
+      if (err instanceof ConfirmationTimeoutError || err instanceof TransactionFailedError) {
+        console.warn(`[Agent ${this.deps.config.agentId}] L2 confirmation failed as Worker: ${err.message}`);
+        return;
+      }
       console.error(`[Agent ${this.deps.config.agentId}] executeSubtask error:`, err);
     }
   }

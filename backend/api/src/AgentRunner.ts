@@ -5,7 +5,14 @@ export class AgentRunner {
   private docker: Dockerode;
 
   constructor() {
-    this.docker = new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
+    this.docker = process.env.DOCKER_HOST
+      ? new Dockerode({
+          host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
+          port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
+        })
+      : new Dockerode({
+          socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock',
+        });
   }
 
   async deploy(config: AgentConfig): Promise<string> {
