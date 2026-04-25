@@ -1,4 +1,4 @@
-import { IStoragePort } from '../../../../shared/ports';
+import { IStoragePort } from '../../../../../shared/ports';
 import * as crypto from 'crypto';
 
 export class MockStorage implements IStoragePort {

@@ -1,0 +1,30 @@
+{
+  "name": "swarm",
+  "version": "1.0.0",
+  "description": "��#\u0000 \u0000I\u0000n\u0000i\u0000t\u0000i\u0000a\u0000l\u0000 \u0000R\u0000E\u0000A\u0000D\u0000M\u0000E\u0000.\u0000m\u0000d\u0000\r\u0000 \u0000I\u0000n\u0000i\u0000t\u0000i\u0000a\u0000l\u0000 \u0000R\u0000E\u0000A\u0000D\u0000M\u0000E\u0000.\u0000m\u0000d\u0000\r\u0000 \u0000",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itublockchain/openagent-swarm.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/itublockchain/openagent-swarm/issues"
+  },
+  "homepage": "https://github.com/itublockchain/openagent-swarm#readme",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "dotenv": "^17.4.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,5 +1,5 @@
-import { IComputePort } from '../../../../shared/ports';
-import { DAGNode } from '../../../../shared/types';
+import { IComputePort } from '../../../../../shared/ports';
+import { DAGNode } from '../../../../../shared/types';
 
 export class MockCompute implements IComputePort {
   constructor(private agentId: string) {}

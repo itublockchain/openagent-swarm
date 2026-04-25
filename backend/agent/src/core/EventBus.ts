@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
-import { INetworkPort } from '../../../shared/ports';
-import { AXLEvent, EventType } from '../../../shared/types';
+import { INetworkPort } from '../../../../shared/ports';
+import { AXLEvent, EventType } from '../../../../shared/types';
 
 export class EventBus implements INetworkPort {
   private emitter = new EventEmitter();

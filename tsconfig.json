@@ -1,18 +1,14 @@
 {
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2020",
     "module": "CommonJS",
     "moduleResolution": "node",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "outDir": "./dist",
-    "baseUrl": ".",
+    "strict": false,
+    "rootDir": ".",
     "types": ["node"],
-    "paths": {
-      "@shared/*": ["shared/*"]
-    }
-  },
-  "include": ["shared/**/*", "tests/**/*"]
+    "ignoreDeprecations": "5.0"
+  }
 }

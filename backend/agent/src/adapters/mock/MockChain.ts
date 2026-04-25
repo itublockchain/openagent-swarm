@@ -1,4 +1,4 @@
-import { IChainPort } from '../../../../shared/ports';
+import { IChainPort } from '../../../../../shared/ports';
 
 export class MockChain implements IChainPort {
   private stakes = new Map<string, string>();
