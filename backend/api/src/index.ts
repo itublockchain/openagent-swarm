@@ -1,18 +1,18 @@
 import 'dotenv/config';
 import createServer from './server';
 import { MockStorage } from '../../agent/src/adapters/mock/MockStorage';
-import { EventBus } from '../../agent/src/core/EventBus';
+import { RedisNetwork } from '@swarm/shared-infra';
 import { AgentRunner } from './AgentRunner';
 
 const PORT = Number(process.env.PORT) || 3001;
-const USE_MOCK = process.env.USE_MOCK !== 'false';
 
 async function start() {
   const agentId = 'api-core';
   
-  // Choose implementation based on ENV
-  const storage = new MockStorage(agentId); // In a real app, this would check USE_MOCK
-  const network = new EventBus(agentId);
+  const storage = new MockStorage(agentId); 
+  const network = new RedisNetwork();
+  await network.connect();
+  
   const runner = new AgentRunner();
 
   const server = await createServer({
@@ -28,6 +28,12 @@ async function start() {
     server.log.error(err);
     process.exit(1);
   }
+
+  // graceful shutdown
+  process.on('SIGTERM', async () => {
+    await network.disconnect();
+    process.exit(0);
+  });
 }
 
 start();

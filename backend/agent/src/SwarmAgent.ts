@@ -13,7 +13,7 @@ export interface AgentDeps {
 export class SwarmAgent {
   constructor(private deps: AgentDeps) {}
 
-  public start(): void {
+  public async start(): Promise<void> {
     try {
       this.deps.network.on(EventType.TASK_SUBMITTED, (event) => this.onTaskSubmitted(event));
       console.log(`[Agent ${this.deps.config.agentId}] started`);

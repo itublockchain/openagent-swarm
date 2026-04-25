@@ -14,6 +14,7 @@ export enum EventType {
   TASK_REOPENED     = 'TASK_REOPENED',
   DAG_COMPLETED     = 'DAG_COMPLETED',
   TASK_FINALIZED    = 'TASK_FINALIZED',
+  STATE_RECONCILED  = 'STATE_RECONCILED',
 }
 
 export interface DAGNode {

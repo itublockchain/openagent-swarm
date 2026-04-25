@@ -1,5 +1,5 @@
 import { ethers, Contract, TransactionReceipt, LogDescription } from 'ethers';
-import { IChainPort } from '../../../shared/ports';
+import { IChainPort } from '../../../../shared/ports';
 import { ConfirmationGuard } from '../core/ConfirmationGuard';
 import deployments from '../../../../contracts/deployments.json';
 
@@ -99,5 +99,17 @@ export class L2Contract implements IChainPort {
   private toBytes32(id: string): string {
     // If id is already a hex string of 32 bytes, return it, otherwise hash it
     return id.startsWith('0x') && id.length === 66 ? id : ethers.id(id);
+  }
+
+  async getActiveTasks(): Promise<string[]> {
+    throw new Error('Not implemented in L2Contract');
+  }
+
+  async getPlannerOf(taskId: string): Promise<string> {
+    throw new Error('Not implemented in L2Contract');
+  }
+
+  async getClaimedSubtasks(agentId: string): Promise<string[]> {
+    throw new Error('Not implemented in L2Contract');
   }
 }

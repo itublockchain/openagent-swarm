@@ -1,49 +1,31 @@
-import * as dotenv from 'dotenv';
-import { SwarmAgent, AgentDeps } from './SwarmAgent';
-import { MockStorage } from './adapters/mock/MockStorage';
-import { MockCompute } from './adapters/mock/MockCompute';
-import { MockChain } from './adapters/mock/MockChain';
-import { EventBus } from './core/EventBus';
-import { EventType } from '../../../shared/types';
+import 'dotenv/config'
+import { createAdapters } from './adapters'
+import { SwarmAgent } from './SwarmAgent'
 
-// Load environment variables
-dotenv.config();
+async function main() {
+  const agentId = process.env.AGENT_ID
+  if (!agentId) throw new Error('AGENT_ID env required')
 
-const agentId = process.env.AGENT_ID || 'swarm-agent-001';
-const stakeAmount = process.env.STAKE_AMOUNT || '100';
-
-async function bootstrap() {
-  const bus = new EventBus(agentId);
-  
-  const deps: AgentDeps = {
-    storage: new MockStorage(agentId),
-    compute: new MockCompute(agentId),
-    chain: new MockChain(agentId),
-    network: bus,
+  const deps = await createAdapters(agentId)
+  const agent = new SwarmAgent({
+    ...deps,
     config: {
       agentId,
-      stakeAmount
-    }
-  };
+      stakeAmount: process.env.STAKE_AMOUNT ?? '100',
+    },
+  })
 
-  const agent = new SwarmAgent(deps);
-  agent.start();
+  await agent.start()
+  console.log(`[Agent ${agentId}] ready`)
 
-  // Simulate a task submission after 3 seconds
-  setTimeout(async () => {
-    console.log('\n[System] Simulating TASK_SUBMITTED...');
-    await bus.emit({
-      type: EventType.TASK_SUBMITTED,
-      payload: {
-        taskId: 'task-' + Math.random().toString(36).substring(7),
-        spec: 'Train a neural network on MNIST'
-      },
-      timestamp: Date.now(),
-      agentId: 'user-001'
-    });
-  }, 3000);
+  // graceful shutdown
+  process.on('SIGTERM', async () => {
+    await deps.network.disconnect()
+    process.exit(0)
+  })
 }
 
-bootstrap().catch(err => {
-  console.error('Bootstrap error:', err);
-});
+main().catch((err) => {
+  console.error('[Agent] fatal:', err)
+  process.exit(1)
+})

@@ -1,0 +1,7 @@
+{
+  "extends": "next/typescript",
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true
+  }
+}

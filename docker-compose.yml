@@ -18,6 +18,19 @@ services:
         aliases:
           - docker-proxy
 
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - internal
+
   api:
     build:
       context: .
@@ -35,7 +48,10 @@ services:
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
       - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
     depends_on:
-      - docker-proxy
+      docker-proxy:
+        condition: service_started
+      redis:
+        condition: service_healthy
     networks:
       - internal
 
@@ -45,6 +61,9 @@ services:
       dockerfile: backend/agent/Dockerfile
     deploy:
       replicas: 0 # API triggers deployment via Dockerode
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - internal
 

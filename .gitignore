@@ -39,3 +39,10 @@ coverage/
 # Misc
 .turbo/
 .eslintcache
+
+# Build artifacts
+contracts/artifacts/
+contracts/cache/
+*.js
+!hardhat.config.js
+!backend/api/src/server.ts

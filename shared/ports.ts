@@ -18,7 +18,7 @@ export interface IComputePort {
 
 export interface INetworkPort {
   emit<T>(event: AXLEvent<T>): Promise<void>
-  on<T>(type: EventType, handler: (event: AXLEvent<T>) => void): void
+  on<T>(type: EventType | '*', handler: (event: AXLEvent<T>) => void): void
   off(type: EventType): void
 }
 
@@ -33,4 +33,10 @@ export interface IChainPort {
   challenge(nodeId: string): Promise<void>
   /** ödülleri dağıtır ve escrow'u kapatır */
   settle(taskId: string, winners: string[]): Promise<void>
+  /** Aktif görevleri listeler (StateSync için) */
+  getActiveTasks(): Promise<string[]>
+  /** Görevin planner'ını döner */
+  getPlannerOf(taskId: string): Promise<string>
+  /** Agent'ın claim ettiği subtask'ları döner */
+  getClaimedSubtasks(agentId: string): Promise<string[]>
 }

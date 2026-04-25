@@ -1,0 +1,9 @@
+{
+  "name": "@swarm/shared-infra",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./index.ts",
+  "dependencies": {
+    "redis": "4.7.0"
+  }
+}

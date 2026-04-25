@@ -1,4 +1,6 @@
 packages:
   - 'frontend'
   - 'backend/*'
+  - 'backend/shared-infra'
   - 'shared'
+  - 'contracts'

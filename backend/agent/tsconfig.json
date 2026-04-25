@@ -1,16 +1,18 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
-    "outDir": "./dist",
-    "rootDir": "./src",
+    "module": "CommonJS",
+    "moduleResolution": "Node10",
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "outDir": "./dist",
+    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["../../shared/*"]
+      "@swarm/shared": ["../../shared/index.ts"],
+      "@swarm/shared/*": ["../../shared/*"]
     }
   },
   "include": ["src/**/*"]
