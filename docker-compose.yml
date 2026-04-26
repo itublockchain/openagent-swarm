@@ -9,17 +9,19 @@ services:
     env_file: .env
     environment:
       - DOCKER_HOST=tcp://docker-proxy:2375
-      - AXL_URL=http://axl:9002
+      - AXL_PEER=tcp://axl-seed:7000
+      - AXL_URL=http://localhost:9002
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
       interval: 30s
       timeout: 5s
       retries: 3
     depends_on:
       - docker-proxy
+      - axl-seed
     networks:
       swarm_default:
         aliases:
@@ -31,30 +33,32 @@ services:
       dockerfile: backend/agent/Dockerfile
     env_file: .env
     environment:
+      - AGENT_ID=
       - USE_MOCK=${USE_MOCK:-true}
-      - AXL_URL=http://axl:9002
+      - AXL_PEER=tcp://axl-seed:7000
+      - AXL_URL=http://localhost:9002
     restart: on-failure
-    healthcheck:
-      disable: true
     depends_on:
       api:
         condition: service_healthy
+      axl-seed:
+        condition: service_started
     networks:
       swarm_default:
         aliases:
           - agent
 
-  axl:
+  axl-seed:
     build:
       context: ./axl
       dockerfile: containerfiles/Dockerfile
     ports:
-      - "9001:9001"
+      - "7000:7000"
       - "9002:9002"
     networks:
       swarm_default:
         aliases:
-          - axl
+          - axl-seed
 
   docker-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0
@@ -74,3 +78,4 @@ services:
 networks:
   swarm_default:
     name: swarm_default
+
