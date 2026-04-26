@@ -1,7 +1,6 @@
 import 'dotenv/config';
 import createServer from './server';
-import { MockStorage } from '../../agent/src/adapters/mock/MockStorage';
-import { RedisNetwork } from '@swarm/shared-infra';
+import { MockStorage, RedisNetwork } from '@swarm/shared-infra';
 import { AgentRunner } from './AgentRunner';
 
 const PORT = Number(process.env.PORT) || 3001;

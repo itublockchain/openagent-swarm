@@ -4,6 +4,7 @@
   "private": true,
   "main": "./index.ts",
   "dependencies": {
-    "redis": "4.7.0"
+    "redis": "4.7.0",
+    "@swarm/shared": "workspace:*"
   }
 }

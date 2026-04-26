@@ -5,13 +5,19 @@
     "moduleResolution": "Node10",
     "strict": true,
     "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
     "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "types": ["node"],
     "outDir": "./dist",
-    "baseUrl": ".",
+    "baseUrl": "../..",
     "paths": {
-      "@swarm/shared": ["../../shared/index.ts"],
-      "@swarm/shared/*": ["../../shared/*"]
+      "@swarm/shared": ["shared/index.ts"],
+      "@swarm/shared/*": ["shared/*"],
+      "@swarm/shared-infra": ["backend/shared-infra/index.ts"],
+      "@swarm/shared-infra/*": ["backend/shared-infra/*"]
     }
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "../../shared/**/*", "../shared-infra/**/*"]
 }

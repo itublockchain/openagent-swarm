@@ -14,10 +14,8 @@
     "baseUrl": "../..",
     "paths": {
       "@swarm/shared": ["shared/index.ts"],
-      "@swarm/shared/*": ["shared/*"],
-      "@swarm/shared-infra": ["backend/shared-infra/index.ts"],
-      "@swarm/shared-infra/*": ["backend/shared-infra/*"]
+      "@swarm/shared/*": ["shared/*"]
     }
   },
-  "include": ["src/**/*", "../../shared/**/*", "../shared-infra/**/*"]
+  "include": ["./**/*", "../../shared/**/*"]
 }

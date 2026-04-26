@@ -47,6 +47,8 @@ export class AgentRunner {
 
   async list(): Promise<Dockerode.ContainerInfo[]> {
     const containers = await this.docker.listContainers({ all: true });
-    return containers.filter(c => c.Names.some(name => name.startsWith('/swarm-')));
+    return containers.filter((c: Dockerode.ContainerInfo) => 
+      c.Names.some((name: string) => name.startsWith('/swarm-'))
+    );
   }
 }

@@ -1,10 +1,12 @@
-import { IStoragePort } from '../../../../../shared/ports';
+import { IStoragePort } from '@swarm/shared/ports';
 import * as crypto from 'crypto';
 
 export class MockStorage implements IStoragePort {
   private store = new Map<string, unknown>();
 
-  constructor(private agentId: string) {}
+  constructor(private agentId: string) {
+    console.log(`[MockStorage] Initialized for ${agentId}`);
+  }
 
   async append(data: unknown): Promise<string> {
     const hash = crypto.randomUUID();

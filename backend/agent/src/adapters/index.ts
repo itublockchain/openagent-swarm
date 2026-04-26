@@ -1,9 +1,8 @@
 import 'dotenv/config'
-import { IStoragePort, IComputePort, IChainPort } from '../../../../shared/ports'
-import { MockStorage } from './mock/MockStorage'
-import { MockCompute } from './mock/MockCompute'
-import { MockChain } from './mock/MockChain'
-import { RedisNetwork } from '@swarm/shared-infra'
+import { IStoragePort, IComputePort, IChainPort } from '@swarm/shared/ports';
+import { MockStorage, RedisNetwork } from '@swarm/shared-infra';
+import { MockCompute } from './mock/MockCompute';
+import { MockChain } from './mock/MockChain';
 
 export async function createAdapters(agentId: string): Promise<{
   storage: IStoragePort

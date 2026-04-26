@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+*.log
+.turbo
+coverage
+contracts/artifacts
+contracts/cache
+frontend/.next

@@ -18,7 +18,7 @@ export default async function createServer(deps: ServerDeps) {
     return { status: 'ok', timestamp: Date.now() };
   });
 
-  fastify.post('/task', async (request, reply) => {
+  fastify.post('/task', async (request: any, reply: any) => {
     const body = TaskSchema.parse(request.body);
     const specHash = await deps.storage.append(body);
     
@@ -32,7 +32,7 @@ export default async function createServer(deps: ServerDeps) {
     return { taskId: specHash };
   });
 
-  fastify.post('/agent/deploy', async (request, reply) => {
+  fastify.post('/agent/deploy', async (request: any, reply: any) => {
     const body = AgentDeploySchema.parse(request.body);
     const containerId = await deps.runner.deploy(body);
     return { containerId };
@@ -43,19 +43,23 @@ export default async function createServer(deps: ServerDeps) {
     return list;
   });
 
-  fastify.delete('/agent/:id', async (request, reply) => {
+  fastify.delete('/agent/:id', async (request: any, reply: any) => {
     const { id } = AgentIdParamsSchema.parse(request.params);
     await deps.runner.stop(id);
     return { ok: true };
   });
 
-  fastify.register(async (fastify) => {
-    fastify.get('/ws', { websocket: true }, (connection, req) => {
+  fastify.register(async (fastify: any) => {
+    fastify.get('/ws', { websocket: true }, (connection: any, req: any) => {
       console.log('[WS] Client connected');
       const handler = (event: any) => {
-        connection.socket.send(JSON.stringify(event));
+        if (connection.readyState === 1) {
+          connection.send(JSON.stringify(event));
+        }
       };
-      deps.network.on('*', handler);
+      Object.values(EventType).forEach((type) => {
+        deps.network.on(type as EventType, handler);
+      });
       connection.socket.on('close', () => {
         console.log('[WS] Client disconnected');
       });
