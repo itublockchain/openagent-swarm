@@ -11,10 +11,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+    depends_on:
+      - redis
+    networks:
+      - swarm_default
 
   agent:
     build:
@@ -23,7 +27,29 @@ services:
     env_file: .env
     environment:
       - USE_MOCK=${USE_MOCK:-true}
-    restart: unless-stopped
+    restart: on-failure
+    healthcheck:
+      disable: true
     depends_on:
       api:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - swarm_default
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - swarm_default
+
+networks:
+  swarm_default:
+    name: swarm_default

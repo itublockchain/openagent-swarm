@@ -1,15 +1,29 @@
-import Dockerode from 'dockerode';
-import { AgentConfig } from '../../../shared/types';
+import Dockerode from 'dockerode'
+import { AgentConfig } from '@swarm/shared/types'
+
+const docker = process.env.DOCKER_HOST
+  ? new Dockerode({
+    host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
+    port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
+  })
+  : new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
 
 export class AgentRunner {
-  private docker: Dockerode;
+  async deploy(config: AgentConfig & { model?: string; systemPrompt?: string }): Promise<string> {
+    const env = [
+      `AGENT_ID=${config.agentId}`,
+      `STAKE_AMOUNT=${config.stakeAmount}`,
+      `REDIS_URL=${process.env.REDIS_URL ?? 'redis://redis:6379'}`,
+      `USE_MOCK=false`,
+      `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
+      `OPENAI_MODEL=${config.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o'}`,
+    ]
 
-  constructor() {
-    this.docker = new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
-  }
+    if (config.systemPrompt) {
+      env.push(`AGENT_SYSTEM_PROMPT=${config.systemPrompt}`)
+    }
 
-  async deploy(config: AgentConfig): Promise<string> {
-    const container = await this.docker.createContainer({
+    const container = await docker.createContainer({
       Image: 'swarm-agent:latest',
       name: `swarm-${config.agentId}-${Date.now()}`,
       Env: [

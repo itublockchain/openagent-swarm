@@ -2,7 +2,6 @@
   "name": "@swarm/agent",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
@@ -10,11 +9,15 @@
   },
   "dependencies": {
     "dotenv": "16.5.0",
-    "ethers": "6.13.5"
+    "ethers": "6.13.5",
+    "ws": "8.18.0",
+    "@swarm/shared": "workspace:*",
+    "@swarm/shared-infra": "workspace:*"
   },
   "devDependencies": {
     "typescript": "5.8.3",
     "tsx": "4.19.3",
-    "@types/node": "22.10.0"
+    "@types/node": "22.10.0",
+    "@types/ws": "8.5.14"
   }
 }

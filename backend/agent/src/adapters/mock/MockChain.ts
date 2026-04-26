@@ -35,4 +35,9 @@ export class MockChain implements IChainPort {
   async settle(taskId: string, winners: string[]): Promise<void> {
     console.log(`[MockChain] Settlement for task ${taskId}. Winners:`, winners);
   }
+
+  async resetSubtask(nodeId: string): Promise<void> {
+    this.subtaskClaims.delete(nodeId);
+    console.log(`[MockChain] subtask reset: ${nodeId}`);
+  }
 }

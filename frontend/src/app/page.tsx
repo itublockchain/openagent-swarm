@@ -8,6 +8,7 @@ import '@xyflow/react/dist/style.css';
 import { ThemeToggle } from '@/components/theme-toggle';
 import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
 import { ArrowLeft, Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
+import { useSwarmEvents } from '@/hooks/useSwarmEvents';
 
 const nodeTypes = {
   task: TaskNode,
@@ -28,8 +29,9 @@ function DashboardContent() {
     "Ready to generate and deploy DAG."
   ]);
   const [simulationTrigger, setSimulationTrigger] = useState(0);
+  const { events } = useSwarmEvents();
 
-  const generateRandomDAG = (intent: string) => {
+  const submitRealDAG = async (intent: string) => {
     const newNodes: Node<NodeData>[] = [
       { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: `User Intent: ${intent}`, status: 'completed', agent: '0xUser...123' } },
       { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: '0xPlan...456' } },
@@ -39,160 +41,92 @@ function DashboardContent() {
       { id: 'e1-2', source: '1', target: '2', animated: true }
     ];
 
-    const numSubtasks = Math.floor(Math.random() * 5) + 3; // 3 to 7 nodes
-    const slashedIndex = Math.floor(Math.random() * numSubtasks);
-
-    // Create 2 or 3 layers for mixed sequential/parallel execution
-    const numLayers = Math.min(numSubtasks, Math.floor(Math.random() * 2) + 2); 
-    const layers: number[][] = Array.from({length: numLayers}, () => []);
-    
-    for (let i = 0; i < numSubtasks; i++) {
-       // Ensure at least 1 node per layer
-       if (i < numLayers) {
-         layers[i].push(i);
-       } else {
-         const randomLayer = Math.floor(Math.random() * numLayers);
-         layers[randomLayer].push(i);
-       }
-    }
-
-    const spacingX = 250;
-    const spacingY = 150;
-    
-    const subtaskNodes: Node<NodeData>[] = [];
-    const subtaskEdges: Edge[] = [];
-    let keeperY = 0;
-
-    for (let l = 0; l < numLayers; l++) {
-      const layerNodes = layers[l];
-      const startX = 400 - ((layerNodes.length - 1) * spacingX) / 2;
-      const currentY = 300 + (l * spacingY);
-      keeperY = currentY + spacingY + 50;
-
-      for (let i = 0; i < layerNodes.length; i++) {
-        const globalIndex = layerNodes[i];
-        const id = `sub-${globalIndex}`;
-        
-        subtaskNodes.push({
-          id,
-          type: 'task',
-          position: { x: startX + (i * spacingX), y: currentY },
-          data: { label: `Dynamic Subtask ${globalIndex+1}`, status: 'pending', isSlashedTarget: globalIndex === slashedIndex }
-        });
-
-        if (l === 0) {
-          // Connect to Planner
-          subtaskEdges.push({ id: `e2-${id}`, source: '2', target: id, animated: true });
-        } else {
-          // Connect to random nodes in previous layer (mixed sequential/parallel)
-          const prevLayer = layers[l - 1];
-          const numParents = Math.floor(Math.random() * prevLayer.length) + 1;
-          const parents = [...prevLayer].sort(() => 0.5 - Math.random()).slice(0, numParents);
-          
-          parents.forEach(p => {
-             subtaskEdges.push({ id: `e_sub-${p}-${id}`, source: `sub-${p}`, target: id, animated: true });
-          });
-        }
-      }
-    }
-
-    // Find all leaf nodes (nodes with no children) and connect them to KeeperHub
-    const parentIds = new Set(subtaskEdges.map(e => e.source));
-    const leafNodes = subtaskNodes.filter(n => !parentIds.has(n.id));
-
-    const keeperId = 'keeper';
-    const keeperNode: Node<NodeData> = {
-      id: keeperId,
-      type: 'task',
-      position: { x: 400, y: keeperY },
-      data: { label: 'Execute On-Chain via KeeperHub', status: 'pending' }
-    };
-
-    const keeperEdges: Edge[] = leafNodes.map(node => ({
-      id: `e${node.id}-${keeperId}`,
-      source: node.id,
-      target: keeperId,
-      animated: true
-    }));
-
-    setNodes([...newNodes, ...subtaskNodes, keeperNode]);
-    setEdges([...newEdges, ...subtaskEdges, ...keeperEdges]);
-    
+    setNodes(newNodes);
+    setEdges(newEdges);
     setLogs([
       "[SYSTEM] Connected to 0G Storage & Gensyn AXL.",
       `[USER] Submitted spec: ${intent}`,
       "[ESCROW] Locked user funds + execution fee.",
-      "[AUCTION] Planner Agent 0xPlan...456 staked 15 USDC.",
-      `[COMPUTE] Planner generated a complex DAG with ${numSubtasks} parallel/sequential tasks.`
+      "[API] Sending request to Swarm Backend..."
     ]);
 
-    setSimulationTrigger(prev => prev + 1);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      const res = await fetch(`${apiUrl}/task`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spec: intent, budget: String(stakeAmount) || "100" })
+      });
+      if (!res.ok) throw new Error("API request failed");
+      setLogs(prev => [...prev, "[API] Task submitted successfully. Awaiting DAG_READY event via WebSocket..."]);
+    } catch (err: any) {
+      setLogs(prev => [...prev, `[ERROR] Failed to submit task: ${err.message}`]);
+    }
   };
 
-  // Simulate dynamic status changes across multiple steps
+  // Sync AXL events → React Flow canvas and logs
   useEffect(() => {
-    if (simulationTrigger === 0) return;
+    if (events.length === 0) return;
+    const latest = events[0]; // newest event is at index 0
 
-    const t1 = setTimeout(() => {
-      setNodes((nds) => nds.map((n) => {
-        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: (n.data as any).isSlashedTarget ? 'slashed' : 'claimed', agent: `0xAgent...${Math.floor(Math.random()*999)}` } };
-        return n;
-      }));
-      setEdges((eds) => eds.map((e) => {
-        const targetNode = nodes.find(n => n.id === e.target);
-        if (targetNode && (targetNode.data as any).isSlashedTarget) {
-          return { ...e, style: { stroke: '#ef4444' } };
+    if (latest.type === 'TASK_SUBMITTED') {
+      setLogs(prev => [...prev, `[AXL] TASK_SUBMITTED broadcasted.`]);
+    }
+
+    if (latest.type === 'DAG_READY') {
+      const dagNodes: any[] = (latest.payload as any).nodes ?? [];
+      setLogs(prev => [...prev, `[COMPUTE] Planner generated a dynamic DAG with ${dagNodes.length} tasks via OpenAI.`]);
+
+      const spacingY = 150;
+      const currentY = 300;
+      const newFlowNodes: Node<NodeData>[] = [];
+      const newFlowEdges: Edge[] = [];
+
+      dagNodes.forEach((node: any, index: number) => {
+        newFlowNodes.push({
+          id: node.id,
+          type: 'task',
+          position: { x: 400, y: currentY + index * spacingY },
+          data: { label: node.subtask, status: 'pending' },
+        });
+        if (index === 0) {
+          newFlowEdges.push({ id: `e2-${node.id}`, source: '2', target: node.id, animated: true });
+        } else {
+          const parentId = node.prevHash ? node.prevHash.replace('hash-', '') : dagNodes[index - 1].id;
+          newFlowEdges.push({ id: `e-${parentId}-${node.id}`, source: parentId, target: node.id, animated: true });
         }
-        return e;
-      }));
-      setLogs((prev) => [...prev, "[AUCTION] Agents claimed subtasks.", "[VALIDATION] Verifying initial outputs..."]);
-    }, 2000);
+      });
 
-    const t2 = setTimeout(() => {
-      setNodes((nds) => nds.map((n) => {
-        if (n.id.startsWith('sub-') && (n.data as any).isSlashedTarget) {
-           return { ...n, data: { ...n.data, status: 'claimed', label: `${n.data.label} (Retry)`, agent: `0xNew...${Math.floor(Math.random()*999)}` } };
-        }
-        return n;
-      }));
-      setEdges((eds) => eds.map((e) => {
-        return { ...e, style: undefined }; // Reset slashed red lines
-      }));
-      setLogs((prev) => [...prev, "[VALIDATION] Toxic payload detected! Slashed agent.", "[AUCTION] Re-auctioned slashed task. Claimed by new agent."]);
-    }, 4500);
+      const lastNodeId = dagNodes[dagNodes.length - 1]?.id;
+      if (lastNodeId) {
+        const keeperY = currentY + dagNodes.length * spacingY + 50;
+        newFlowNodes.push({ id: 'keeper', type: 'task', position: { x: 400, y: keeperY }, data: { label: 'Execute On-Chain via KeeperHub', status: 'pending' } });
+        newFlowEdges.push({ id: `e-${lastNodeId}-keeper`, source: lastNodeId, target: 'keeper', animated: true });
+      }
 
-    const t3 = setTimeout(() => {
-      setNodes((nds) => nds.map((n) => {
-        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: 'validating' } };
-        return n;
-      }));
-      setLogs((prev) => [...prev, "[SYSTEM] Validating dependent branches in parallel by LLM-Judges..."]);
-    }, 7000);
+      setNodes(prev => [...prev.slice(0, 2), ...newFlowNodes]);
+      setEdges(prev => [...prev.slice(0, 1), ...newFlowEdges]);
+    }
 
-    const t4 = setTimeout(() => {
-      setNodes((nds) => nds.map((n) => {
-        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: 'completed' } };
-        return n;
-      }));
-      setLogs((prev) => [...prev, "[VALIDATION] All subtasks outputs verified.", "[PLANNER] Full DAG completion cryptographically verified."]);
-    }, 9500);
+    if (latest.type === 'SUBTASK_CLAIMED') {
+      const { nodeId, agentId } = latest.payload as any;
+      setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, status: 'claimed', agent: agentId } } : n));
+      setLogs(prev => [...prev, `[AUCTION] Node ${nodeId} claimed by ${agentId}`]);
+    }
 
-    const t5 = setTimeout(() => {
-      setNodes((nds) => nds.map((n) => {
-        if (n.id === 'keeper') return { ...n, data: { ...n.data, status: 'keeper', agent: 'KeeperHub' } };
-        return n;
-      }));
-      setLogs((prev) => [...prev, "[KEEPER] Executed payload on-chain.", "[ESCROW] Distributed unlocked USDC rewards to honest swarm agents."]);
-    }, 12000);
+    if (latest.type === 'SUBTASK_DONE') {
+      const { nodeId } = latest.payload as any;
+      setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, status: 'completed' } } : n));
+      setLogs(prev => [...prev, `[WORKER] Node ${nodeId} completed.`]);
+    }
 
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-      clearTimeout(t3);
-      clearTimeout(t4);
-      clearTimeout(t5);
-    };
-  }, [simulationTrigger]);
+    if (latest.type === 'CHALLENGE' || latest.type === 'TASK_REOPENED') {
+      const { nodeId } = latest.payload as any;
+      setNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, status: 'slashed', label: `${n.data.label} (Slashed/Retry)` } } : n));
+      setLogs(prev => [...prev, `[VALIDATION] Node ${nodeId} challenged/slashed! Re-opening task...`]);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events]);
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
@@ -257,7 +191,7 @@ function DashboardContent() {
             <form onSubmit={(e) => { 
               e.preventDefault(); 
               if (inputText.trim()) { 
-                generateRandomDAG(inputText);
+                submitRealDAG(inputText);
                 setInputText(""); 
               } 
             }} className="relative flex items-center">
@@ -279,7 +213,7 @@ function DashboardContent() {
           </div>
         </div>
 
-        {/* Right Panel: React Flow DAG */}
+        {/* Right Panel: React Flow DAG + DAGBoard */}
         <div className="flex-1 relative bg-background">
           <ReactFlow
             nodes={nodes}
@@ -307,6 +241,8 @@ function DashboardContent() {
               }}
             />
           </ReactFlow>
+
+          {/* DAGBoard overlay was removed */}
         </div>
 
       </div>
@@ -418,7 +354,7 @@ function DashboardContent() {
                     onClick={() => {
                       setIsDeployOpen(false);
                       setDeployStep(1);
-                      generateRandomDAG(systemPrompt);
+                      setLogs(prev => [...prev, `[SYSTEM] Agent parameters configured successfully.`]);
                     }}
                     className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
                   >

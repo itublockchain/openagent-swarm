@@ -10,11 +10,18 @@ export interface AgentDeps {
 }
 
 export class SwarmAgent {
+  private dagCache = new Map<string, DAGNode>();
+
   constructor(private deps: AgentDeps) {}
 
-  public start(): void {
+  public async start(): Promise<void> {
     try {
-      this.deps.network.on(EventType.TASK_SUBMITTED, (event) => this.onTaskSubmitted(event));
+      this.deps.network.on(EventType.TASK_SUBMITTED, (event) => {
+        this.onTaskSubmitted(event);
+      });
+      this.deps.network.on(EventType.TASK_REOPENED, (event) => {
+        this.onTaskReopened(event);
+      });
       console.log(`[Agent ${this.deps.config.agentId}] started`);
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] start error:`, err);
@@ -29,7 +36,7 @@ export class SwarmAgent {
       if (claimed) {
         await this.runAsPlanner(event);
       } else {
-        this.waitForDAG();
+        await this.waitForDAG();
       }
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] onTaskSubmitted error:`, err);
@@ -41,37 +48,48 @@ export class SwarmAgent {
       const { taskId, spec } = event.payload;
       const agentId = this.deps.config.agentId;
 
-      console.log(`[Agent ${agentId}] acting as Planner for task ${taskId}`);
+      console.log(`[Agent ${agentId}] runAsPlanner started, spec: ${spec}`);
 
       const nodes = await this.deps.compute.buildDAG(spec);
+      console.log(`[Agent ${agentId}] DAG built, nodes: ${nodes.length}`);
+
       const dagHash = await this.deps.storage.append(nodes);
+      console.log(`[Agent ${agentId}] DAG stored, hash: ${dagHash}`);
 
       await this.deps.chain.stake(taskId, this.deps.config.stakeAmount);
+      console.log(`[Agent ${agentId}] staked`);
 
       await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId, taskId }));
+      console.log(`[Agent ${agentId}] PLANNER_SELECTED emitted`);
 
-      // Append each node to storage for workers to fetch if needed
       for (const node of nodes) {
         await this.deps.storage.append(node);
       }
 
       await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, { dagHash, nodes, taskId }));
+      console.log(`[Agent ${agentId}] DAG_READY emitted`);
 
-      this.deps.network.on(EventType.DAG_COMPLETED, () => this.runAsKeeper());
+      this.deps.network.on(EventType.DAG_COMPLETED, (event) => {
+        this.runAsKeeper();
+      });
     } catch (err) {
-      console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner error:`, err);
+      console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner FAILED:`, err);
     }
   }
 
-  private waitForDAG(): void {
+  private async waitForDAG(): Promise<void> {
     console.log(`[Agent ${this.deps.config.agentId}] waiting for DAG...`);
-    this.deps.network.on(EventType.DAG_READY, (event: AXLEvent<any>) => this.onDAGReady(event));
+    this.deps.network.on(EventType.DAG_READY, (event: AXLEvent<any>) => {
+      this.onDAGReady(event);
+    });
   }
 
   private async onDAGReady(event: AXLEvent<any>): Promise<void> {
     try {
       const { nodes, taskId } = event.payload;
       const agentId = this.deps.config.agentId;
+
+      nodes.forEach((node: DAGNode) => this.dagCache.set(node.id, node));
 
       for (const node of nodes) {
         const claimed = await this.deps.chain.claimSubtask(node.id);
@@ -98,8 +116,7 @@ export class SwarmAgent {
         prevOutput = await this.deps.storage.fetch(node.prevHash);
         const isValid = await this.deps.compute.judge(prevOutput as string);
         if (!isValid) {
-          await this.deps.chain.challenge(node.id);
-          await this.deps.network.emit(this.buildEvent(EventType.CHALLENGE, { nodeId: node.id, agentId, taskId }));
+          await this.challengeNode(node, taskId);
           return;
         }
       }
@@ -116,6 +133,57 @@ export class SwarmAgent {
   private async runAsKeeper(): Promise<void> {
     // TODO Katman 5 — KeeperHub entegrasyonu
     console.log(`[Agent ${this.deps.config.agentId}] keeper role — not implemented yet`);
+  }
+
+  private async challengeNode(node: DAGNode, taskId: string): Promise<void> {
+    try {
+      await this.deps.chain.challenge(node.id);
+      
+      await this.deps.network.emit(this.buildEvent(EventType.CHALLENGE, {
+        nodeId: node.id,
+        taskId,
+        agentId: this.deps.config.agentId,
+      }));
+
+      await this.deps.chain.resetSubtask(node.id);
+
+      await this.deps.network.emit(this.buildEvent(EventType.TASK_REOPENED, {
+        nodeId: node.id,
+        taskId,
+        reason: 'validation_failed',
+      }));
+
+      console.log(`[Agent ${this.deps.config.agentId}] challenged node ${node.id}, reopened for re-auction`);
+    } catch (err) {
+      console.error(`[Agent ${this.deps.config.agentId}] challenge error:`, err);
+    }
+  }
+
+  private async onTaskReopened(event: AXLEvent<any>): Promise<void> {
+    const { nodeId, taskId } = event.payload;
+
+    if (event.agentId === this.deps.config.agentId) return;
+
+    console.log(`[Agent ${this.deps.config.agentId}] heard TASK_REOPENED for node ${nodeId}, attempting re-claim`);
+
+    try {
+      const claimed = await this.deps.chain.claimSubtask(nodeId);
+      if (!claimed) {
+        console.log(`[Agent ${this.deps.config.agentId}] node ${nodeId} already claimed by another agent`);
+        return;
+      }
+
+      const node = this.dagCache.get(nodeId);
+      if (!node) {
+        console.warn(`[Agent ${this.deps.config.agentId}] node ${nodeId} not in cache, skipping`);
+        return;
+      }
+
+      console.log(`[Agent ${this.deps.config.agentId}] re-claimed node ${nodeId}, executing`);
+      await this.executeSubtask(node, taskId);
+    } catch (err) {
+      console.error(`[Agent ${this.deps.config.agentId}] re-claim error:`, err);
+    }
   }
 
   private buildEvent<T>(type: EventType, payload: T): AXLEvent<T> {

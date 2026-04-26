@@ -1,0 +1,63 @@
+{
+  "_format": "hh-sol-artifact-1",
+  "contractName": "IDAGRegistry",
+  "sourceName": "contracts/SlashingVault.sol",
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "nodeId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "nodes",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "nodeId_",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "taskId_",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address",
+          "name": "claimedBy_",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes32",
+          "name": "outputHash_",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "bool",
+          "name": "validated_",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "nodeId",
+          "type": "bytes32"
+        }
+      ],
+      "name": "resetNode",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x",
+  "deployedBytecode": "0x",
+  "linkReferences": {},
+  "deployedLinkReferences": {}
+}

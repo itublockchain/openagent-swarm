@@ -1,19 +1,25 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
-import { IStoragePort } from '../../../shared/ports';
-import { EventBus } from '../../agent/src/core/EventBus';
+import cors from '@fastify/cors';
+import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentRunner } from './AgentRunner';
 import { TaskSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { EventType } from '../../../shared/types';
 
 export interface ServerDeps {
   storage: IStoragePort;
-  network: EventBus;
+  network: INetworkPort;
   runner: AgentRunner;
 }
 
 export default async function createServer(deps: ServerDeps) {
   const fastify = Fastify({ logger: true });
+
+  await fastify.register(cors, {
+    origin: true // Allow all origins for dev
+  });
+
+  await fastify.register(websocket);
 
   // Health check
   fastify.get('/health', async () => {
@@ -55,25 +61,35 @@ export default async function createServer(deps: ServerDeps) {
     return { ok: true };
   });
 
-  // WS /ws
-  fastify.register(async (fastify) => {
-    fastify.get('/ws', { websocket: true }, (connection, req) => {
-      console.log('[WS] Client connected');
-      
+  fastify.route({
+    method: 'GET',
+    url: '/ws',
+    handler: (req, reply) => {
+      reply.status(404).send({ error: 'Not a websocket request' });
+    },
+    wsHandler: (connection: any, req) => {
+      const socket = connection.socket || connection;
+
+      if (!socket || typeof socket.on !== 'function') return;
+
       const handler = (event: any) => {
-        connection.socket.send(JSON.stringify(event));
+        if (socket.readyState === 1 || socket.readyState === 'open') {
+          try {
+            socket.send(JSON.stringify(event));
+          } catch (err) {
+            console.error('[WS] Send error:', err);
+          }
+        }
       };
 
-      deps.network.on('*', handler);
+      // tüm event tiplerini dinle
+      const types = Object.values(EventType);
+      types.forEach(type => deps.network.on(type as EventType, handler));
 
-      connection.socket.on('close', () => {
-        console.log('[WS] Client disconnected');
-        // Note: EventBus needs a way to remove a specific listener
-        // For simplicity in this mock, we might need an off(type, handler) method
-        // But the prompt said off(type) which clears all. 
-        // We'll leave it as is for now or use a more refined off if we had it.
+      socket.on('close', () => {
+        types.forEach(type => deps.network.off(type as EventType, handler));
       });
-    });
+    }
   });
 
   return fastify;
