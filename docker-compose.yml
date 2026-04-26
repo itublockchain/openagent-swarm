@@ -7,6 +7,9 @@ services:
     ports:
       - "${PORT:-3001}:3001"
     env_file: .env
+    environment:
+      - DOCKER_HOST=tcp://docker-proxy:2375
+      - REDIS_URL=redis://redis:6379
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
@@ -17,8 +20,11 @@ services:
       retries: 3
     depends_on:
       - redis
+      - docker-proxy
     networks:
-      - swarm_default
+      swarm_default:
+        aliases:
+          - api
 
   agent:
     build:
@@ -27,6 +33,7 @@ services:
     env_file: .env
     environment:
       - USE_MOCK=${USE_MOCK:-true}
+      - REDIS_URL=redis://redis:6379
     restart: on-failure
     healthcheck:
       disable: true
@@ -36,7 +43,9 @@ services:
       redis:
         condition: service_healthy
     networks:
-      - swarm_default
+      swarm_default:
+        aliases:
+          - agent
 
   redis:
     image: redis:7.4-alpine
@@ -48,7 +57,24 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - swarm_default
+      swarm_default:
+        aliases:
+          - redis
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - NETWORKS=1
+      - VOLUMES=1
+      - POST=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      swarm_default:
+        aliases:
+          - docker-proxy
 
 networks:
   swarm_default:

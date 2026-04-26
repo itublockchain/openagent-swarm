@@ -42,10 +42,11 @@ export default async function createServer(deps: ServerDeps) {
   });
 
   // POST /agent/deploy
-  fastify.post('/agent/deploy', async (request, reply) => {
-    const body = AgentDeploySchema.parse(request.body);
-    const containerId = await deps.runner.deploy(body);
-    return { containerId };
+  fastify.post('/agent/deploy', async (request: any) => {
+    const body = AgentDeploySchema.parse(request.body)
+    // body: { agentId, stakeAmount, model?, systemPrompt? }
+    const containerId = await deps.runner.deploy(body)
+    return { containerId }
   });
 
   // GET /agent/pool

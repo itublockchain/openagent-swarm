@@ -9,6 +9,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
 import { ArrowLeft, Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
 import { useSwarmEvents } from '@/hooks/useSwarmEvents';
+import { DeployAgentModal } from '@/components/DeployAgentModal';
 
 const nodeTypes = {
   task: TaskNode,
@@ -19,11 +20,6 @@ function DashboardContent() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [inputText, setInputText] = useState("");
   const [isDeployOpen, setIsDeployOpen] = useState(false);
-  const [deployStep, setDeployStep] = useState(1);
-  const [systemPrompt, setSystemPrompt] = useState("You are a DeFi specialist. Focus on yield optimization strategies. Always verify token addresses before suggesting swaps.");
-  const [isWalletConnected, setIsWalletConnected] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("gpt-4o");
-  const [stakeAmount, setStakeAmount] = useState("10");
   const [logs, setLogs] = useState<string[]>([
     "Waiting for user intent...",
     "Ready to generate and deploy DAG."
@@ -55,7 +51,7 @@ function DashboardContent() {
       const res = await fetch(`${apiUrl}/task`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spec: intent, budget: String(stakeAmount) || "100" })
+        body: JSON.stringify({ spec: intent, budget: "10" })
       });
       if (!res.ok) throw new Error("API request failed");
       setLogs(prev => [...prev, "[API] Task submitted successfully. Awaiting DAG_READY event via WebSocket..."]);
@@ -248,131 +244,13 @@ function DashboardContent() {
       </div>
 
       {/* Deploy Agents Modal */}
-      {isDeployOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold tracking-tight">Deploy Your Custom Agent</h2>
-              <button
-                onClick={() => { setIsDeployOpen(false); setDeployStep(1); }}
-                className="rounded-full p-1.5 hover:bg-accent text-muted-foreground transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="relative overflow-hidden">
-              {/* Step 1 */}
-              <div 
-                className={cn(
-                  "transition-all duration-300 ease-in-out",
-                  deployStep === 1 ? "opacity-100 translate-x-0 relative" : "opacity-0 -translate-x-full absolute inset-0 pointer-events-none"
-                )}
-              >
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Select AI Model</label>
-                    <select
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <option value="gpt-4o">GPT-4o (OpenAI)</option>
-                      <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
-                      <option value="llama-3-70b">Llama 3 70B (0G Compute)</option>
-                      <option value="mistral-large">Mistral Large (Gensyn)</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Agent System Prompt</label>
-                    <textarea 
-                      value={systemPrompt}
-                      onChange={(e) => setSystemPrompt(e.target.value)}
-                      rows={4}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
-                    />
-                  </div>
-
-                  <button
-                    onClick={() => setDeployStep(2)}
-                    className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6"
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-
-              {/* Step 2 */}
-              <div 
-                className={cn(
-                  "transition-all duration-300 ease-in-out",
-                  deployStep === 2 ? "opacity-100 translate-x-0 relative" : "opacity-0 translate-x-full absolute inset-0 pointer-events-none"
-                )}
-              >
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-foreground">Escrow Stake (USDC)</label>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        value={stakeAmount}
-                        onChange={(e) => setStakeAmount(e.target.value)}
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 pl-7 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        placeholder="10"
-                      />
-                      <span className="absolute left-3 top-2.5 text-sm text-muted-foreground">$</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">Amount to be staked into L2 Escrow contract.</p>
-                  </div>
-
-                  <div className="space-y-2 pt-2">
-                    <label className="text-sm font-medium text-foreground">Wallet Connection</label>
-                    {!isWalletConnected ? (
-                      <button 
-                        onClick={() => setIsWalletConnected(true)}
-                        className="w-full flex items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-semibold text-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
-                      >
-                        Connect Wallet
-                      </button>
-                    ) : (
-                      <div className="w-full flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/10 px-4 py-2 text-sm text-green-600 dark:text-green-400">
-                        <span className="flex items-center gap-2">
-                          <span className="relative flex h-2 w-2">
-                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                          </span>
-                          0x71C...976F
-                        </span>
-                        <span className="text-xs font-mono">Connected</span>
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    disabled={!isWalletConnected}
-                    onClick={() => {
-                      setIsDeployOpen(false);
-                      setDeployStep(1);
-                      setLogs(prev => [...prev, `[SYSTEM] Agent parameters configured successfully.`]);
-                    }}
-                    className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Rocket className="w-4 h-4" />
-                    Initialize Deployment
-                  </button>
-                  <button
-                    onClick={() => setDeployStep(1)}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    Back
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeployAgentModal 
+        isOpen={isDeployOpen} 
+        onClose={() => setIsDeployOpen(false)}
+        onSuccess={(containerId) => {
+          setLogs(prev => [...prev, `[SYSTEM] Agent deployed successfully! Container ID: ${containerId.slice(0, 12)}...`]);
+        }}
+      />
     </div>
   );
 }

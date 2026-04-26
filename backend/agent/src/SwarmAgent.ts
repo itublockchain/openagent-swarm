@@ -22,6 +22,9 @@ export class SwarmAgent {
       this.deps.network.on(EventType.TASK_REOPENED, (event) => {
         this.onTaskReopened(event);
       });
+      this.deps.network.on(EventType.DAG_READY, (event) => {
+        this.onDAGReady(event);
+      });
       console.log(`[Agent ${this.deps.config.agentId}] started`);
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] start error:`, err);
@@ -35,8 +38,6 @@ export class SwarmAgent {
 
       if (claimed) {
         await this.runAsPlanner(event);
-      } else {
-        await this.waitForDAG();
       }
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] onTaskSubmitted error:`, err);
@@ -77,12 +78,6 @@ export class SwarmAgent {
     }
   }
 
-  private async waitForDAG(): Promise<void> {
-    console.log(`[Agent ${this.deps.config.agentId}] waiting for DAG...`);
-    this.deps.network.on(EventType.DAG_READY, (event: AXLEvent<any>) => {
-      this.onDAGReady(event);
-    });
-  }
 
   private async onDAGReady(event: AXLEvent<any>): Promise<void> {
     try {

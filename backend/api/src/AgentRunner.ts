@@ -1,12 +1,10 @@
 import Dockerode from 'dockerode'
 import { AgentConfig } from '@swarm/shared/types'
 
-const docker = process.env.DOCKER_HOST
-  ? new Dockerode({
-    host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
-    port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
-  })
-  : new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
+const docker = new Dockerode({
+  host: process.env.DOCKER_HOST?.replace('tcp://', '').split(':')[0],
+  port: Number(process.env.DOCKER_HOST?.split(':').pop()) || 2375,
+})
 
 export class AgentRunner {
   async deploy(config: AgentConfig & { model?: string; systemPrompt?: string }): Promise<string> {
@@ -26,34 +24,28 @@ export class AgentRunner {
     const container = await docker.createContainer({
       Image: 'swarm-agent:latest',
       name: `swarm-${config.agentId}-${Date.now()}`,
-      Env: [
-        `AGENT_ID=${config.agentId}`,
-        `STAKE_AMOUNT=${config.stakeAmount}`,
-        `ZG_STORAGE_URL=${process.env.ZG_STORAGE_URL}`,
-        `ZG_COMPUTE_URL=${process.env.ZG_COMPUTE_URL}`,
-        `ZG_COMPUTE_API_KEY=${process.env.ZG_COMPUTE_API_KEY}`,
-        `AXL_WS_URL=${process.env.AXL_WS_URL}`,
-        `L2_RPC_URL=${process.env.L2_RPC_URL}`,
-        `L2_PRIVATE_KEY=${process.env.L2_PRIVATE_KEY}`,
-        `L2_ESCROW_ADDRESS=${process.env.L2_ESCROW_ADDRESS}`,
-        `L2_DAG_REGISTRY_ADDRESS=${process.env.L2_DAG_REGISTRY_ADDRESS}`,
-        `L2_SLASHING_VAULT_ADDRESS=${process.env.L2_SLASHING_VAULT_ADDRESS}`,
-        `USE_MOCK=false`,
-      ],
-      HostConfig: { AutoRemove: false },
-    });
+      Env: env,
+      HostConfig: {
+        NetworkMode: 'swarm_default',   // docker compose network
+        AutoRemove: false,
+      },
+    })
 
-    await container.start();
-    return container.id;
+    await container.start()
+    console.log(`[AgentRunner] deployed container: ${container.id}`)
+    return container.id
   }
 
   async stop(containerId: string): Promise<void> {
-    const container = this.docker.getContainer(containerId);
-    await container.stop();
+    const c = docker.getContainer(containerId)
+    await c.stop()
+    await c.remove()
   }
 
   async list(): Promise<Dockerode.ContainerInfo[]> {
-    const containers = await this.docker.listContainers({ all: true });
-    return containers.filter(c => c.Names.some(name => name.startsWith('/swarm-')));
+    const containers = await docker.listContainers()
+    return containers.filter((c: Dockerode.ContainerInfo) =>
+      c.Names.some((name: string) => name.startsWith('/swarm-'))
+    )
   }
 }

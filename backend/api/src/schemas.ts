@@ -7,7 +7,9 @@ export const TaskSchema = z.object({
 
 export const AgentDeploySchema = z.object({
   agentId: z.string().min(1),
-  stakeAmount: z.string().min(1)
+  stakeAmount: z.string(),
+  model: z.string().optional(),
+  systemPrompt: z.string().optional(),
 });
 
 export const AgentIdParamsSchema = z.object({
