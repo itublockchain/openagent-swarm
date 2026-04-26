@@ -14,36 +14,8 @@ const nodeTypes = {
 };
 
 function DashboardContent() {
-  const searchParams = useSearchParams();
-  const taskQuery = searchParams.get('task');
-  const userIntent = taskQuery ? `User Intent: ${taskQuery}` : 'User Intent: Swap 100 USDC to ETH on Optimism';
-  const submittedLog = taskQuery ? `[USER] Submitted spec: ${taskQuery}` : '[USER] Submitted spec: Swap 100 USDC to ETH on Optimism.';
-
-  const initialNodes: Node<NodeData>[] = [
-    { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: userIntent, status: 'completed', agent: '0xUser...123' } },
-    { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: '0xPlan...456' } },
-    { id: '3', type: 'task', position: { x: 150, y: 300 }, data: { label: 'Subtask 1: Generate Smart Contract', status: 'completed', agent: '0xGenA...987' } },
-    { id: '5', type: 'task', position: { x: 650, y: 300 }, data: { label: 'Subtask 3: Bridge USDC Base -> ARB', status: 'completed', agent: '0xBrid...333' } },
-    { id: '4', type: 'task', position: { x: 150, y: 450 }, data: { label: 'Subtask 2: Deploy to Arbitrum (Retry)', status: 'slashed', agent: '0xBad...000' } },
-    { id: '7', type: 'task', position: { x: -50, y: 600 }, data: { label: 'Subtask 5: Register DID on 0G', status: 'pending' } },
-    { id: '6', type: 'task', position: { x: 400, y: 600 }, data: { label: 'Subtask 4: Fund Deployed Contract', status: 'pending' } },
-    { id: '8', type: 'task', position: { x: 400, y: 750 }, data: { label: 'Execute On-Chain via KeeperHub', status: 'pending' } },
-  ];
-
-  const initialEdges: Edge[] = [
-    { id: 'e1-2', source: '1', target: '2', animated: true },
-    { id: 'e2-3', source: '2', target: '3', animated: true },
-    { id: 'e2-5', source: '2', target: '5', animated: true },
-    { id: 'e3-4', source: '3', target: '4', animated: true, style: { stroke: '#ef4444' } }, // Slashed route representation
-    { id: 'e4-7', source: '4', target: '7', animated: true },
-    { id: 'e4-6', source: '4', target: '6', animated: true },
-    { id: 'e5-6', source: '5', target: '6', animated: true },
-    { id: 'e7-8', source: '7', target: '8', animated: true },
-    { id: 'e6-8', source: '6', target: '8', animated: true },
-  ];
-
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeData>>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [inputText, setInputText] = useState("");
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   const [deployStep, setDeployStep] = useState(1);
@@ -52,69 +24,175 @@ function DashboardContent() {
   const [selectedModel, setSelectedModel] = useState("gpt-4o");
   const [stakeAmount, setStakeAmount] = useState("10");
   const [logs, setLogs] = useState<string[]>([
-    "[SYSTEM] Connected to 0G Storage & Gensyn AXL.",
-    submittedLog,
-    "[ESCROW] Locked user funds + execution fee.",
-    "[AUCTION] Planner Agent 0xPlan...456 staked 15 USDC.",
-    "[COMPUTE] Planner generated 5-node dependent DAG.",
-    "[AUCTION] Subtask 1 claimed by 0xGenA...987. Output verified.",
-    "[AUCTION] Subtask 3 claimed by 0xBrid...333. Output verified.",
-    "[AUCTION] Subtask 2 claimed by 0xBad...000.",
-    "[VALIDATION] Subtask 2 output REJECTED (Toxic payload)! Slashed 10 USDC.",
-    "[AUCTION] Subtask 2 re-auctioned. Claimed by 0xGood...111.",
+    "Waiting for user intent...",
+    "Ready to generate and deploy DAG."
   ]);
+  const [simulationTrigger, setSimulationTrigger] = useState(0);
+
+  const generateRandomDAG = (intent: string) => {
+    const newNodes: Node<NodeData>[] = [
+      { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: `User Intent: ${intent}`, status: 'completed', agent: '0xUser...123' } },
+      { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: '0xPlan...456' } },
+    ];
+    
+    const newEdges: Edge[] = [
+      { id: 'e1-2', source: '1', target: '2', animated: true }
+    ];
+
+    const numSubtasks = Math.floor(Math.random() * 5) + 3; // 3 to 7 nodes
+    const slashedIndex = Math.floor(Math.random() * numSubtasks);
+
+    // Create 2 or 3 layers for mixed sequential/parallel execution
+    const numLayers = Math.min(numSubtasks, Math.floor(Math.random() * 2) + 2); 
+    const layers: number[][] = Array.from({length: numLayers}, () => []);
+    
+    for (let i = 0; i < numSubtasks; i++) {
+       // Ensure at least 1 node per layer
+       if (i < numLayers) {
+         layers[i].push(i);
+       } else {
+         const randomLayer = Math.floor(Math.random() * numLayers);
+         layers[randomLayer].push(i);
+       }
+    }
+
+    const spacingX = 250;
+    const spacingY = 150;
+    
+    const subtaskNodes: Node<NodeData>[] = [];
+    const subtaskEdges: Edge[] = [];
+    let keeperY = 0;
+
+    for (let l = 0; l < numLayers; l++) {
+      const layerNodes = layers[l];
+      const startX = 400 - ((layerNodes.length - 1) * spacingX) / 2;
+      const currentY = 300 + (l * spacingY);
+      keeperY = currentY + spacingY + 50;
+
+      for (let i = 0; i < layerNodes.length; i++) {
+        const globalIndex = layerNodes[i];
+        const id = `sub-${globalIndex}`;
+        
+        subtaskNodes.push({
+          id,
+          type: 'task',
+          position: { x: startX + (i * spacingX), y: currentY },
+          data: { label: `Dynamic Subtask ${globalIndex+1}`, status: 'pending', isSlashedTarget: globalIndex === slashedIndex }
+        });
+
+        if (l === 0) {
+          // Connect to Planner
+          subtaskEdges.push({ id: `e2-${id}`, source: '2', target: id, animated: true });
+        } else {
+          // Connect to random nodes in previous layer (mixed sequential/parallel)
+          const prevLayer = layers[l - 1];
+          const numParents = Math.floor(Math.random() * prevLayer.length) + 1;
+          const parents = [...prevLayer].sort(() => 0.5 - Math.random()).slice(0, numParents);
+          
+          parents.forEach(p => {
+             subtaskEdges.push({ id: `e_sub-${p}-${id}`, source: `sub-${p}`, target: id, animated: true });
+          });
+        }
+      }
+    }
+
+    // Find all leaf nodes (nodes with no children) and connect them to KeeperHub
+    const parentIds = new Set(subtaskEdges.map(e => e.source));
+    const leafNodes = subtaskNodes.filter(n => !parentIds.has(n.id));
+
+    const keeperId = 'keeper';
+    const keeperNode: Node<NodeData> = {
+      id: keeperId,
+      type: 'task',
+      position: { x: 400, y: keeperY },
+      data: { label: 'Execute On-Chain via KeeperHub', status: 'pending' }
+    };
+
+    const keeperEdges: Edge[] = leafNodes.map(node => ({
+      id: `e${node.id}-${keeperId}`,
+      source: node.id,
+      target: keeperId,
+      animated: true
+    }));
+
+    setNodes([...newNodes, ...subtaskNodes, keeperNode]);
+    setEdges([...newEdges, ...subtaskEdges, ...keeperEdges]);
+    
+    setLogs([
+      "[SYSTEM] Connected to 0G Storage & Gensyn AXL.",
+      `[USER] Submitted spec: ${intent}`,
+      "[ESCROW] Locked user funds + execution fee.",
+      "[AUCTION] Planner Agent 0xPlan...456 staked 15 USDC.",
+      `[COMPUTE] Planner generated a complex DAG with ${numSubtasks} parallel/sequential tasks.`
+    ]);
+
+    setSimulationTrigger(prev => prev + 1);
+  };
 
   // Simulate dynamic status changes across multiple steps
   useEffect(() => {
-    // Step 1: Retry success, subsequent tasks become validating
-    const timer1 = setTimeout(() => {
-      setNodes((nds) =>
-        nds.map((n) => {
-          if (n.id === '4') return { ...n, data: { ...n.data, status: 'completed', agent: '0xGood...111' } };
-          if (n.id === '6') return { ...n, data: { ...n.data, status: 'validating', agent: '0xFund...444' } };
-          if (n.id === '7') return { ...n, data: { ...n.data, status: 'validating', agent: '0xRegI...555' } };
-          return n;
-        })
-      );
-      setEdges((eds) =>
-        eds.map((e) => {
-          if (e.id === 'e3-4') return { ...e, style: { stroke: '#22c55e' } }; // Fix slashed path visually
-          return e;
-        })
-      );
-      setLogs((prev) => [
-        ...prev,
-        "[VALIDATION] Subtask 2 output verified by LLM-Judge.",
-        "[AUCTION] Subtask 4 claimed by 0xFund...444.",
-        "[AUCTION] Subtask 5 claimed by 0xRegI...555.",
-        "[SYSTEM] Validating dependent branches in parallel..."
-      ]);
-    }, 4000);
+    if (simulationTrigger === 0) return;
 
-    // Step 2: Final completion and Keeper execution
-    const timer2 = setTimeout(() => {
-      setNodes((nds) =>
-        nds.map((n) => {
-          if (n.id === '6' || n.id === '7') return { ...n, data: { ...n.data, status: 'completed' } };
-          if (n.id === '8') return { ...n, data: { ...n.data, status: 'keeper', agent: 'KeeperHub' } };
-          return n;
-        })
-      );
-      setLogs((prev) => [
-        ...prev,
-        "[VALIDATION] Subtasks 4 & 5 outputs verified.",
-        "[PLANNER] Full DAG completion cryptographically verified.",
-        "[KEEPER] Compiling final state transitions...",
-        "[KEEPER] Executed payload on-chain (KeeperHub).",
-        "[ESCROW] Distributed unlocked USDC rewards to honest swarm agents."
-      ]);
-    }, 8000);
+    const t1 = setTimeout(() => {
+      setNodes((nds) => nds.map((n) => {
+        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: (n.data as any).isSlashedTarget ? 'slashed' : 'claimed', agent: `0xAgent...${Math.floor(Math.random()*999)}` } };
+        return n;
+      }));
+      setEdges((eds) => eds.map((e) => {
+        const targetNode = nodes.find(n => n.id === e.target);
+        if (targetNode && (targetNode.data as any).isSlashedTarget) {
+          return { ...e, style: { stroke: '#ef4444' } };
+        }
+        return e;
+      }));
+      setLogs((prev) => [...prev, "[AUCTION] Agents claimed subtasks.", "[VALIDATION] Verifying initial outputs..."]);
+    }, 2000);
+
+    const t2 = setTimeout(() => {
+      setNodes((nds) => nds.map((n) => {
+        if (n.id.startsWith('sub-') && (n.data as any).isSlashedTarget) {
+           return { ...n, data: { ...n.data, status: 'claimed', label: `${n.data.label} (Retry)`, agent: `0xNew...${Math.floor(Math.random()*999)}` } };
+        }
+        return n;
+      }));
+      setEdges((eds) => eds.map((e) => {
+        return { ...e, style: undefined }; // Reset slashed red lines
+      }));
+      setLogs((prev) => [...prev, "[VALIDATION] Toxic payload detected! Slashed agent.", "[AUCTION] Re-auctioned slashed task. Claimed by new agent."]);
+    }, 4500);
+
+    const t3 = setTimeout(() => {
+      setNodes((nds) => nds.map((n) => {
+        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: 'validating' } };
+        return n;
+      }));
+      setLogs((prev) => [...prev, "[SYSTEM] Validating dependent branches in parallel by LLM-Judges..."]);
+    }, 7000);
+
+    const t4 = setTimeout(() => {
+      setNodes((nds) => nds.map((n) => {
+        if (n.id.startsWith('sub-')) return { ...n, data: { ...n.data, status: 'completed' } };
+        return n;
+      }));
+      setLogs((prev) => [...prev, "[VALIDATION] All subtasks outputs verified.", "[PLANNER] Full DAG completion cryptographically verified."]);
+    }, 9500);
+
+    const t5 = setTimeout(() => {
+      setNodes((nds) => nds.map((n) => {
+        if (n.id === 'keeper') return { ...n, data: { ...n.data, status: 'keeper', agent: 'KeeperHub' } };
+        return n;
+      }));
+      setLogs((prev) => [...prev, "[KEEPER] Executed payload on-chain.", "[ESCROW] Distributed unlocked USDC rewards to honest swarm agents."]);
+    }, 12000);
 
     return () => {
-      clearTimeout(timer1);
-      clearTimeout(timer2);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+      clearTimeout(t4);
+      clearTimeout(t5);
     };
-  }, [setNodes, setEdges]);
+  }, [simulationTrigger]);
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
@@ -176,7 +254,13 @@ function DashboardContent() {
           </div>
 
           <div className="p-4 border-t border-border bg-background shrink-0">
-            <form onSubmit={(e) => { e.preventDefault(); if (inputText.trim()) { setLogs(p => [...p, `[USER] ${inputText}`]); setInputText(""); } }} className="relative flex items-center">
+            <form onSubmit={(e) => { 
+              e.preventDefault(); 
+              if (inputText.trim()) { 
+                generateRandomDAG(inputText);
+                setInputText(""); 
+              } 
+            }} className="relative flex items-center">
               <input
                 type="text"
                 placeholder="Submit new task..."
@@ -332,9 +416,9 @@ function DashboardContent() {
                   <button
                     disabled={!isWalletConnected}
                     onClick={() => {
-                      setLogs(prev => [...prev, `[SYSTEM] Deploying ${selectedModel} with "${systemPrompt.substring(0, 20)}..." and ${stakeAmount} USDC stake...`]);
                       setIsDeployOpen(false);
                       setDeployStep(1);
+                      generateRandomDAG(systemPrompt);
                     }}
                     className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
