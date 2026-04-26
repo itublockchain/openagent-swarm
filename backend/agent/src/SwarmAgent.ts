@@ -13,6 +13,7 @@ export class SwarmAgent {
   // taskId → { nodes, taskId }
   private tasks = new Map<string, { nodes: DAGNode[], taskId: string }>()
   private currentTaskId: string | null = null
+  private lastActivity: number = Date.now()
 
   constructor(private deps: AgentDeps) {}
 
@@ -52,6 +53,7 @@ export class SwarmAgent {
 
     this.deps.network.on(EventType.SUBTASK_DONE, (event) => {
       const { nodeId, outputHash, taskId } = event.payload as any
+      this.lastActivity = Date.now()
       const task = this.tasks.get(taskId)
       if (task) {
         const node = task.nodes.find(n => n.id === nodeId)
@@ -66,11 +68,12 @@ export class SwarmAgent {
 
     this.deps.network.on(EventType.DAG_COMPLETED, (event) => {
       const { taskId, agentId } = event.payload as any
+      console.log(`[Agent ${this.deps.config.agentId}] Received DAG_COMPLETED for ${taskId} from ${agentId || 'mesh'}`)
       this.deps.chain.syncTaskCompletion(taskId, agentId)
       
       // task bitti, boşa çık
       if (this.currentTaskId === taskId) {
-        console.log(`[Agent ${this.deps.config.agentId}] Task ${taskId} completed. Available for new tasks.`)
+        console.log(`[Agent ${this.deps.config.agentId}] Resetting busy state for task ${taskId}`)
         this.currentTaskId = null
         this.tasks.delete(taskId)
       }
@@ -79,15 +82,31 @@ export class SwarmAgent {
     console.log(`[Agent ${this.deps.config.agentId}] started and listening for ALL events`)
   }
 
+  private isBusyWithTimeout(newTaskId: string): boolean {
+    if (!this.currentTaskId) return false
+    if (this.currentTaskId === newTaskId) return false
+    
+    // 15 saniye sessizlik varsa meşgul sayılma (timeout)
+    const silentDuration = Date.now() - this.lastActivity
+    if (silentDuration > 15000) {
+      console.log(`[Agent ${this.deps.config.agentId}] Previous task ${this.currentTaskId} timed out (${Math.round(silentDuration/1000)}s silent). Resetting.`)
+      this.currentTaskId = null
+      return false
+    }
+    
+    return true
+  }
+
   private async onTaskSubmitted(event: AXLEvent<any>): Promise<void> {
     try {
       const taskId = event.payload.taskId
       
-      if (this.currentTaskId && this.currentTaskId !== taskId) {
+      if (this.isBusyWithTimeout(taskId)) {
         console.log(`[Agent ${this.deps.config.agentId}] busy with ${this.currentTaskId}, ignoring ${taskId}`)
         return
       }
 
+      this.lastActivity = Date.now()
       // Sadece planner olmak için yarış, worker dinleyicisi zaten aktif
       const claimed = await this.deps.chain.claimPlanner(taskId)
 
@@ -135,11 +154,11 @@ export class SwarmAgent {
     try {
       const { nodes, taskId } = event.payload
 
-      if (this.currentTaskId && this.currentTaskId !== taskId) {
-        // console.log(`[Agent ${this.deps.config.agentId}] worker: busy with ${this.currentTaskId}, ignoring DAG for ${taskId}`)
+      if (this.isBusyWithTimeout(taskId)) {
         return
       }
 
+      this.lastActivity = Date.now()
       // cache'e al ve sahiplen
       this.currentTaskId = taskId
       this.tasks.set(taskId, { nodes, taskId })
