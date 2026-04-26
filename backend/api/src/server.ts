@@ -2,14 +2,14 @@ import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
-import { AgentRunner } from './AgentRunner';
+import { AgentManager } from './AgentRunner';
 import { TaskSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { EventType } from '../../../shared/types';
 
 export interface ServerDeps {
   storage: IStoragePort;
   network: INetworkPort;
-  runner: AgentRunner;
+  manager: AgentManager;
 }
 
 export default async function createServer(deps: ServerDeps) {
@@ -26,72 +26,87 @@ export default async function createServer(deps: ServerDeps) {
     return { status: 'ok', timestamp: Date.now() };
   });
 
-  // POST /task
+  /**
+   * POST /task
+   * API just broadcasts the task to the AXL mesh.
+   * A "Runner Agent" in the pool will pick it up and plan it.
+   */
   fastify.post('/task', async (request, reply) => {
     const body = TaskSchema.parse(request.body);
     const specHash = await deps.storage.append(body);
     
-    await deps.network.emit({
+    const event = {
       type: EventType.TASK_SUBMITTED,
       payload: { ...body, taskId: specHash, specHash },
       timestamp: Date.now(),
       agentId: 'api-server'
-    });
+    };
 
+    await deps.network.emit(event);
     return { taskId: specHash };
   });
 
   // POST /agent/deploy
   fastify.post('/agent/deploy', async (request: any) => {
     const body = AgentDeploySchema.parse(request.body)
-    // body: { agentId, stakeAmount, model?, systemPrompt? }
-    const containerId = await deps.runner.deploy(body)
+    const containerId = await deps.manager.deploy(body)
     return { containerId }
   });
 
   // GET /agent/pool
   fastify.get('/agent/pool', async () => {
-    const list = await deps.runner.list();
+    const list = await deps.manager.list();
     return list;
+  });
+
+  // GET /task/:taskId
+  // Now fetches only from storage. Live state is reconstructed by frontend via WebSocket.
+  fastify.get('/task/:taskId', async (request) => {
+    const { taskId } = request.params as any;
+    const task = await deps.storage.fetch(taskId);
+    return { ...(task as any) };
   });
 
   // DELETE /agent/:id
   fastify.delete('/agent/:id', async (request, reply) => {
     const { id } = AgentIdParamsSchema.parse(request.params);
-    await deps.runner.stop(id);
+    await deps.manager.stop(id);
     return { ok: true };
   });
 
-  fastify.route({
-    method: 'GET',
-    url: '/ws',
-    handler: (req, reply) => {
-      reply.status(404).send({ error: 'Not a websocket request' });
-    },
-    wsHandler: (connection: any, req) => {
-      const socket = connection.socket || connection;
+  // WebSocket handler for event streaming
+  // This bridges AXL mesh events to the browser dashboard
+  fastify.get('/ws', { websocket: true }, (connection: any, req) => {
+    const socket = connection.socket || connection;
+    console.log('[WS] Client connected to P2P Event Bus');
 
-      if (!socket || typeof socket.on !== 'function') return;
+    const handlers: Map<string, (event: any) => void> = new Map();
 
-      const handler = (event: any) => {
-        if (socket.readyState === 1 || socket.readyState === 'open') {
-          try {
-            socket.send(JSON.stringify(event));
-          } catch (err) {
-            console.error('[WS] Send error:', err);
-          }
+    const send = (event: any) => {
+      if (socket && (socket.readyState === 1 || socket.readyState === 'open')) {
+        try {
+          socket.send(JSON.stringify(event));
+        } catch (err) {
+          console.error('[WS] Send error:', err);
         }
-      };
+      }
+    };
 
-      // tüm event tiplerini dinle
-      const types = Object.values(EventType);
-      types.forEach(type => deps.network.on(type as EventType, handler));
+    Object.values(EventType).forEach(type => {
+      const handler = (event: any) => send(event);
+      handlers.set(type, handler);
+      deps.network.on(type as EventType, handler);
+    });
 
-      socket.on('close', () => {
-        types.forEach(type => deps.network.off(type as EventType, handler));
+    socket.on('close', () => {
+      console.log('[WS] Client disconnected');
+      handlers.forEach((handler, type) => {
+        deps.network.off(type as EventType, handler);
       });
-    }
+      handlers.clear();
+    });
   });
 
   return fastify;
 }
+

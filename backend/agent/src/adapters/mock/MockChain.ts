@@ -21,10 +21,19 @@ export class MockChain implements IChainPort {
     return true;
   }
 
+  // External sync from network events
+  async syncPlannerClaim(taskId: string, agentId: string): Promise<void> {
+    MockChain.plannerClaims.set(taskId, agentId);
+  }
+
   async claimSubtask(nodeId: string): Promise<boolean> {
     if (MockChain.subtaskClaims.has(nodeId)) return false;
     MockChain.subtaskClaims.set(nodeId, this.agentId);
     return true;
+  }
+
+  async syncSubtaskClaim(nodeId: string, agentId: string): Promise<void> {
+    MockChain.subtaskClaims.set(nodeId, agentId);
   }
 
   async isSubtaskClaimed(nodeId: string): Promise<boolean> {
@@ -35,6 +44,10 @@ export class MockChain implements IChainPort {
     if (MockChain.completedTasks.has(taskId)) return false;
     MockChain.completedTasks.set(taskId, this.agentId);
     return true;
+  }
+
+  async syncTaskCompletion(taskId: string, agentId: string): Promise<void> {
+    MockChain.completedTasks.set(taskId, agentId);
   }
 
   async challenge(nodeId: string): Promise<void> {

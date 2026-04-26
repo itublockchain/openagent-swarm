@@ -29,10 +29,19 @@ export interface IChainPort {
   claimPlanner(taskId: string): Promise<boolean>
   /** FCFS — nodeId bazlı, ilk çağıran true alır */
   claimSubtask(nodeId: string): Promise<boolean>
+  /** subtask claim durumunu kontrol eder */
+  isSubtaskClaimed(nodeId: string): Promise<boolean>
+  /** task'ın bittiğini kaydeder */
+  completeTask(taskId: string): Promise<boolean>
   /** hatalı node'a itiraz açar */
   challenge(nodeId: string): Promise<void>
   /** ödülleri dağıtır ve escrow'u kapatır */
   settle(taskId: string, winners: string[]): Promise<void>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
+  
+  // Sync methods
+  syncPlannerClaim(taskId: string, agentId: string): Promise<void>
+  syncSubtaskClaim(nodeId: string, agentId: string): Promise<void>
+  syncTaskCompletion(taskId: string, agentId: string): Promise<void>
 }

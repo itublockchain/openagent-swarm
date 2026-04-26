@@ -5,6 +5,7 @@ export class AxlNetwork implements INetworkPort {
   private handlers = new Map<string, Set<(event: AXLEvent<any>) => void | Promise<void>>>();
   private isPolling = false;
   private readonly baseUrl: string;
+  private knownNodes = new Set<string>(); // Keep track of nodes that talked to us
 
   constructor(axlUrl: string = process.env.AXL_URL || 'http://127.0.0.1:9002') {
     this.baseUrl = axlUrl;
@@ -27,62 +28,95 @@ export class AxlNetwork implements INetworkPort {
     }
   }
 
+  private seenEvents = new Set<string>(); // Prevent gossip loops
+
   private async pollMessages() {
     while (this.isPolling) {
       try {
         const res = await fetch(`${this.baseUrl}/recv`);
         if (res.status === 204) {
-          // Queue is empty, wait a bit before next poll
           await new Promise(resolve => setTimeout(resolve, 100));
           continue;
         }
 
         if (res.status === 200) {
           const body = await res.text();
+          const fromPeer = res.headers.get('X-From-Peer-Id');
+          
           try {
-            const parsed = JSON.parse(body);
+            const parsed = JSON.parse(body) as AXLEvent<any>;
+            const now = Date.now();
+            
+            // Ignore stale messages (older than 60s)
+            if (now - parsed.timestamp > 60000) {
+              // console.log(`[AxlNetwork] Ignoring stale event: ${parsed.type}`);
+              continue;
+            }
+
+            const eventId = `${parsed.type}:${parsed.agentId}:${parsed.timestamp}`;
+            
+            if (this.seenEvents.has(eventId)) continue;
+            this.seenEvents.add(eventId);
+            if (this.seenEvents.size > 1000) this.seenEvents.clear(); // Basic cache management
+
+            console.log(`[AxlNetwork] Received NEW event: ${parsed.type} from ${parsed.agentId}`);
+            
+            // Remember the sender
+            if (parsed.senderPubKey) this.knownNodes.add(parsed.senderPubKey);
+            if (fromPeer) this.knownNodes.add(fromPeer);
+
+            // GOSSIP RELAY: Re-broadcast to our known nodes to ensure everyone gets it
+            this.emit(parsed).catch(() => {});
+
             const channel = `axl-events:${parsed.type}`;
             const globalChannel = 'axl-events';
 
-            // Trigger specific handlers
             if (this.handlers.has(channel)) {
               for (const handler of this.handlers.get(channel)!) {
                 await handler(parsed);
               }
             }
 
-            // Trigger global handlers
             if (this.handlers.has(globalChannel)) {
               for (const handler of this.handlers.get(globalChannel)!) {
                 await handler(parsed);
               }
             }
           } catch (parseErr) {
-            console.error(`[AxlNetwork] Failed to parse message:`, parseErr);
+            console.error(`[AxlNetwork] Failed to parse message body:`, parseErr);
           }
         }
       } catch (err) {
         console.error(`[AxlNetwork] Polling error:`, err);
-        await new Promise(resolve => setTimeout(resolve, 2000)); // wait longer on error
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
   }
 
   async emit<T>(event: AXLEvent<T>): Promise<void> {
     try {
-      // Get topology to broadcast
       const res = await fetch(`${this.baseUrl}/topology`);
       if (!res.ok) return;
 
       const topology = await res.json();
-      const peers: any[] = topology.peers || [];
+      const nodes: any[] = topology.tree || []; 
+      const ourKey = topology.our_public_key;
+
+      // Attach our public key so others can reply to us directly
+      event.senderPubKey = ourKey;
       const payload = JSON.stringify(event);
 
-      // Fire-and-forget message to all peers
-      await Promise.all(peers.map(async (peer) => {
-        const peerId = peer.public_key;
-        if (!peerId) return;
+      // Fire-and-forget message to all nodes in the mesh + known nodes
+      const allTargetNodes = new Set<string>();
+      nodes.forEach(n => allTargetNodes.add(n.public_key));
+      this.knownNodes.forEach(n => allTargetNodes.add(n));
+
+      console.log(`[AxlNetwork] Broadcasting ${event.type} to ${allTargetNodes.size - 1} target nodes...`);
+      
+      await Promise.all(Array.from(allTargetNodes).map(async (peerId) => {
+        if (!peerId || peerId === ourKey) return;
         try {
+          console.log(`[AxlNetwork] Sending to ${peerId.slice(0, 8)}...`);
           await fetch(`${this.baseUrl}/send`, {
             method: 'POST',
             headers: {
@@ -92,7 +126,7 @@ export class AxlNetwork implements INetworkPort {
             body: payload
           });
         } catch (sendErr) {
-          console.error(`[AxlNetwork] Failed to send to peer ${peerId}:`, sendErr);
+          console.error(`[AxlNetwork] Failed to send to node ${peerId}:`, sendErr);
         }
       }));
     } catch (err) {

@@ -1,7 +1,6 @@
 export type AgentRole = 'planner' | 'worker' | 'keeper'
 
-export type TaskStatus =
-  'idle' | 'claimed' | 'pending' | 'done' | 'failed'
+export type TaskStatus = 'idle' | 'waiting' | 'claimed' | 'done' | 'failed'
 
 export enum EventType {
   TASK_SUBMITTED    = 'TASK_SUBMITTED',
@@ -26,6 +25,8 @@ export interface DAGNode {
   status: TaskStatus
   /** claim eden agent'ın id'si */
   claimedBy: string | null
+  /** subtask bittiğinde oluşan output hash */
+  outputHash?: string
 }
 
 export interface AXLEvent<T = unknown> {
@@ -34,6 +35,8 @@ export interface AXLEvent<T = unknown> {
   /** unix ms */
   timestamp: number
   agentId: string
+  /** P2P public key of the sender for direct replies */
+  senderPubKey?: string
 }
 
 export interface AgentConfig {

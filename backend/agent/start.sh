@@ -9,10 +9,10 @@ fi
 echo "[Start] Starting Agent: $AGENT_ID"
 
 # 2. Create local AXL config
-# If AXL_PEER is set (e.g. tls://axl-seed:9001), add it to config
-PEERS_JSON="[]"
+# Every agent peers with the seed AND the API core
+PEERS_JSON="[\"tcp://axl-seed:7000\", \"tcp://api:7000\"]"
 if [ -n "$AXL_PEER" ]; then
-  PEERS_JSON="[\"$AXL_PEER\"]"
+  PEERS_JSON="[\"$AXL_PEER\", \"tcp://api:7000\"]"
 fi
 
 cat <<EOF > node-config.json

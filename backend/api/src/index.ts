@@ -2,7 +2,7 @@ import 'dotenv/config';
 import createServer from './server';
 import { MockStorage } from '../../agent/src/adapters/mock/MockStorage';
 import { AxlNetwork } from '@swarm/shared-infra';
-import { AgentRunner } from './AgentRunner';
+import { AgentManager } from './AgentRunner';
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -14,12 +14,12 @@ async function start() {
   const network = new AxlNetwork();
   await network.connect();
   
-  const runner = new AgentRunner();
+  const manager = new AgentManager();
 
   const server = await createServer({
     storage,
     network,
-    runner
+    manager
   });
 
   try {

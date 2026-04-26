@@ -35,7 +35,7 @@ export class MockCompute implements IComputePort {
   }
 
   async judge(output: string): Promise<boolean> {
-    // 20% chance of returning false
-    return Math.random() >= 0.2;
+    // Return true to ensure demo completes successfully
+    return true;
   }
 }

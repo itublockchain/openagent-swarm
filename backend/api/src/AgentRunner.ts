@@ -19,19 +19,24 @@ export interface AgentRecord {
   ownerAddress?: string
 }
 
-export class AgentRunner {
+/**
+ * AgentManager handles the lifecycle of Agent containers.
+ * In a P2P architecture, this is the only "centralized" part 
+ * because it needs Docker socket access to spawn nodes.
+ */
+export class AgentManager {
   private agentPool = new Map<string, string>(); // containerId -> stringified AgentRecord
-  private taskStates = new Map<string, string>(); // taskId -> stringified state
 
   constructor() {
-    console.log('[AgentRunner] Initialized with in-memory storage');
+    console.log('[AgentManager] Initialized');
   }
 
   async deploy(config: AgentConfig & { model?: string; systemPrompt?: string }): Promise<string> {
     const env = [
       `AGENT_ID=${config.agentId}`,
       `STAKE_AMOUNT=${config.stakeAmount}`,
-      `AXL_URL=${process.env.AXL_URL ?? 'http://axl:9002'}`,
+      `AXL_PEER=${process.env.AXL_PEER ?? 'tcp://axl-seed:7000'}`,
+      `AXL_URL=http://localhost:9002`,
       `USE_MOCK=false`,
       `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
       `OPENAI_MODEL=${config.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o'}`,
@@ -52,7 +57,7 @@ export class AgentRunner {
     })
 
     await container.start()
-    console.log(`[AgentRunner] deployed container: ${container.id}`)
+    console.log(`[AgentManager] deployed container: ${container.id}`)
 
     const record: AgentRecord = {
       agentId: config.agentId,
@@ -74,15 +79,13 @@ export class AgentRunner {
       await c.stop()
       await c.remove()
     } catch (err) {
-      console.warn(`[AgentRunner] Container ${containerId} stop error (might be already gone):`, err)
+      console.warn(`[AgentManager] Container ${containerId} stop error:`, err)
     }
-
     this.agentPool.delete(containerId)
   }
 
   async list(): Promise<AgentRecord[]> {
     const records = Array.from(this.agentPool.values()).map(v => JSON.parse(v) as AgentRecord)
-
     const running = await docker.listContainers()
     const runningIds = new Set(running.map(c => c.Id))
 
@@ -91,37 +94,6 @@ export class AgentRunner {
       status: runningIds.has(r.containerId) ? 'running' : 'stopped',
     }))
   }
-
-  // --- Task State Persistence ---
-
-  async saveTaskState(taskId: string, state: { nodes: any[], status: string }) {
-    this.taskStates.set(taskId, JSON.stringify(state));
-  }
-
-  async getTaskState(taskId: string) {
-    const data = this.taskStates.get(taskId);
-    return data ? JSON.parse(data) : null;
-  }
-
-  private updateQueue: Promise<void> = Promise.resolve();
-
-  async updateSubtaskState(taskId: string, nodeId: string, update: { status: string, agentId?: string, outputHash?: string }) {
-    this.updateQueue = this.updateQueue.then(async () => {
-      const state = await this.getTaskState(taskId);
-      if (!state) return;
-
-      state.nodes = state.nodes.map((n: any) => {
-        if (n.id === nodeId) {
-          return { ...n, ...update };
-        }
-        return n;
-      });
-
-      await this.saveTaskState(taskId, state);
-    }).catch(err => {
-      console.error('[AgentRunner] Task state update failed:', err);
-    });
-    return this.updateQueue;
-  }
 }
+
 

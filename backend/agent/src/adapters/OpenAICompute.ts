@@ -61,7 +61,7 @@ Return ONLY valid JSON, no explanation, no markdown:
     const nodes: DAGNode[] = parsed.nodes.slice(0, 5).map((n: any, i: number) => ({
       id: n.id,
       subtask: n.subtask,
-      prevHash: i === 0 ? null : `hash-${parsed.nodes[i - 1].id}`,
+      prevHash: i === 0 ? null : `placeholder-${parsed.nodes[i - 1].id}`,
       status: 'idle' as TaskStatus,
       claimedBy: null,
     }))
