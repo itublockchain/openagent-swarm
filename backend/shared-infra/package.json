@@ -6,11 +6,8 @@
   "scripts": {
     "build": "tsc"
   },
-  "dependencies": {
-    "ioredis": "^5.4.1"
-  },
   "devDependencies": {
-    "typescript": "^5.3.3",
-    "@swarm/shared": "workspace:*"
+    "@swarm/shared": "workspace:*",
+    "typescript": "^5.3.3"
   }
 }

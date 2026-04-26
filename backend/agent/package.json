@@ -8,16 +8,16 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@swarm/shared": "workspace:*",
+    "@swarm/shared-infra": "workspace:*",
     "dotenv": "16.5.0",
     "ethers": "6.13.5",
-    "ws": "8.18.0",
-    "@swarm/shared": "workspace:*",
-    "@swarm/shared-infra": "workspace:*"
+    "ws": "8.18.0"
   },
   "devDependencies": {
-    "typescript": "5.8.3",
-    "tsx": "4.19.3",
     "@types/node": "22.10.0",
-    "@types/ws": "8.5.14"
+    "@types/ws": "8.5.14",
+    "tsx": "4.19.3",
+    "typescript": "5.8.3"
   }
 }

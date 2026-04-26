@@ -1,22 +1,23 @@
-import { IStoragePort } from '../../../../../shared/ports';
-import * as crypto from 'crypto';
+import { IStoragePort } from '../../../../../shared/ports'
 
 export class MockStorage implements IStoragePort {
-  private store = new Map<string, unknown>();
+  private static storage = new Map<string, string>();
 
-  constructor(private agentId: string) {}
+  constructor(private agentId: string) {
+    console.log(`[MockStorage] Initialized for ${agentId}`)
+  }
 
   async append(data: unknown): Promise<string> {
-    const hash = crypto.randomUUID();
-    this.store.set(hash, data);
-    return hash;
+    const hash = `hash-${Math.random().toString(36).slice(2, 8)}`
+    MockStorage.storage.set(hash, JSON.stringify(data))
+    console.log(`[MockStorage] ${this.agentId} stored: ${hash}`)
+    return hash
   }
 
   async fetch(hash: string): Promise<unknown> {
-    const data = this.store.get(hash);
-    if (data === undefined) {
-      throw new Error('hash not found');
-    }
-    return data;
+    const raw = MockStorage.storage.get(hash)
+    if (!raw) throw new Error(`hash not found: ${hash}`)
+    return JSON.parse(raw)
   }
 }
+

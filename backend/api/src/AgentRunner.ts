@@ -1,5 +1,4 @@
 import Dockerode from 'dockerode'
-import { createClient, RedisClientType } from 'redis'
 import { AgentConfig } from '@swarm/shared/types'
 
 const docker = process.env.DOCKER_HOST
@@ -21,30 +20,18 @@ export interface AgentRecord {
 }
 
 export class AgentRunner {
-  private redis: RedisClientType;
-  private isConnected = false;
+  private agentPool = new Map<string, string>(); // containerId -> stringified AgentRecord
+  private taskStates = new Map<string, string>(); // taskId -> stringified state
 
   constructor() {
-    this.redis = createClient({ 
-      url: process.env.REDIS_URL ?? 'redis://redis:6379' 
-    });
-    this.redis.on('error', (err) => console.error('[AgentRunner] Redis Error:', err));
-  }
-
-  private async ensureConnected() {
-    if (!this.isConnected) {
-      await this.redis.connect();
-      this.isConnected = true;
-    }
+    console.log('[AgentRunner] Initialized with in-memory storage');
   }
 
   async deploy(config: AgentConfig & { model?: string; systemPrompt?: string }): Promise<string> {
-    await this.ensureConnected();
-
     const env = [
       `AGENT_ID=${config.agentId}`,
       `STAKE_AMOUNT=${config.stakeAmount}`,
-      `REDIS_URL=${process.env.REDIS_URL ?? 'redis://redis:6379'}`,
+      `AXL_URL=${process.env.AXL_URL ?? 'http://axl:9002'}`,
       `USE_MOCK=false`,
       `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
       `OPENAI_MODEL=${config.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o'}`,
@@ -67,7 +54,6 @@ export class AgentRunner {
     await container.start()
     console.log(`[AgentRunner] deployed container: ${container.id}`)
 
-    // Redis'e kaydet
     const record: AgentRecord = {
       agentId: config.agentId,
       containerId: container.id,
@@ -77,14 +63,12 @@ export class AgentRunner {
       status: 'running',
       deployedAt: Date.now(),
     }
-    await this.redis.hSet('agent:pool', container.id, JSON.stringify(record))
+    this.agentPool.set(container.id, JSON.stringify(record))
 
     return container.id
   }
 
   async stop(containerId: string): Promise<void> {
-    await this.ensureConnected();
-
     const c = docker.getContainer(containerId)
     try {
       await c.stop()
@@ -93,18 +77,12 @@ export class AgentRunner {
       console.warn(`[AgentRunner] Container ${containerId} stop error (might be already gone):`, err)
     }
 
-    // Redis'ten de sil
-    await this.redis.hDel('agent:pool', containerId)
+    this.agentPool.delete(containerId)
   }
 
   async list(): Promise<AgentRecord[]> {
-    await this.ensureConnected();
+    const records = Array.from(this.agentPool.values()).map(v => JSON.parse(v) as AgentRecord)
 
-    // Redis'ten al
-    const stored = await this.redis.hGetAll('agent:pool')
-    const records = Object.values(stored).map(v => JSON.parse(v) as AgentRecord)
-
-    // Docker ile status'u güncelle
     const running = await docker.listContainers()
     const runningIds = new Set(running.map(c => c.Id))
 
@@ -113,4 +91,37 @@ export class AgentRunner {
       status: runningIds.has(r.containerId) ? 'running' : 'stopped',
     }))
   }
+
+  // --- Task State Persistence ---
+
+  async saveTaskState(taskId: string, state: { nodes: any[], status: string }) {
+    this.taskStates.set(taskId, JSON.stringify(state));
+  }
+
+  async getTaskState(taskId: string) {
+    const data = this.taskStates.get(taskId);
+    return data ? JSON.parse(data) : null;
+  }
+
+  private updateQueue: Promise<void> = Promise.resolve();
+
+  async updateSubtaskState(taskId: string, nodeId: string, update: { status: string, agentId?: string, outputHash?: string }) {
+    this.updateQueue = this.updateQueue.then(async () => {
+      const state = await this.getTaskState(taskId);
+      if (!state) return;
+
+      state.nodes = state.nodes.map((n: any) => {
+        if (n.id === nodeId) {
+          return { ...n, ...update };
+        }
+        return n;
+      });
+
+      await this.saveTaskState(taskId, state);
+    }).catch(err => {
+      console.error('[AgentRunner] Task state update failed:', err);
+    });
+    return this.updateQueue;
+  }
 }
+

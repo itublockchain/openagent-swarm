@@ -9,7 +9,7 @@ services:
     env_file: .env
     environment:
       - DOCKER_HOST=tcp://docker-proxy:2375
-      - REDIS_URL=redis://redis:6379
+      - AXL_URL=http://axl:9002
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
@@ -19,7 +19,6 @@ services:
       timeout: 5s
       retries: 3
     depends_on:
-      - redis
       - docker-proxy
     networks:
       swarm_default:
@@ -33,33 +32,29 @@ services:
     env_file: .env
     environment:
       - USE_MOCK=${USE_MOCK:-true}
-      - REDIS_URL=redis://redis:6379
+      - AXL_URL=http://axl:9002
     restart: on-failure
     healthcheck:
       disable: true
     depends_on:
       api:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
       swarm_default:
         aliases:
           - agent
 
-  redis:
-    image: redis:7.4-alpine
+  axl:
+    build:
+      context: ./axl
+      dockerfile: containerfiles/Dockerfile
     ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - "9001:9001"
+      - "9002:9002"
     networks:
       swarm_default:
         aliases:
-          - redis
+          - axl
 
   docker-proxy:
     image: tecnativa/docker-socket-proxy:0.3.0

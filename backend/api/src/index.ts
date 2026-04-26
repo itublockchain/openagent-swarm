@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import createServer from './server';
 import { MockStorage } from '../../agent/src/adapters/mock/MockStorage';
-import { RedisNetwork } from '@swarm/shared-infra';
+import { AxlNetwork } from '@swarm/shared-infra';
 import { AgentRunner } from './AgentRunner';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -11,7 +11,7 @@ async function start() {
   
   // Choose implementation based on ENV
   const storage = new MockStorage(agentId);
-  const network = new RedisNetwork();
+  const network = new AxlNetwork();
   await network.connect();
   
   const runner = new AgentRunner();

@@ -2,7 +2,7 @@ import { OpenAICompute } from './OpenAICompute'
 import { MockCompute } from './mock/MockCompute'
 import { MockStorage } from './mock/MockStorage'
 import { MockChain } from './mock/MockChain'
-import { RedisNetwork } from '@swarm/shared-infra'
+import { AxlNetwork } from '@swarm/shared-infra'
 
 export async function createAdapters(agentId: string) {
   const useMock = process.env.USE_MOCK === 'true'
@@ -11,7 +11,7 @@ export async function createAdapters(agentId: string) {
     ? new MockCompute(agentId)
     : new OpenAICompute()
 
-  const network = new RedisNetwork()
+  const network = new AxlNetwork()
   await network.connect()
 
   return {

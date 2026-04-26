@@ -1,31 +1,40 @@
 import { IChainPort } from '../../../../../shared/ports';
 
 export class MockChain implements IChainPort {
-  private stakes = new Map<string, string>();
-  private plannerClaims = new Map<string, string>(); // taskId -> agentId
-  private subtaskClaims = new Map<string, string>(); // nodeId -> agentId
+  private static stakes = new Map<string, string>();
+  private static plannerClaims = new Map<string, string>();
+  private static subtaskClaims = new Map<string, string>();
+  private static completedTasks = new Map<string, string>();
 
-  constructor(private agentId: string) {}
+  constructor(private agentId: string) {
+    console.log(`[MockChain] Initialized for ${agentId}`);
+  }
 
   async stake(taskId: string, amount: string): Promise<string> {
-    this.stakes.set(taskId, amount);
+    MockChain.stakes.set(taskId, amount);
     return `fake-tx-hash-${Math.random().toString(36).substring(7)}`;
   }
 
   async claimPlanner(taskId: string): Promise<boolean> {
-    if (!this.plannerClaims.has(taskId)) {
-      this.plannerClaims.set(taskId, this.agentId);
-      return true;
-    }
-    return false;
+    if (MockChain.plannerClaims.has(taskId)) return false;
+    MockChain.plannerClaims.set(taskId, this.agentId);
+    return true;
   }
 
   async claimSubtask(nodeId: string): Promise<boolean> {
-    if (!this.subtaskClaims.has(nodeId)) {
-      this.subtaskClaims.set(nodeId, this.agentId);
-      return true;
-    }
-    return false;
+    if (MockChain.subtaskClaims.has(nodeId)) return false;
+    MockChain.subtaskClaims.set(nodeId, this.agentId);
+    return true;
+  }
+
+  async isSubtaskClaimed(nodeId: string): Promise<boolean> {
+    return MockChain.subtaskClaims.has(nodeId);
+  }
+
+  async completeTask(taskId: string): Promise<boolean> {
+    if (MockChain.completedTasks.has(taskId)) return false;
+    MockChain.completedTasks.set(taskId, this.agentId);
+    return true;
   }
 
   async challenge(nodeId: string): Promise<void> {
@@ -37,7 +46,8 @@ export class MockChain implements IChainPort {
   }
 
   async resetSubtask(nodeId: string): Promise<void> {
-    this.subtaskClaims.delete(nodeId);
+    MockChain.subtaskClaims.delete(nodeId);
     console.log(`[MockChain] subtask reset: ${nodeId}`);
   }
 }
+
