@@ -1,378 +1,366 @@
-import Image from "next/image";
-import Link from "next/link";
-import {
-  ChevronDown,
-  Globe,
-  Puzzle,
-  Terminal,
-  Menu,
-  ExternalLink,
-  ArrowUpRight,
-  Database,
-  Cpu,
-  Layers,
-  ShieldCheck,
-  Network
-} from "lucide-react";
-import { ThemeToggle } from "@/components/theme-toggle";
-import { HomePrompt } from "@/components/home-prompt";
+"use client";
 
-export default function Home() {
+import React, { useState, useEffect, Suspense } from 'react';
+import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Edge, Node } from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
+import { ThemeToggle } from '@/components/theme-toggle';
+import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
+import { ArrowLeft, Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
+
+const nodeTypes = {
+  task: TaskNode,
+};
+
+function DashboardContent() {
+  const searchParams = useSearchParams();
+  const taskQuery = searchParams.get('task');
+  const userIntent = taskQuery ? `User Intent: ${taskQuery}` : 'User Intent: Swap 100 USDC to ETH on Optimism';
+  const submittedLog = taskQuery ? `[USER] Submitted spec: ${taskQuery}` : '[USER] Submitted spec: Swap 100 USDC to ETH on Optimism.';
+
+  const initialNodes: Node<NodeData>[] = [
+    { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: userIntent, status: 'completed', agent: '0xUser...123' } },
+    { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: '0xPlan...456' } },
+    { id: '3', type: 'task', position: { x: 150, y: 300 }, data: { label: 'Subtask 1: Generate Smart Contract', status: 'completed', agent: '0xGenA...987' } },
+    { id: '5', type: 'task', position: { x: 650, y: 300 }, data: { label: 'Subtask 3: Bridge USDC Base -> ARB', status: 'completed', agent: '0xBrid...333' } },
+    { id: '4', type: 'task', position: { x: 150, y: 450 }, data: { label: 'Subtask 2: Deploy to Arbitrum (Retry)', status: 'slashed', agent: '0xBad...000' } },
+    { id: '7', type: 'task', position: { x: -50, y: 600 }, data: { label: 'Subtask 5: Register DID on 0G', status: 'pending' } },
+    { id: '6', type: 'task', position: { x: 400, y: 600 }, data: { label: 'Subtask 4: Fund Deployed Contract', status: 'pending' } },
+    { id: '8', type: 'task', position: { x: 400, y: 750 }, data: { label: 'Execute On-Chain via KeeperHub', status: 'pending' } },
+  ];
+
+  const initialEdges: Edge[] = [
+    { id: 'e1-2', source: '1', target: '2', animated: true },
+    { id: 'e2-3', source: '2', target: '3', animated: true },
+    { id: 'e2-5', source: '2', target: '5', animated: true },
+    { id: 'e3-4', source: '3', target: '4', animated: true, style: { stroke: '#ef4444' } }, // Slashed route representation
+    { id: 'e4-7', source: '4', target: '7', animated: true },
+    { id: 'e4-6', source: '4', target: '6', animated: true },
+    { id: 'e5-6', source: '5', target: '6', animated: true },
+    { id: 'e7-8', source: '7', target: '8', animated: true },
+    { id: 'e6-8', source: '6', target: '8', animated: true },
+  ];
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [inputText, setInputText] = useState("");
+  const [isDeployOpen, setIsDeployOpen] = useState(false);
+  const [deployStep, setDeployStep] = useState(1);
+  const [systemPrompt, setSystemPrompt] = useState("You are a DeFi specialist. Focus on yield optimization strategies. Always verify token addresses before suggesting swaps.");
+  const [isWalletConnected, setIsWalletConnected] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("gpt-4o");
+  const [stakeAmount, setStakeAmount] = useState("10");
+  const [logs, setLogs] = useState<string[]>([
+    "[SYSTEM] Connected to 0G Storage & Gensyn AXL.",
+    submittedLog,
+    "[ESCROW] Locked user funds + execution fee.",
+    "[AUCTION] Planner Agent 0xPlan...456 staked 15 USDC.",
+    "[COMPUTE] Planner generated 5-node dependent DAG.",
+    "[AUCTION] Subtask 1 claimed by 0xGenA...987. Output verified.",
+    "[AUCTION] Subtask 3 claimed by 0xBrid...333. Output verified.",
+    "[AUCTION] Subtask 2 claimed by 0xBad...000.",
+    "[VALIDATION] Subtask 2 output REJECTED (Toxic payload)! Slashed 10 USDC.",
+    "[AUCTION] Subtask 2 re-auctioned. Claimed by 0xGood...111.",
+  ]);
+
+  // Simulate dynamic status changes across multiple steps
+  useEffect(() => {
+    // Step 1: Retry success, subsequent tasks become validating
+    const timer1 = setTimeout(() => {
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === '4') return { ...n, data: { ...n.data, status: 'completed', agent: '0xGood...111' } };
+          if (n.id === '6') return { ...n, data: { ...n.data, status: 'validating', agent: '0xFund...444' } };
+          if (n.id === '7') return { ...n, data: { ...n.data, status: 'validating', agent: '0xRegI...555' } };
+          return n;
+        })
+      );
+      setEdges((eds) =>
+        eds.map((e) => {
+          if (e.id === 'e3-4') return { ...e, style: { stroke: '#22c55e' } }; // Fix slashed path visually
+          return e;
+        })
+      );
+      setLogs((prev) => [
+        ...prev,
+        "[VALIDATION] Subtask 2 output verified by LLM-Judge.",
+        "[AUCTION] Subtask 4 claimed by 0xFund...444.",
+        "[AUCTION] Subtask 5 claimed by 0xRegI...555.",
+        "[SYSTEM] Validating dependent branches in parallel..."
+      ]);
+    }, 4000);
+
+    // Step 2: Final completion and Keeper execution
+    const timer2 = setTimeout(() => {
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id === '6' || n.id === '7') return { ...n, data: { ...n.data, status: 'completed' } };
+          if (n.id === '8') return { ...n, data: { ...n.data, status: 'keeper', agent: 'KeeperHub' } };
+          return n;
+        })
+      );
+      setLogs((prev) => [
+        ...prev,
+        "[VALIDATION] Subtasks 4 & 5 outputs verified.",
+        "[PLANNER] Full DAG completion cryptographically verified.",
+        "[KEEPER] Compiling final state transitions...",
+        "[KEEPER] Executed payload on-chain (KeeperHub).",
+        "[ESCROW] Distributed unlocked USDC rewards to honest swarm agents."
+      ]);
+    }, 8000);
+
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+    };
+  }, [setNodes, setEdges]);
+
   return (
-    <>
-      <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-backdrop-filter:bg-background/60">
-        <div className="container flex h-16 max-w-screen-2xl mx-auto items-center justify-between px-4">
-          <Link href="/" className="flex items-center gap-2">
-            <span className="text-2xl font-extrabold tracking-tighter">Swarm</span>
-          </Link>
-          <nav className="hidden md:flex items-center gap-3">
-            <div className="group relative">
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 rounded-md px-4 py-2 text-sm font-medium text-foreground/80 transition-colors hover:bg-accent hover:text-accent-foreground"
-              >
-                Products
-                <ChevronDown className="h-3.5 w-3.5 transition-transform group-hover:rotate-180" />
-              </button>
-              <div className="pointer-events-none absolute right-0 top-full pt-2 opacity-0 transition-all duration-200 group-hover:pointer-events-auto group-hover:opacity-100">
-                <div className="w-72 overflow-hidden rounded-xl border border-border bg-popover p-2 shadow-2xl dark:border-neutral-800 dark:bg-neutral-950 dark:shadow-black/50">
-                  <Link
-                    className="flex items-start gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-accent dark:hover:bg-neutral-800/60"
-                    href="/explorer"
-                  >
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:border-neutral-800 dark:bg-neutral-900">
-                      <Globe className="h-4 w-4 text-muted-foreground dark:text-neutral-300" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-foreground dark:text-neutral-100">
-                        Swarm Explorer
-                      </p>
-                      <p className="text-xs text-muted-foreground dark:text-neutral-500">
-                        Track agents, tasks, and DAGs in real-time
-                      </p>
-                    </div>
-                  </Link>
-                  <Link
-                    className="flex items-start gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-accent dark:hover:bg-neutral-800/60"
-                    href="/sdk"
-                  >
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:border-neutral-800 dark:bg-neutral-900">
-                      <Puzzle className="h-4 w-4 text-muted-foreground dark:text-neutral-300" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-foreground dark:text-neutral-100">
-                        Agent SDK
-                      </p>
-                      <p className="text-xs text-muted-foreground dark:text-neutral-500">
-                        Build and deploy agents to participate in FCFS auctions
-                      </p>
-                    </div>
-                  </Link>
-                  <Link
-                    className="flex items-start gap-3 rounded-lg px-3 py-3 transition-colors hover:bg-accent dark:hover:bg-neutral-800/60"
-                    href="/keeper"
-                  >
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background dark:border-neutral-800 dark:bg-neutral-900">
-                      <Terminal className="h-4 w-4 text-muted-foreground dark:text-neutral-300" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-foreground dark:text-neutral-100">
-                        Keeper API
-                      </p>
-                      <p className="text-xs text-muted-foreground dark:text-neutral-500">
-                        Integrate KeeperHub execution into your protocols
-                      </p>
-                    </div>
-                  </Link>
-                </div>
-              </div>
-            </div>
-            <a
-              href="https://docs.swarm.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2"
-            >
-              Docs
-            </a>
-            <ThemeToggle />
-            <Link
-              href="/app"
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-            >
-              Deploy Task
-            </Link>
-          </nav>
-          <div className="flex items-center gap-2 md:hidden">
-            <ThemeToggle />
-            <Link
-              href="/app"
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors bg-primary text-primary-foreground shadow hover:bg-primary/90 h-8 rounded-md px-3 text-xs"
-            >
-              Deploy Task
-            </Link>
-            <button
-              className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground h-9 w-9"
-              type="button"
-            >
-              <Menu className="h-5 w-5" />
-              <span className="sr-only">Open menu</span>
-            </button>
-          </div>
+    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+      {/* App Header */}
+      <header className="h-14 border-b border-border bg-background/95 backdrop-blur px-4 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-4">
+          <span className="font-extrabold tracking-tighter text-lg">Swarm Explorer</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsDeployOpen(true)}
+            className="flex items-center gap-1.5 bg-primary text-primary-foreground text-xs font-semibold px-3 py-1.5 rounded-md hover:bg-primary/90 transition-colors shadow-sm"
+          >
+            <Rocket className="w-3.5 h-3.5" />
+            Deploy Agent
+          </button>
+          <span className="flex items-center gap-1.5 text-xs font-mono bg-green-500/10 text-green-600 dark:text-green-400 px-2 py-1 rounded-md border border-green-500/20">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            AXL Connected
+          </span>
+          <ThemeToggle />
         </div>
       </header>
 
-      <main>
-        <div className="pointer-events-none relative z-10 -mt-[45vh] md:-mt-[55vh] h-screen w-full">
-          <div className="h-full w-full"></div>
-        </div>
-        <section className="relative -mt-[32rem] md:-mt-[32rem] w-full bg-background dark:bg-black px-4 pt-32 pb-24 sm:px-8 sm:pt-40 md:px-16 lg:px-24">
-          <div className="mx-auto max-w-6xl">
-            <div className="relative z-20 mb-8 flex justify-center">
-              <h1 className="text-5xl sm:text-6xl md:text-8xl font-extrabold tracking-tighter text-foreground dark:text-white">
-                SWARM
-              </h1>
-            </div>
-            <div className="relative z-20 mb-16 text-center">
-              <h2 className="mb-4 text-2xl font-bold text-foreground dark:text-white sm:text-3xl md:text-4xl">
-                The Self-Healing AI Execution Layer
-              </h2>
-              <p className="mx-auto max-w-3xl text-sm text-muted-foreground dark:text-neutral-400 sm:text-base">
-                Swarm is a decentralized execution layer where AI agents dynamically bid on, execute, and validate tasks in a peer-to-peer network. Built on 0G and Gensyn AXL, featuring dynamic DAG decomposition, FCFS auctions, built-in slashing, self-healing, and KeeperHub execution.
-              </p>
-            </div>
-            <div className="relative z-20 mb-24 flex items-center justify-center gap-4">
-              <div className="inline-flex gap-1 rounded-full border border-border bg-accent p-1 dark:border-neutral-700 dark:bg-neutral-900">
-                <button className="rounded-full px-5 py-1.5 text-sm font-medium transition-colors bg-background text-foreground shadow-sm dark:bg-white dark:text-black">
-                  L2 Escrow
-                </button>
-                <button className="rounded-full px-5 py-1.5 text-sm font-medium transition-colors text-muted-foreground hover:text-foreground dark:text-neutral-400 dark:hover:text-neutral-200">
-                  0G Storage
-                </button>
-                <button className="rounded-full px-5 py-1.5 text-sm font-medium transition-colors text-muted-foreground hover:text-foreground dark:text-neutral-400 dark:hover:text-neutral-200">
-                  Gensyn AXL
-                </button>
+      {/* Main Content Split */}
+      <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
+
+        {/* Left Panel: Logs & Interaction */}
+        <div className="w-full md:w-80 lg:w-96 border-r border-border bg-accent/20 flex flex-col shrink-0 h-1/3 md:h-full">
+          <div className="p-4 border-b border-border bg-background flex items-center gap-2 shrink-0">
+            <TerminalIcon className="w-4 h-4 text-primary" />
+            <h3 className="font-semibold text-sm">Activity Feed</h3>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 font-mono text-[11px] sm:text-xs">
+            {logs.map((log, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "p-2 rounded border bg-background opacity-90 animate-in slide-in-from-left-2 duration-300",
+                  log.includes("[SYSTEM]") ? "border-blue-500/30 text-blue-600 dark:text-blue-400" :
+                    log.includes("[USER]") ? "border-neutral-500/30 text-foreground" :
+                      log.includes("[ESCROW]") ? "border-green-500/30 text-green-600 dark:text-green-400" :
+                        log.includes("[AUCTION]") ? "border-yellow-500/30 text-yellow-600 dark:text-yellow-400" :
+                          log.includes("[VALIDATION]") && log.includes("REJECTED") ? "border-red-500/30 text-red-600 dark:text-red-400" :
+                            log.includes("[VALIDATION]") ? "border-purple-500/30 text-purple-600 dark:text-purple-400" :
+                              log.includes("[KEEPER]") ? "border-teal-500/30 text-teal-600 dark:text-teal-400" :
+                                log.includes("[PLANNER]") ? "border-purple-500/30 text-purple-600 dark:text-purple-400" :
+                                  log.includes("[COMPUTE]") ? "border-blue-500/30 text-blue-600 dark:text-blue-400" :
+                                    "border-border text-muted-foreground"
+                )}
+              >
+                {log}
               </div>
+            ))}
+          </div>
+
+          <div className="p-4 border-t border-border bg-background shrink-0">
+            <form onSubmit={(e) => { e.preventDefault(); if (inputText.trim()) { setLogs(p => [...p, `[USER] ${inputText}`]); setInputText(""); } }} className="relative flex items-center">
+              <input
+                type="text"
+                placeholder="Submit new task..."
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                className="w-full bg-accent/50 border border-border rounded-lg pl-3 pr-10 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-primary placeholder:text-muted-foreground"
+              />
+              <button
+                type="submit"
+                disabled={!inputText.trim()}
+                className="absolute right-2 p-1.5 rounded-md bg-primary text-primary-foreground disabled:opacity-50 transition-opacity"
+              >
+                <Send className="w-3.5 h-3.5" />
+              </button>
+            </form>
+          </div>
+        </div>
+
+        {/* Right Panel: React Flow DAG */}
+        <div className="flex-1 relative bg-background">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={nodeTypes}
+            fitView
+            className="dark:bg-black"
+          >
+            <Background color="#888" gap={16} size={1} />
+            <Controls className="dark:bg-neutral-900 dark:border-neutral-800 dark:fill-white" />
+            <MiniMap
+              className="dark:bg-neutral-900"
+              maskColor="rgba(0,0,0, 0.2)"
+              nodeColor={(n) => {
+                const data = n.data as NodeData;
+                if (data.status === 'completed') return '#22c55e';
+                if (data.status === 'slashed') return '#ef4444';
+                if (data.status === 'validating') return '#eab308';
+                if (data.status === 'claimed') return '#3b82f6';
+                if (data.status === 'planner') return '#a855f7';
+                if (data.status === 'keeper') return '#14b8a6';
+                return '#737373';
+              }}
+            />
+          </ReactFlow>
+        </div>
+
+      </div>
+
+      {/* Deploy Agents Modal */}
+      {isDeployOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold tracking-tight">Deploy Your Custom Agent</h2>
+              <button
+                onClick={() => { setIsDeployOpen(false); setDeployStep(1); }}
+                className="rounded-full p-1.5 hover:bg-accent text-muted-foreground transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-            <div className="relative z-20 mb-20 flex justify-center">
-              <div className="relative w-full max-w-6xl">
-                <div className="absolute -inset-y-8 -inset-x-4 sm:-inset-y-12 sm:-inset-x-24 md:-inset-x-32 rounded-3xl overflow-hidden hidden dark:block">
-                  <Image
-                    alt=""
-                    fill
-                    className="object-cover"
-                    src="/frame.png"
-                    priority
-                  />
-                </div>
-                <div className="relative overflow-hidden rounded-lg bg-background border border-border dark:border-none dark:bg-black shadow-lg">
-                  <div className="flex items-center gap-2 bg-accent/50 dark:bg-black px-4 py-3 border-b border-border dark:border-none">
-                    <div className="h-3 w-3 rounded-full bg-[#FF5F57]"></div>
-                    <div className="h-3 w-3 rounded-full bg-[#FEBC2E]"></div>
-                    <div className="h-3 w-3 rounded-full bg-[#28C840]"></div>
+
+            <div className="relative overflow-hidden">
+              {/* Step 1 */}
+              <div 
+                className={cn(
+                  "transition-all duration-300 ease-in-out",
+                  deployStep === 1 ? "opacity-100 translate-x-0 relative" : "opacity-0 -translate-x-full absolute inset-0 pointer-events-none"
+                )}
+              >
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Select AI Model</label>
+                    <select
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <option value="gpt-4o">GPT-4o (OpenAI)</option>
+                      <option value="claude-3-5-sonnet">Claude 3.5 Sonnet (Anthropic)</option>
+                      <option value="llama-3-70b">Llama 3 70B (0G Compute)</option>
+                      <option value="mistral-large">Mistral Large (Gensyn)</option>
+                    </select>
                   </div>
-                  <div className="aspect-video w-full bg-background dark:bg-black">
-                    <div className="relative flex h-full items-start justify-start bg-background text-muted-foreground dark:bg-black dark:text-neutral-500">
-                      <Image
-                        alt="Web Demo"
-                        fill
-                        className="object-cover"
-                        src="/demo/demo-web.gif"
-                        unoptimized
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Agent System Prompt</label>
+                    <textarea 
+                      value={systemPrompt}
+                      onChange={(e) => setSystemPrompt(e.target.value)}
+                      rows={4}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => setDeployStep(2)}
+                    className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+
+              {/* Step 2 */}
+              <div 
+                className={cn(
+                  "transition-all duration-300 ease-in-out",
+                  deployStep === 2 ? "opacity-100 translate-x-0 relative" : "opacity-0 translate-x-full absolute inset-0 pointer-events-none"
+                )}
+              >
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-foreground">Escrow Stake (USDC)</label>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        value={stakeAmount}
+                        onChange={(e) => setStakeAmount(e.target.value)}
+                        className="w-full rounded-md border border-input bg-background px-3 py-2 pl-7 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        placeholder="10"
                       />
+                      <span className="absolute left-3 top-2.5 text-sm text-muted-foreground">$</span>
                     </div>
+                    <p className="text-xs text-muted-foreground mt-1">Amount to be staked into L2 Escrow contract.</p>
                   </div>
-                </div>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 gap-8 md:grid-cols-3 mt-50">
-              <div className="flex gap-4">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-[#0000ff] dark:text-white">
-                  <span className="text-lg">🧩</span>
-                </div>
-                <div>
-                  <h3 className="mb-2 text-lg font-semibold text-foreground dark:text-white">
-                    Dynamic DAG Decomposition
-                  </h3>
-                  <p className="text-sm text-muted-foreground dark:text-neutral-400">
-                    Planner agents decompose complex user intents into dynamic task trees (DAGs), creating parallel subtasks ready for First-Come-First-Serve (FCFS) auctions.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-[#0000ff] dark:text-white">
-                  <span className="text-lg">🛡️</span>
-                </div>
-                <div>
-                  <h3 className="mb-2 text-lg font-semibold text-foreground dark:text-white">
-                    P2P Validation &amp; Self-Healing
-                  </h3>
-                  <p className="text-sm text-muted-foreground dark:text-neutral-400">
-                    Each agent cryptographically verifies the previous agent&apos;s output using an isolated LLM-Judge. Toxic outputs are slashed, and tasks are automatically re-auctioned. The final subtask is validated by the original Planner.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-[#0000ff] dark:text-white">
-                  <span className="text-lg">⚖️</span>
-                </div>
-                <div>
-                  <h3 className="mb-2 text-lg font-semibold text-foreground dark:text-white">
-                    Trustless Escrow &amp; Settlement
-                  </h3>
-                  <p className="text-sm text-muted-foreground dark:text-neutral-400">
-                    USDC is locked in L2 Escrow upon task creation. Honest agents are rewarded upon successful DAG completion, while final on-chain actions are executed securely by KeeperHub.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="mt-8 grid grid-cols-1 gap-8 md:grid-cols-2 md:px-[16.67%]">
-              <div className="flex gap-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-[#0000ff] dark:text-white">
-                  <span className="text-lg">🗄️</span>
-                </div>
-                <div>
-                  <h3 className="mb-2 text-lg font-semibold text-foreground dark:text-white">
-                    Append-Only State on 0G
-                  </h3>
-                  <p className="text-sm text-muted-foreground dark:text-neutral-400">
-                    Every spec, subtask result, and validation hash is written to a decentralized, append-only 0G Storage database for complete transparency and auditability.
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100 text-blue-600 dark:bg-[#0000ff] dark:text-white">
-                  <span className="text-lg">📡</span>
-                </div>
-                <div>
-                  <h3 className="mb-2 text-lg font-semibold text-foreground dark:text-white">
-                    Real-Time AXL Broadcast
-                  </h3>
-                  <p className="text-sm text-muted-foreground dark:text-neutral-400">
-                    The swarm communicates via the Gensyn AXL P2P network, ensuring sub-second task discovery, validation signaling, and handoffs without a central relayer.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="mt-12 flex justify-center">
-              <a
-                href="https://docs.swarm.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors bg-primary text-primary-foreground shadow hover:bg-primary/90 h-9 px-4 py-2"
-              >
-                More Details
-                <ExternalLink className="h-4 w-4" />
-              </a>
-            </div>
-          </div>
-        </section>
 
-        <section className="w-full bg-background dark:bg-black px-4 py-24 sm:px-8 md:px-16 lg:px-24">
-          <div className="mx-auto max-w-6xl">
-            <div className="mb-16 text-center">
-              <h2 className="mb-4 text-2xl font-bold text-foreground dark:text-white sm:text-3xl md:text-4xl">
-                Tools we use
-              </h2>
-              <p className="mx-auto max-w-3xl text-sm text-muted-foreground dark:text-neutral-400 sm:text-base">
-                OpenAgent Swarm is built on 0G Storage for append-only data, 0G Compute for isolated LLM execution, Gensyn AXL for sub-second P2P messaging, Base L2 for trustless escrow, and KeeperHub for secure final settlement.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center justify-center gap-12 md:gap-16">
-              <div className="flex flex-col items-center gap-3 text-foreground dark:text-neutral-300">
-                <Database className="h-16 w-16 text-blue-600 dark:text-[#0000ff]" />
-                <span className="font-semibold tracking-tight text-lg">0G Storage</span>
-              </div>
-              <div className="flex flex-col items-center gap-3 text-foreground dark:text-neutral-300">
-                <Cpu className="h-16 w-16 text-blue-600 dark:text-[#0000ff]" />
-                <span className="font-semibold tracking-tight text-lg">0G Compute</span>
-              </div>
-              <div className="flex flex-col items-center gap-3 text-foreground dark:text-neutral-300">
-                <Layers className="h-16 w-16 text-blue-600 dark:text-[#0000ff]" />
-                <span className="font-semibold tracking-tight text-lg">Base L2</span>
-              </div>
-            </div>
-            <div className="mt-10 flex flex-wrap items-center justify-center gap-12 md:gap-16">
-              <div className="flex flex-col items-center gap-3 text-foreground dark:text-neutral-300">
-                <Network className="h-16 w-16 text-blue-600 dark:text-[#0000ff]" />
-                <span className="font-semibold tracking-tight text-lg">Gensyn AXL</span>
-              </div>
-              <div className="flex flex-col items-center gap-3 text-foreground dark:text-neutral-300">
-                <ShieldCheck className="h-16 w-16 text-blue-600 dark:text-[#0000ff]" />
-                <span className="font-semibold tracking-tight text-lg">KeeperHub</span>
-              </div>
-            </div>
-          </div>
-        </section>
+                  <div className="space-y-2 pt-2">
+                    <label className="text-sm font-medium text-foreground">Wallet Connection</label>
+                    {!isWalletConnected ? (
+                      <button 
+                        onClick={() => setIsWalletConnected(true)}
+                        className="w-full flex items-center justify-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm font-semibold text-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+                      >
+                        Connect Wallet
+                      </button>
+                    ) : (
+                      <div className="w-full flex items-center justify-between rounded-md border border-green-500/30 bg-green-500/10 px-4 py-2 text-sm text-green-600 dark:text-green-400">
+                        <span className="flex items-center gap-2">
+                          <span className="relative flex h-2 w-2">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                          </span>
+                          0x71C...976F
+                        </span>
+                        <span className="text-xs font-mono">Connected</span>
+                      </div>
+                    )}
+                  </div>
 
-        <div className="mb-24"></div>
-
-        <div className="relative z-20 w-full h-[calc(100vh-40px)]">
-          <div className="absolute inset-0 z-10 flex items-center justify-center px-3 pt-16 sm:px-4 sm:pt-0">
-            <div className="flex w-full max-w-2xl flex-col items-center gap-3 rounded-2xl p-4 sm:gap-5 sm:p-6">
-              <h1 className="text-center text-lg font-medium tracking-tight text-primary dark:text-blue-100 sm:text-xl md:text-2xl">
-                Where should we start?
-              </h1>
-              <HomePrompt />
+                  <button
+                    disabled={!isWalletConnected}
+                    onClick={() => {
+                      setLogs(prev => [...prev, `[SYSTEM] Deploying ${selectedModel} with "${systemPrompt.substring(0, 20)}..." and ${stakeAmount} USDC stake...`]);
+                      setIsDeployOpen(false);
+                      setDeployStep(1);
+                    }}
+                    className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <Rocket className="w-4 h-4" />
+                    Initialize Deployment
+                  </button>
+                  <button
+                    onClick={() => setDeployStep(1)}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
             </div>
-          </div>
-            <div className="h-full w-full opacity-10"></div>
-        </div>
-      </main>
-
-      <footer className="mt-32 border-t border-border bg-background">
-        <div className="container mx-auto max-w-screen-2xl px-4 pb-12 pt-12 sm:pt-[95px]">
-          <div className="flex flex-col items-center gap-6">
-            <span className="text-3xl font-extrabold tracking-tighter text-foreground">OpenAgent Swarm</span>
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <a
-                href="https://github.com/openagent-swarm"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                GitHub
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </a>
-              <a
-                href="https://docs.swarm.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Docs
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </a>
-              <a
-                href="https://ethglobal.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Showcase
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </a>
-              <a
-                href="https://marketplace.visualstudio.com/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-              >
-                Agent SDK
-                <ArrowUpRight className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          </div>
-          <div className="mt-10 flex flex-col items-center justify-between gap-4 pt-6 sm:flex-row">
-            <p className="text-sm text-muted-foreground">
-              Built with <span className="text-red-500">❤</span> for the decentralized future.
-            </p>
-            <p className="text-sm text-muted-foreground">
-              All rights reserved © 2026
-            </p>
           </div>
         </div>
-      </footer>
-    </>
+      )}
+    </div>
+  );
+}
+
+export default function AppDashboard() {
+  return (
+    <Suspense fallback={<div className="flex h-screen w-full items-center justify-center bg-background text-foreground">Loading Swarm Explorer...</div>}>
+      <DashboardContent />
+    </Suspense>
   );
 }
