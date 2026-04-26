@@ -12,6 +12,7 @@ export interface AgentDeps {
 export class SwarmAgent {
   // taskId → { nodes, taskId }
   private tasks = new Map<string, { nodes: DAGNode[], taskId: string }>()
+  private currentTaskId: string | null = null
 
   constructor(private deps: AgentDeps) {}
 
@@ -66,6 +67,13 @@ export class SwarmAgent {
     this.deps.network.on(EventType.DAG_COMPLETED, (event) => {
       const { taskId, agentId } = event.payload as any
       this.deps.chain.syncTaskCompletion(taskId, agentId)
+      
+      // task bitti, boşa çık
+      if (this.currentTaskId === taskId) {
+        console.log(`[Agent ${this.deps.config.agentId}] Task ${taskId} completed. Available for new tasks.`)
+        this.currentTaskId = null
+        this.tasks.delete(taskId)
+      }
     })
 
     console.log(`[Agent ${this.deps.config.agentId}] started and listening for ALL events`)
@@ -74,10 +82,17 @@ export class SwarmAgent {
   private async onTaskSubmitted(event: AXLEvent<any>): Promise<void> {
     try {
       const taskId = event.payload.taskId
+      
+      if (this.currentTaskId && this.currentTaskId !== taskId) {
+        console.log(`[Agent ${this.deps.config.agentId}] busy with ${this.currentTaskId}, ignoring ${taskId}`)
+        return
+      }
+
       // Sadece planner olmak için yarış, worker dinleyicisi zaten aktif
       const claimed = await this.deps.chain.claimPlanner(taskId)
 
       if (claimed) {
+        this.currentTaskId = taskId
         await this.runAsPlanner(event)
       } else {
         console.log(`[Agent ${this.deps.config.agentId}] lost planner race, acting as worker`)
@@ -119,7 +134,14 @@ export class SwarmAgent {
   private async onDAGReady(event: AXLEvent<any>): Promise<void> {
     try {
       const { nodes, taskId } = event.payload
-      // cache'e al
+
+      if (this.currentTaskId && this.currentTaskId !== taskId) {
+        // console.log(`[Agent ${this.deps.config.agentId}] worker: busy with ${this.currentTaskId}, ignoring DAG for ${taskId}`)
+        return
+      }
+
+      // cache'e al ve sahiplen
+      this.currentTaskId = taskId
       this.tasks.set(taskId, { nodes, taskId })
       console.log(`[Agent ${this.deps.config.agentId}] DAG cached, trying first node`)
       // sadece ilk node'u claim etmeye çalış
