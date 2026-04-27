@@ -210,14 +210,33 @@ export class SwarmAgent {
       let prevOutput: unknown = null
       if (node.prevHash) {
         prevOutput = await this.deps.storage.fetch(node.prevHash)
+        
+        // LLM-Judge step
+        const isValid = await this.deps.compute.judge(prevOutput as string)
+        if (!isValid) {
+          console.log(`[Agent ${this.deps.config.agentId}] LLM-Judge rejected output. Challenging previous node.`)
+          
+          // Find the previous node id to challenge
+          const task = this.tasks.get(taskId)
+          if (task) {
+            const currentIndex = task.nodes.findIndex(n => n.id === node.id)
+            if (currentIndex > 0) {
+              const prevNode = task.nodes[currentIndex - 1]
+              await this.challengeNode(prevNode, taskId)
+            }
+          }
+          return // Stop execution of current subtask
+        }
       }
 
       const output = await this.deps.compute.complete(node.subtask, prevOutput as string | null)
       const outputHash = await this.deps.storage.append(output)
       node.status = 'done'
 
+      console.log(`[Agent ${agentId}] subtask result (${node.id}):`, output.substring(0, 200))
+
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_DONE, {
-        nodeId: node.id, outputHash, agentId, taskId
+        nodeId: node.id, outputHash, result: output, agentId, taskId
       }))
 
       // BEN tamamladım — BEN bir sonrakini claim ederim

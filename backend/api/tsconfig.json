@@ -8,6 +8,7 @@
     "outDir": "./dist",
     "strict": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "paths": {

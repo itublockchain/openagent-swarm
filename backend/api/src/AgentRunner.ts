@@ -38,8 +38,10 @@ export class AgentManager {
       `AXL_PEER=${process.env.AXL_PEER ?? 'tcp://axl-seed:7000'}`,
       `AXL_URL=http://localhost:9002`,
       `USE_MOCK=false`,
-      `OPENAI_API_KEY=${process.env.OPENAI_API_KEY ?? ''}`,
-      `OPENAI_MODEL=${config.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o'}`,
+      `COMPUTE_PROVIDER=0g`,
+      `ZG_COMPUTE_RPC_URL=${process.env.ZG_COMPUTE_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'}`,
+      `ZG_COMPUTE_MODEL=${config.model ?? process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct'}`,
+      `AGENT_PRIVATE_KEY=${process.env.AGENT_PRIVATE_KEY ?? ''}`,
     ]
 
     if (config.systemPrompt) {

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const TaskSchema = z.object({
   spec: z.string().min(1),
-  budget: z.string()
+  budget: z.string().optional()
 });
 
 export const AgentDeploySchema = z.object({

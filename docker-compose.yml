@@ -28,13 +28,18 @@ services:
           - api
 
   agent:
+    image: swarm-agent:latest
     build:
       context: .
       dockerfile: backend/agent/Dockerfile
     env_file: .env
     environment:
-      - AGENT_ID=
-      - USE_MOCK=${USE_MOCK:-true}
+      - AGENT_ID=${AGENT_ID:-agent-1}
+      - USE_MOCK=${USE_MOCK:-false}
+      - COMPUTE_PROVIDER=0g
+      - ZG_COMPUTE_RPC_URL=${ZG_COMPUTE_RPC_URL:-https://evmrpc-testnet.0g.ai}
+      - ZG_COMPUTE_MODEL=${ZG_COMPUTE_MODEL:-qwen/qwen-2.5-7b-instruct}
+      - AGENT_PRIVATE_KEY=${AGENT_PRIVATE_KEY}
       - AXL_PEER=tcp://axl-seed:7000
       - AXL_URL=http://localhost:9002
     restart: on-failure
@@ -53,7 +58,7 @@ services:
       context: ./axl
       dockerfile: containerfiles/Dockerfile
     ports:
-      - "7000:7000"
+      - "7100:7000"
       - "9002:9002"
     networks:
       swarm_default:
