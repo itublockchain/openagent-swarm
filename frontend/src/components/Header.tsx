@@ -21,7 +21,7 @@ export function Header({ onDeployClick }: Props) {
   const [showWallet, setShowWallet] = useState(false)
 
   // Persist taskId in navigation links if present
-  const tasksHref = taskId ? `/?taskId=${taskId}` : '/'
+  const tasksHref = taskId ? `/explorer?taskId=${taskId}` : '/explorer'
   const poolHref = taskId ? `/pool?taskId=${taskId}` : '/pool'
 
   return (

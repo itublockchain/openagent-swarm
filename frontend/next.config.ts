@@ -4,10 +4,10 @@ const nextConfig: NextConfig = {
   transpilePackages: ['@reown/appkit', '@reown/appkit-adapter-wagmi', 'wagmi', '@wagmi/core', '@wagmi/connectors'],
   experimental: {
     externalDir: true,
-    turbopack: {
-      resolveAlias: {
-        'accounts': './src/accounts.ts',
-      },
+  },
+  turbopack: {
+    resolveAlias: {
+      'accounts': './src/accounts.ts',
     },
   },
   webpack: (config) => {
