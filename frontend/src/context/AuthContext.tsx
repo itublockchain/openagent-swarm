@@ -57,7 +57,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         statement: 'Sign in to Swarm Execution Layer',
         uri: window.location.origin,
         version: '1',
-        chainId: chain?.id ?? 16600, // Fallback to 0G Testnet
+        chainId: chain?.id ?? 16602, // Fallback to 0G Galileo Testnet
         nonce,
       })
 

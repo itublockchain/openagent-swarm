@@ -8,11 +8,14 @@ import { cn } from '@/lib/utils'
 
 interface AgentRecord {
   agentId: string
+  name?: string
+  agentAddress?: string
   containerId: string
   model: string
   stakeAmount: string
-  status: 'running' | 'stopped' | 'error'
+  status: 'pending' | 'running' | 'stopped' | 'error'
   deployedAt: number
+  ownerAddress?: string
 }
 
 export default function PoolPage() {
@@ -60,16 +63,23 @@ export default function PoolPage() {
 
           {selected ? (
             <div className="mb-8 p-4 rounded-xl bg-accent/30 border border-border/50">
-              <h3 className="text-base font-bold mb-4 text-primary leading-none">
-                {selected.agentId}
+              <h3 className="text-base font-bold mb-1 text-primary leading-none">
+                {selected.name ?? selected.agentId}
               </h3>
+              <p className="text-[10px] font-mono text-muted-foreground mb-4">{selected.agentId}</p>
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between items-center">
                   <span className="text-muted-foreground">Model</span>
                   <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">{selected.model}</span>
                 </div>
+                {selected.agentAddress && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">Wallet</span>
+                    <span className="font-mono text-xs">{selected.agentAddress.slice(0, 6)}…{selected.agentAddress.slice(-4)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between items-center">
-                  <span className="text-muted-foreground">Stake</span>
+                  <span className="text-muted-foreground">Bond</span>
                   <span className="font-semibold text-foreground">{selected.stakeAmount} USDC</span>
                 </div>
                 <div className="flex justify-between items-center">
@@ -108,7 +118,7 @@ export default function PoolPage() {
                   borderLeftColor: agent.status === 'running' ? '#22c55e' : '#64748b'
                 }}
               >
-                <div className="font-bold text-sm truncate">{agent.agentId}</div>
+                <div className="font-bold text-sm truncate">{agent.name ?? agent.agentId}</div>
                 <div className="text-muted-foreground text-[10px] mt-1 font-mono">{agent.model}</div>
               </div>
             ))}

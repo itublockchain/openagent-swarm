@@ -42,4 +42,7 @@ export interface AXLEvent<T = unknown> {
 export interface AgentConfig {
   agentId: string
   stakeAmount: string
+  /** Agent's on-chain wallet address. Required for explicit settlement
+   *  (planner reward) and partial slashing logic. */
+  agentAddress?: string
 }

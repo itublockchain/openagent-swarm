@@ -26,10 +26,17 @@ contract SwarmEscrow is ReentrancyGuard {
     mapping(bytes32 => Task) public tasks;
     mapping(bytes32 => mapping(address => uint256)) public stakes;
 
+    // taskId => nodeId => agent => amount. Only one staker per (task,node).
+    mapping(bytes32 => mapping(bytes32 => mapping(address => uint256))) public subtaskStakes;
+    // taskId => nodeId => the agent who currently has a stake locked here.
+    mapping(bytes32 => mapping(bytes32 => address)) public subtaskStakeOwners;
+
     event Staked(bytes32 indexed taskId, address indexed agent, uint256 amount);
     event Settled(bytes32 indexed taskId, address[] winners);
     event Slashed(bytes32 indexed taskId, address indexed agent, uint256 amount);
     event TaskCreated(bytes32 indexed taskId, address indexed owner, uint256 budget);
+    event SubtaskStaked(bytes32 indexed taskId, bytes32 indexed nodeId, address indexed agent, uint256 amount);
+    event SubtaskStakeReleased(bytes32 indexed taskId, bytes32 indexed nodeId, address indexed agent, uint256 amount);
 
     modifier onlyRegistry() {
         require(registry != address(0) && msg.sender == registry, "Caller is not the registry");
@@ -85,6 +92,78 @@ contract SwarmEscrow is ReentrancyGuard {
         emit Staked(taskId, msg.sender, amount);
     }
 
+    /// Worker stake locked specifically against a (taskId, nodeId) subtask.
+    /// Released on validation, slashed on a successful challenge.
+    function stakeForSubtask(bytes32 taskId, bytes32 nodeId, uint256 amount)
+        external nonReentrant notFinalized(taskId)
+    {
+        require(amount > 0, "Stake must be greater than zero");
+        require(subtaskStakes[taskId][nodeId][msg.sender] == 0, "Already staked");
+        require(subtaskStakeOwners[taskId][nodeId] == address(0), "Subtask already staked");
+
+        usdc.safeTransferFrom(msg.sender, address(this), amount);
+
+        subtaskStakes[taskId][nodeId][msg.sender] = amount;
+        subtaskStakeOwners[taskId][nodeId] = msg.sender;
+        tasks[taskId].stakedTotal += amount;
+
+        emit SubtaskStaked(taskId, nodeId, msg.sender, amount);
+    }
+
+    /// Returns the locked stake to the original staker. Idempotent: silently
+    /// no-ops if there is no stake (e.g. already released or slashed).
+    function releaseSubtaskStake(bytes32 taskId, bytes32 nodeId) external onlyRegistry nonReentrant {
+        address owner = subtaskStakeOwners[taskId][nodeId];
+        if (owner == address(0)) return;
+        uint256 amount = subtaskStakes[taskId][nodeId][owner];
+        if (amount == 0) {
+            subtaskStakeOwners[taskId][nodeId] = address(0);
+            return;
+        }
+
+        subtaskStakes[taskId][nodeId][owner] = 0;
+        subtaskStakeOwners[taskId][nodeId] = address(0);
+        tasks[taskId].stakedTotal -= amount;
+
+        usdc.safeTransfer(owner, amount);
+        emit SubtaskStakeReleased(taskId, nodeId, owner, amount);
+    }
+
+    /// Subtask-level partial slash. Burns slashBps/10000 of the subtask
+    /// stake, transfers rewardBps/10000 to rewardTo, refunds the rest.
+    function slashSubtaskPartial(
+        bytes32 taskId,
+        bytes32 nodeId,
+        address agent,
+        uint256 slashBps,
+        address rewardTo,
+        uint256 rewardBps
+    ) external onlyVault nonReentrant notFinalized(taskId) {
+        require(slashBps + rewardBps <= 10000, "Bps overflow");
+        uint256 stakeAmt = subtaskStakes[taskId][nodeId][agent];
+        require(stakeAmt > 0, "No subtask stake");
+
+        uint256 burnAmt = (stakeAmt * slashBps) / 10000;
+        uint256 rewardAmt = (stakeAmt * rewardBps) / 10000;
+        uint256 returnAmt = stakeAmt - burnAmt - rewardAmt;
+
+        subtaskStakes[taskId][nodeId][agent] = 0;
+        subtaskStakeOwners[taskId][nodeId] = address(0);
+        tasks[taskId].stakedTotal -= stakeAmt;
+
+        if (burnAmt > 0) {
+            usdc.safeTransfer(address(0x000000000000000000000000000000000000dEaD), burnAmt);
+        }
+        if (rewardAmt > 0 && rewardTo != address(0)) {
+            usdc.safeTransfer(rewardTo, rewardAmt);
+        }
+        if (returnAmt > 0) {
+            usdc.safeTransfer(agent, returnAmt);
+        }
+
+        emit Slashed(taskId, agent, burnAmt + rewardAmt);
+    }
+
     function settle(bytes32 taskId, address[] calldata winners) external onlyRegistry nonReentrant notFinalized(taskId) {
         Task storage task = tasks[taskId];
         uint256 winnerCount = winners.length;
@@ -96,7 +175,43 @@ contract SwarmEscrow is ReentrancyGuard {
             address winner = winners[i];
             uint256 agentStake = stakes[taskId][winner];
             uint256 totalPayout = agentStake + rewardPerWinner;
-            
+
+            if (totalPayout > 0) {
+                stakes[taskId][winner] = 0;
+                usdc.safeTransfer(winner, totalPayout);
+            }
+        }
+
+        task.finalized = true;
+        emit Settled(taskId, winners);
+    }
+
+    /// Explicit per-recipient settlement. The caller (registry) is expected to
+    /// have already authorized this distribution (e.g. via planner gate).
+    /// Each amount is the reward portion only; the agent's existing stake on the
+    /// task is added on top and refunded together. Sum of amounts must not
+    /// exceed the task budget; any remainder stays in escrow.
+    function settleWithAmounts(
+        bytes32 taskId,
+        address[] calldata winners,
+        uint256[] calldata amounts
+    ) external onlyRegistry nonReentrant notFinalized(taskId) {
+        require(winners.length == amounts.length, "Length mismatch");
+        require(winners.length > 0, "No winners provided");
+
+        Task storage task = tasks[taskId];
+
+        uint256 totalReward;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            totalReward += amounts[i];
+        }
+        require(totalReward <= task.budget, "Exceeds budget");
+
+        for (uint256 i = 0; i < winners.length; i++) {
+            address winner = winners[i];
+            uint256 agentStake = stakes[taskId][winner];
+            uint256 totalPayout = agentStake + amounts[i];
+
             if (totalPayout > 0) {
                 stakes[taskId][winner] = 0;
                 usdc.safeTransfer(winner, totalPayout);
@@ -117,5 +232,39 @@ contract SwarmEscrow is ReentrancyGuard {
         usdc.safeTransfer(address(0x000000000000000000000000000000000000dEaD), amount);
 
         emit Slashed(taskId, agent, amount);
+    }
+
+    /// Partial-slash variant: burns `slashBps`/10000 of the agent's stake,
+    /// transfers `rewardBps`/10000 to `rewardTo` (e.g. the honest challenger),
+    /// and refunds the remainder to the agent. slashBps + rewardBps <= 10000.
+    function slashPartial(
+        bytes32 taskId,
+        address agent,
+        uint256 slashBps,
+        address rewardTo,
+        uint256 rewardBps
+    ) external onlyVault nonReentrant notFinalized(taskId) {
+        require(slashBps + rewardBps <= 10000, "Bps overflow");
+        uint256 stakeAmt = stakes[taskId][agent];
+        require(stakeAmt > 0, "No stake to slash");
+
+        uint256 burnAmt = (stakeAmt * slashBps) / 10000;
+        uint256 rewardAmt = (stakeAmt * rewardBps) / 10000;
+        uint256 returnAmt = stakeAmt - burnAmt - rewardAmt;
+
+        stakes[taskId][agent] = 0;
+        tasks[taskId].stakedTotal -= stakeAmt;
+
+        if (burnAmt > 0) {
+            usdc.safeTransfer(address(0x000000000000000000000000000000000000dEaD), burnAmt);
+        }
+        if (rewardAmt > 0 && rewardTo != address(0)) {
+            usdc.safeTransfer(rewardTo, rewardAmt);
+        }
+        if (returnAmt > 0) {
+            usdc.safeTransfer(agent, returnAmt);
+        }
+
+        emit Slashed(taskId, agent, burnAmt + rewardAmt);
     }
 }

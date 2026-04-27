@@ -221,7 +221,10 @@ export class SwarmAgent {
   private async executeSubtask(node: DAGNode, taskId: string): Promise<void> {
     try {
       const agentId = this.deps.config.agentId
-      await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
+      // Worker stake is locked against this specific subtask. It is auto-released
+      // when the planner marks the node validated, or partially slashed if a
+      // challenge succeeds.
+      await this.deps.chain.stakeForSubtask(taskId, node.id, this.deps.config.stakeAmount)
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_CLAIMED, { nodeId: node.id, agentId, taskId }))
 
       let prevOutput: unknown = null
@@ -233,13 +236,15 @@ export class SwarmAgent {
         if (!isValid) {
           console.log(`[Agent ${this.deps.config.agentId}] LLM-Judge rejected output. Challenging previous node.`)
           
-          // Find the previous node id to challenge
+          // Find the previous node id to challenge. The challenger here is
+          // the current worker (this agent), whose subtask is `node.id` —
+          // pass it so the vault knows where their stake lives.
           const task = this.tasks.get(taskId)
           if (task) {
             const currentIndex = task.nodes.findIndex(n => n.id === node.id)
             if (currentIndex > 0) {
               const prevNode = task.nodes[currentIndex - 1]
-              await this.challengeNode(prevNode, taskId)
+              await this.challengeNode(prevNode, taskId, node.id)
             }
           }
           return // Stop execution of current subtask
@@ -338,18 +343,26 @@ export class SwarmAgent {
         return
       }
 
-      console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} validated. Marking all nodes on-chain.`)
+      console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} validated. Marking all nodes on-chain (batch).`)
 
-      // Tüm node'ları on-chain'de validated olarak işaretle
-      // markValidated son node'da çağrıldığında, kontrat otomatik olarak
-      // tüm DAG'ın bittiğini algılayıp escrow.settle() tetikler
-      for (const node of task.nodes) {
-        await this.deps.chain.markValidated(node.id)
-      }
+      // Single-tx batch validation. No auto-settle on-chain — the planner
+      // controls payout amounts via the explicit settleTask call below.
+      const nodeIds = task.nodes.map(n => n.id)
+      await this.deps.chain.markValidatedBatch(nodeIds)
+
+      // Resolve claimant addresses + compute payouts.
+      const workerAddrs = await Promise.all(
+        nodeIds.map(id => this.deps.chain.getNodeClaimant(id))
+      )
+      const budget = BigInt(await this.deps.chain.getTaskBudget(taskId))
+      const plannerAddr = this.deps.config.agentAddress ?? this.deps.config.agentId
+      const { addresses, amounts } = this.computePayouts(budget, plannerAddr, workerAddrs)
+
+      await this.deps.chain.settleTask(taskId, addresses, amounts.map(a => a.toString()))
 
       const won = await this.deps.chain.completeTask(taskId)
       if (won) {
-        console.log(`[Agent ${agentId}] KEEPER: DAG_COMPLETED — settlement triggered on-chain`)
+        console.log(`[Agent ${agentId}] KEEPER: DAG_COMPLETED — paid planner ${amounts[0]} + ${workerAddrs.length} workers`)
         await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, { taskId, settled: true }))
       }
     } catch (err) {
@@ -357,9 +370,15 @@ export class SwarmAgent {
     }
   }
 
-  private async challengeNode(node: DAGNode, taskId: string): Promise<void> {
+  /**
+   * Open a challenge against `node`. `challengerNodeId` identifies the
+   * challenger's *own* subtask — its stake is what gets slashed if the
+   * challenge turns out to be false. Pass undefined when the planner is
+   * challenging (their stake lives at task-level, not subtask-level).
+   */
+  private async challengeNode(node: DAGNode, taskId: string, challengerNodeId?: string): Promise<void> {
     try {
-      await this.deps.chain.challenge(node.id)
+      await this.deps.chain.challenge(node.id, challengerNodeId)
       await this.deps.network.emit(this.buildEvent(EventType.CHALLENGE, {
         nodeId: node.id, taskId, agentId: this.deps.config.agentId,
       }))
@@ -387,5 +406,34 @@ export class SwarmAgent {
 
   private buildEvent<T>(type: EventType, payload: T): AXLEvent<T> {
     return { type, payload, timestamp: Date.now(), agentId: this.deps.config.agentId }
+  }
+
+  /**
+   * Settlement split: 20% to planner, 80% split equally among the workers
+   * who claimed subtasks. Returns parallel addresses[]/amounts[] arrays for
+   * SwarmEscrow.settleWithAmounts; the planner is always at index 0.
+   *
+   * If the planner also worked on a subtask, their address legitimately
+   * appears twice — the escrow refunds their stake on the first iteration
+   * and treats the second as a pure reward, which is correct.
+   */
+  private computePayouts(
+    budget: bigint,
+    plannerAddr: string,
+    workerAddrs: string[],
+  ): { addresses: string[]; amounts: bigint[] } {
+    const PLANNER_BPS = 2000n // 20%
+    const WORKER_BPS = 8000n  // 80%
+    const BPS = 10000n
+
+    const plannerShare = (budget * PLANNER_BPS) / BPS
+    const workerPool = (budget * WORKER_BPS) / BPS
+    const workerShare = workerAddrs.length > 0
+      ? workerPool / BigInt(workerAddrs.length)
+      : 0n
+
+    const addresses = [plannerAddr, ...workerAddrs]
+    const amounts = [plannerShare, ...workerAddrs.map(() => workerShare)]
+    return { addresses, amounts }
   }
 }

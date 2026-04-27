@@ -3,7 +3,7 @@ import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
-import { TaskSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
+import { TaskSchema, AgentPrepareSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { ethers } from 'ethers';
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json';
 import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json';
@@ -135,10 +135,59 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
+  // Shared L2 helpers — read-only RPC client used for verification.
+  const rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai';
+  const escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow;
+  const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC;
+  const readProvider = new ethers.JsonRpcProvider(rpcUrl);
+  const readEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, readProvider);
+  const readUsdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, readProvider);
+
+  function deriveTaskId(specHash: string): string {
+    return specHash.startsWith('0x') && specHash.length === 66
+      ? specHash
+      : ethers.keccak256(ethers.toUtf8Bytes(specHash));
+  }
+
+  /**
+   * POST /task/prepare
+   * First half of the user-signed task creation flow. Uploads the spec to
+   * storage and returns everything the frontend needs to sign the on-chain
+   * approve + createTask transactions itself. No on-chain side effects.
+   */
+  fastify.post('/task/prepare', async (request, reply) => {
+    const user = requireAuth(request, reply)
+    if (!user) return
+
+    const body = TaskSchema.parse(request.body);
+    const specHash = await deps.storage.append(body);
+    const taskIdBytes32 = deriveTaskId(specHash);
+
+    let decimals: number
+    try {
+      decimals = Number(await readUsdc.decimals());
+    } catch (err) {
+      console.error('[L2] Failed to read USDC decimals:', err);
+      return reply.status(502).send({ error: 'L2 RPC unreachable' });
+    }
+    const budgetWei = ethers.parseUnits(body.budget || '0.01', decimals).toString();
+
+    return {
+      specHash,
+      taskIdBytes32,
+      budgetWei,
+      decimals,
+      escrowAddress: escrowAddr,
+      usdcAddress: usdcAddr,
+    };
+  });
+
   /**
    * POST /task
-   * API just broadcasts the task to the AXL mesh.
-   * A "Runner Agent" in the pool will pick it up and plan it.
+   * Second half of the flow: verifies the user has already created the task
+   * on-chain (via their own wallet) and then broadcasts to the AXL mesh.
+   * The legacy fallback path (API wallet creates the task itself) is gated
+   * behind ALLOW_API_CREATE_TASK=true for backward compat / dev workflows.
    */
   fastify.post('/task', async (request, reply) => {
     const user = requireAuth(request, reply)
@@ -146,56 +195,32 @@ export default async function createServer(deps: ServerDeps) {
 
     const body = TaskSchema.parse(request.body);
     const specHash = await deps.storage.append(body);
+    const taskIdBytes32 = deriveTaskId(specHash);
 
-    // On-chain: Create task in SwarmEscrow.
-    // Without this, the agent's stake() call later reverts with "Task does not
-    // exist". Flow: read decimals → ensure allowance → createTask.
+    // Verify the on-chain task exists. The user's wallet (or, in dev, the API
+    // wallet) must have called createTask with this exact taskIdBytes32.
+    let taskOnChain: any
     try {
-      const rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai';
-      const privateKey = process.env.PRIVATE_KEY;
-      if (!privateKey) {
-        return reply.status(500).send({
-          error: 'PRIVATE_KEY env var is required for on-chain task creation',
+      taskOnChain = await readEscrow.tasks(taskIdBytes32);
+    } catch (err) {
+      console.error('[L2] tasks() lookup failed:', err);
+      return reply.status(502).send({ error: 'L2 RPC unreachable' });
+    }
+
+    if (taskOnChain.owner === ethers.ZeroAddress) {
+      if (process.env.ALLOW_API_CREATE_TASK === 'true') {
+        // Legacy / dev path: fall back to API-funded createTask. Useful for
+        // server-to-server testing without a connected wallet.
+        const r = await apiFundedCreateTask(taskIdBytes32, body.budget || '0.01');
+        if (!r.ok) return reply.status(500).send(r.payload);
+      } else {
+        return reply.status(402).send({
+          error: 'Task not found on-chain. Frontend must call createTask first.',
+          taskIdBytes32,
         });
       }
-
-      const escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow;
-      const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC;
-
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
-      const signer = new ethers.Wallet(privateKey, provider);
-      const escrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, signer);
-      const usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, signer);
-
-      // Read decimals at runtime — supports both 18-decimal MockERC20 and
-      // 6-decimal real USDC without code changes.
-      const decimals: number = Number(await usdc.decimals());
-      const budget = ethers.parseUnits(body.budget || '0.01', decimals);
-      const taskIdBytes32 = specHash.startsWith('0x')
-        ? specHash
-        : ethers.keccak256(ethers.toUtf8Bytes(specHash));
-
-      // Approve escrow to pull USDC. Use MaxUint256 once and re-use across
-      // tasks to avoid an approval tx per submission.
-      const allowance: bigint = await usdc.allowance(signer.address, escrowAddr);
-      if (allowance < budget) {
-        console.log(`[L2] Approving USDC for escrow (current allowance ${allowance})...`);
-        const approveTx = await usdc.approve(escrowAddr, ethers.MaxUint256);
-        await approveTx.wait();
-      }
-
-      console.log(`[L2] Creating task ${taskIdBytes32} on-chain with budget ${body.budget}...`);
-      const tx = await escrow.createTask(taskIdBytes32, budget);
-      await tx.wait();
-      console.log(`[L2] Task created on-chain. TX: ${tx.hash}`);
-    } catch (err) {
-      console.error('[L2] Failed to create task on-chain:', err);
-      return reply.status(500).send({
-        error: 'Failed to create task on-chain',
-        details: (err as Error).message,
-      });
     }
-    
+
     const event = {
       type: EventType.TASK_SUBMITTED,
       payload: { ...body, taskId: specHash, specHash, submittedBy: user.address },
@@ -204,15 +229,75 @@ export default async function createServer(deps: ServerDeps) {
     };
 
     await deps.network.emit(event);
-    return { taskId: specHash };
+    return { taskId: specHash, taskIdBytes32 };
   });
 
-  // POST /agent/deploy
+  // Legacy helper preserved behind ALLOW_API_CREATE_TASK=true.
+  async function apiFundedCreateTask(taskIdBytes32: string, budgetStr: string): Promise<{ ok: true } | { ok: false; payload: any }> {
+    try {
+      const privateKey = process.env.PRIVATE_KEY;
+      if (!privateKey) return { ok: false, payload: { error: 'PRIVATE_KEY env var required for API-funded createTask' } };
+      const signer = new ethers.Wallet(privateKey, readProvider);
+      const escrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, signer);
+      const usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, signer);
+      const decimals: number = Number(await usdc.decimals());
+      const budget = ethers.parseUnits(budgetStr, decimals);
+
+      const allowance: bigint = await usdc.allowance(signer.address, escrowAddr);
+      if (allowance < budget) {
+        const approveTx = await usdc.approve(escrowAddr, ethers.MaxUint256);
+        await approveTx.wait();
+      }
+      const tx = await escrow.createTask(taskIdBytes32, budget);
+      await tx.wait();
+      console.log(`[L2] API-funded createTask ${taskIdBytes32} tx=${tx.hash}`);
+      return { ok: true };
+    } catch (err) {
+      console.error('[L2] apiFundedCreateTask failed:', err);
+      return { ok: false, payload: { error: 'createTask failed', details: (err as Error).message } };
+    }
+  }
+
+  /**
+   * POST /agent/prepare
+   * Mints a fresh wallet for the agent, prefunds it with native gas, returns
+   * the address. The frontend then asks the user to sign a USDC.transfer to
+   * this address before calling /agent/deploy.
+   */
+  fastify.post('/agent/prepare', async (request: any, reply) => {
+    const user = requireAuth(request, reply)
+    if (!user) return
+    const body = AgentPrepareSchema.parse(request.body)
+    try {
+      const result = await deps.manager.prepare({
+        name: body.name,
+        model: body.model,
+        stakeAmount: body.stakeAmount,
+        systemPrompt: body.systemPrompt,
+        ownerAddress: user.address,
+      })
+      return result;
+    } catch (err) {
+      console.error('[API] /agent/prepare failed:', err)
+      return reply.status(500).send({ error: (err as Error).message })
+    }
+  });
+
+  // POST /agent/deploy — verifies USDC arrival, then spawns the container.
   fastify.post('/agent/deploy', async (request: any, reply) => {
     if (!requireAuth(request, reply)) return
     const body = AgentDeploySchema.parse(request.body)
-    const containerId = await deps.manager.deploy(body)
-    return { containerId }
+    try {
+      const record = await deps.manager.deploy(body.agentId)
+      return { containerId: record.containerId, agentId: record.agentId, agentAddress: record.agentAddress }
+    } catch (err) {
+      const msg = (err as Error).message
+      console.error('[API] /agent/deploy failed:', msg)
+      // Stake-not-arrived case is a 402 (Payment Required) — UI should retry
+      // after the transfer confirms.
+      const status = msg.includes('Transfer USDC') ? 402 : 500
+      return reply.status(status).send({ error: msg })
+    }
   });
 
   // GET /agent/pool

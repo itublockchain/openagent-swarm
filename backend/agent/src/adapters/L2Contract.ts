@@ -121,6 +121,19 @@ export class L2Contract implements IChainPort {
     return receipt!.hash
   }
 
+  async stakeForSubtask(taskId: string, nodeId: string, amount: string): Promise<string> {
+    const decimals = await this.getDecimals()
+    const stakeAmount = ethers.parseUnits(amount, decimals)
+    await this.ensureEscrowAllowance(stakeAmount)
+    const tx = await this.escrow.stakeForSubtask(
+      this.formatId(taskId),
+      this.formatId(nodeId),
+      stakeAmount,
+    )
+    const receipt = await tx.wait()
+    return receipt!.hash
+  }
+
   async submitOutput(nodeId: string, outputHash: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
     const formattedHash = this.normalizeBytes32(outputHash)
@@ -135,7 +148,30 @@ export class L2Contract implements IChainPort {
     console.log(`[L2Contract] Node ${nodeId} marked validated on-chain`)
   }
 
-  async challenge(nodeId: string): Promise<void> {
+  async markValidatedBatch(nodeIds: string[]): Promise<void> {
+    const formatted = nodeIds.map(id => this.formatId(id))
+    const tx = await this.registry.markValidatedBatch(formatted)
+    await tx.wait()
+    console.log(`[L2Contract] ${nodeIds.length} nodes marked validated in single tx`)
+  }
+
+  async getNodeClaimant(nodeId: string): Promise<string> {
+    const node = await this.registry.nodes(this.formatId(nodeId))
+    return node.claimedBy as string
+  }
+
+  async getTaskBudget(taskId: string): Promise<string> {
+    const task = await this.escrow.tasks(this.formatId(taskId))
+    return task.budget.toString()
+  }
+
+  async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {
+    const tx = await this.registry.requestSettle(this.formatId(taskId), winners, amounts)
+    await tx.wait()
+    console.log(`[L2Contract] settleTask: paid ${winners.length} winners for task ${taskId}`)
+  }
+
+  async challenge(nodeId: string, challengerNodeId?: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
     // Get the accused agent's address from the registry (the node's claimant)
     const node = await this.registry.nodes(formattedNodeId)
@@ -143,7 +179,10 @@ export class L2Contract implements IChainPort {
     if (accused === ethers.ZeroAddress) {
       throw new Error(`[L2Contract] Cannot challenge node ${nodeId}: no claimant found`)
     }
-    const tx = await this.vault.challenge(formattedNodeId, accused)
+    const challengerSubtask = challengerNodeId
+      ? this.formatId(challengerNodeId)
+      : ethers.ZeroHash
+    const tx = await this.vault.challenge(formattedNodeId, accused, challengerSubtask)
     await tx.wait()
     console.log(`[L2Contract] Challenge raised for node ${nodeId} against ${accused}`)
   }

@@ -4,6 +4,8 @@ import React, { useState, useEffect, Suspense, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Edge, Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi';
+import { waitForTransactionReceipt, readContract } from '@wagmi/core';
 import { ThemeToggle } from '@/components/theme-toggle';
 import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
 import { Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
@@ -11,10 +13,14 @@ import { useSwarmEvents } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../lib/api';
+import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi';
+import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts';
 
 const nodeTypes = {
   task: TaskNode,
 };
+
+type SubmitStep = 'idle' | 'preparing' | 'approving' | 'creating' | 'submitting' | 'done' | 'error';
 
 function DashboardContent() {
   const router = useRouter();
@@ -23,12 +29,17 @@ function DashboardContent() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [inputText, setInputText] = useState("");
   const [isDeployOpen, setIsDeployOpen] = useState(false);
+  const [submitStep, setSubmitStep] = useState<SubmitStep>('idle');
   const [logs, setLogs] = useState<string[]>([
     "Waiting for user intent...",
     "Ready to generate and deploy DAG."
   ]);
-  
+
   const { dag, events, taskIdFromUrl } = useSwarmEvents();
+  const { address: walletAddress } = useAccount();
+  const currentChainId = useChainId();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
 
   // Sync DAG state from hook to React Flow
   useEffect(() => {
@@ -70,26 +81,153 @@ function DashboardContent() {
     setEdges(newFlowEdges);
   }, [dag, setNodes, setEdges]);
 
-  // Handle task submission
+  // User-signed task submission flow:
+  //   1. /task/prepare → backend uploads spec to storage, returns taskIdBytes32 + budgetWei
+  //   2. wagmi: USDC.approve(escrow, budget) — skipped if existing allowance is sufficient
+  //   3. wagmi: SwarmEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
+  //   4. /task → backend verifies on-chain task exists, broadcasts to AXL mesh
   const submitRealDAG = async (intent: string) => {
+    if (!walletAddress) {
+      setLogs(prev => [...prev, `[ERROR] No wallet connected. Connect first.`]);
+      return;
+    }
+
+    const budget = "10";
+    // Fresh nonce per submission so identical specs don't collide on the
+    // content-addressed taskId (would revert with "Task already exists").
+    const submissionNonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setSubmitStep('preparing');
     setLogs(prev => [...prev, `[USER] Submitting spec: ${intent}`]);
 
     try {
-      const res = await apiRequest('/task', {
+      // 0. Switch wallet to 0G Galileo if it's on a different chain.
+      if (currentChainId !== ogTestnet.id) {
+        setLogs(prev => [...prev, `[L2] Switching wallet to chainId ${ogTestnet.id}...`]);
+        try {
+          await switchChainAsync({ chainId: ogTestnet.id });
+        } catch (err: any) {
+          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
+            throw new Error('Add 0G Galileo testnet (chainId 16602, RPC https://evmrpc-testnet.0g.ai) to your wallet, then retry');
+          }
+          throw err;
+        }
+      }
+
+      // 1. Prepare
+      const prepRes = await apiRequest('/task/prepare', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget: "10" })
+        body: JSON.stringify({ spec: intent, budget, nonce: submissionNonce }),
       });
-      if (!res.ok) throw new Error("API request failed");
-      const data = await res.json();
-      
-      // Update URL with taskId
+      if (!prepRes.ok) throw new Error(`prepare failed: ${prepRes.status}`);
+      const prep = await prepRes.json() as {
+        specHash: string;
+        taskIdBytes32: `0x${string}`;
+        budgetWei: string;
+        decimals: number;
+        escrowAddress: `0x${string}`;
+        usdcAddress: `0x${string}`;
+      };
+      setLogs(prev => [...prev, `[L2] Prepared task ${prep.taskIdBytes32.slice(0, 12)}... budget=${budget} mUSDC`]);
+      const budgetWei = BigInt(prep.budgetWei);
+
+      // 2. Approve USDC if allowance is insufficient.
+      const allowance = await readContract(wagmiConfig, {
+        address: prep.usdcAddress,
+        abi: ERC20_ABI,
+        functionName: 'allowance',
+        args: [walletAddress, prep.escrowAddress],
+      }) as bigint;
+
+      // 0G testnet RPC sometimes lags ~30s before propagating receipts.
+      // Bump timeout (default ~60s) and slow polling so we don't see
+      // "Transaction may not be processed on a block yet" too eagerly.
+      const RECEIPT_OPTS = { timeout: 180_000, pollingInterval: 3_000 } as const;
+
+      if (allowance < budgetWei) {
+        setSubmitStep('approving');
+        setLogs(prev => [...prev, `[L2] Approving USDC (current allowance ${allowance.toString()})...`]);
+        const approveHash = await writeContractAsync({
+          address: prep.usdcAddress,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [prep.escrowAddress, budgetWei],
+          chainId: ogTestnet.id,
+        });
+        setLogs(prev => [...prev, `[L2] approve tx: ${approveHash}`]);
+        await waitForTransactionReceipt(wagmiConfig, { hash: approveHash, ...RECEIPT_OPTS });
+        setLogs(prev => [...prev, `[L2] approve confirmed`]);
+      } else {
+        setLogs(prev => [...prev, `[L2] allowance sufficient, skipping approve`]);
+      }
+
+      // 3. createTask — but only if the escrow doesn't already have this task.
+      // Specs are content-addressed, so resubmitting the same spec yields the
+      // same taskId; the contract would revert with "Task already exists".
+      // Detect upfront and skip straight to the AXL broadcast in that case.
+      setSubmitStep('creating');
+      const existing = (await readContract(wagmiConfig, {
+        address: prep.escrowAddress,
+        abi: SWARM_ESCROW_ABI,
+        functionName: 'tasks',
+        args: [prep.taskIdBytes32],
+      })) as readonly [`0x${string}`, bigint, bigint, boolean];
+      const existingOwner = existing[0];
+
+      if (existingOwner !== '0x0000000000000000000000000000000000000000') {
+        setLogs(prev => [...prev, `[L2] Task already on-chain (owner=${existingOwner.slice(0, 6)}…${existingOwner.slice(-4)}), skipping createTask`]);
+      } else {
+        setLogs(prev => [...prev, `[L2] Creating task on-chain...`]);
+        const createHash = await writeContractAsync({
+          address: prep.escrowAddress,
+          abi: SWARM_ESCROW_ABI,
+          functionName: 'createTask',
+          args: [prep.taskIdBytes32, budgetWei],
+          chainId: ogTestnet.id,
+        });
+        setLogs(prev => [...prev, `[L2] createTask tx: ${createHash}`]);
+        try {
+          await waitForTransactionReceipt(wagmiConfig, { hash: createHash, ...RECEIPT_OPTS });
+        } catch (err: any) {
+          // Receipt fetch can time out on a slow RPC even though the tx
+          // landed. Verify on-chain state directly before giving up.
+          const verify = (await readContract(wagmiConfig, {
+            address: prep.escrowAddress,
+            abi: SWARM_ESCROW_ABI,
+            functionName: 'tasks',
+            args: [prep.taskIdBytes32],
+          })) as readonly [`0x${string}`, bigint, bigint, boolean];
+          if (verify[0] === '0x0000000000000000000000000000000000000000') {
+            throw err; // really not on-chain
+          }
+          setLogs(prev => [...prev, `[L2] createTask receipt timed out, but task IS on-chain — continuing`]);
+        }
+        setLogs(prev => [...prev, `[L2] createTask confirmed`]);
+      }
+
+      // 4. Broadcast to AXL — backend re-uploads the same body to 0G storage
+      // (content-addressed → same hash) then verifies the task exists on-chain.
+      // Same nonce as /prepare so the storage hash matches.
+      setSubmitStep('submitting');
+      const submitRes = await apiRequest('/task', {
+        method: 'POST',
+        body: JSON.stringify({ spec: intent, budget, nonce: submissionNonce }),
+      });
+      if (!submitRes.ok) {
+        const detail = await submitRes.json().catch(() => ({}));
+        throw new Error(`submit failed: ${detail.error ?? submitRes.status}`);
+      }
+      const data = await submitRes.json();
+
       const params = new URLSearchParams(searchParams.toString());
       params.set('taskId', data.taskId);
       router.replace(`?${params.toString()}`);
 
-      setLogs(prev => [...prev, `[API] Task ${data.taskId.slice(0, 8)} submitted. Awaiting DAG...`]);
+      setSubmitStep('done');
+      setLogs(prev => [...prev, `[API] Task ${data.taskId.slice(0, 8)} broadcast to AXL. Awaiting DAG...`]);
     } catch (err: any) {
-      setLogs(prev => [...prev, `[ERROR] Failed to submit task: ${err.message}`]);
+      setSubmitStep('error');
+      const msg = err?.shortMessage || err?.message || String(err);
+      setLogs(prev => [...prev, `[ERROR] (step=${submitStep}) ${msg}`]);
     }
   };
 
@@ -174,7 +312,8 @@ function DashboardContent() {
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
-                className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24"
+                disabled={submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error'}
+                className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24 disabled:opacity-60"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
@@ -188,11 +327,23 @@ function DashboardContent() {
                   submitRealDAG(inputText);
                   setInputText("");
                 }}
-                disabled={!inputText.trim()}
+                disabled={
+                  !inputText.trim() ||
+                  (submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error')
+                }
                 className="absolute bottom-3 right-3 p-2 bg-primary text-primary-foreground rounded-lg hover:scale-105 transition-transform disabled:opacity-30 disabled:hover:scale-100"
               >
                 <Send className="w-4 h-4" />
               </button>
+              {submitStep !== 'idle' && submitStep !== 'done' && (
+                <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-primary">
+                  {submitStep === 'preparing' && 'Preparing...'}
+                  {submitStep === 'approving' && 'Approving USDC...'}
+                  {submitStep === 'creating' && 'Creating on-chain...'}
+                  {submitStep === 'submitting' && 'Submitting to swarm...'}
+                  {submitStep === 'error' && '⚠ Error — see logs'}
+                </div>
+              )}
             </div>
             <div className="mt-3 flex items-center justify-between px-1">
                <div className="flex gap-2">

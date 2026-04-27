@@ -5,6 +5,21 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface ISwarmEscrow {
     function slash(bytes32 taskId, address agent) external;
+    function slashPartial(
+        bytes32 taskId,
+        address agent,
+        uint256 slashBps,
+        address rewardTo,
+        uint256 rewardBps
+    ) external;
+    function slashSubtaskPartial(
+        bytes32 taskId,
+        bytes32 nodeId,
+        address agent,
+        uint256 slashBps,
+        address rewardTo,
+        uint256 rewardBps
+    ) external;
 }
 
 interface IDAGRegistry {
@@ -19,6 +34,9 @@ interface IDAGRegistry {
 contract SlashingVault is Ownable {
     struct Challenge {
         bytes32 nodeId;
+        // The challenger's own subtask. 0x0 means the challenger is the
+        // planner (whose stake lives at task-level, not subtask-level).
+        bytes32 challengerNodeId;
         address challenger;
         address accused;
         uint256 timestamp;
@@ -26,6 +44,11 @@ contract SlashingVault is Ownable {
     }
 
     uint256 public constant CHALLENGE_WINDOW = 1 hours;
+
+    // Slashing economics, in basis points (1/10000).
+    uint256 public constant ACCUSED_BURN_BPS = 8000;          // 80% burned when guilty
+    uint256 public constant CHALLENGER_REWARD_BPS = 2000;     // 20% bounty to honest challenger
+    uint256 public constant FALSE_CHALLENGER_BURN_BPS = 2000; // 20% burned from false challenger
 
     ISwarmEscrow public immutable escrow;
     IDAGRegistry public immutable registry;
@@ -41,12 +64,13 @@ contract SlashingVault is Ownable {
         registry = IDAGRegistry(_registry);
     }
 
-    function challenge(bytes32 nodeId, address accused) external {
+    function challenge(bytes32 nodeId, address accused, bytes32 challengerNodeId) external {
         require(challenges[nodeId].timestamp == 0, "Challenge exists");
         require(accused != address(0), "Invalid accused");
 
         challenges[nodeId] = Challenge({
             nodeId: nodeId,
+            challengerNodeId: challengerNodeId,
             challenger: msg.sender,
             accused: accused,
             timestamp: block.timestamp,
@@ -65,12 +89,41 @@ contract SlashingVault is Ownable {
         (, bytes32 taskId, , , ) = registry.nodes(nodeId);
 
         if (accusedGuilty) {
-            escrow.slash(taskId, ch.accused);
+            // Accused worker: 80% of their subtask stake burned, 20% paid to
+            // the honest challenger as bounty.
+            escrow.slashSubtaskPartial(
+                taskId,
+                nodeId,
+                ch.accused,
+                ACCUSED_BURN_BPS,
+                ch.challenger,
+                CHALLENGER_REWARD_BPS
+            );
             registry.resetNode(nodeId);
             emit SlashExecuted(nodeId, ch.accused);
         } else {
-            // Penalize the false challenger
-            escrow.slash(taskId, ch.challenger);
+            // False challenger: slash 20% of *their* stake. If the challenger
+            // is a worker, slash the subtask stake they have on their own
+            // node; if they're the planner (no subtask), fall back to the
+            // task-level stake.
+            if (ch.challengerNodeId != bytes32(0)) {
+                escrow.slashSubtaskPartial(
+                    taskId,
+                    ch.challengerNodeId,
+                    ch.challenger,
+                    FALSE_CHALLENGER_BURN_BPS,
+                    address(0),
+                    0
+                );
+            } else {
+                escrow.slashPartial(
+                    taskId,
+                    ch.challenger,
+                    FALSE_CHALLENGER_BURN_BPS,
+                    address(0),
+                    0
+                );
+            }
             emit FalseChallenge(nodeId, ch.challenger);
         }
 

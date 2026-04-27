@@ -23,8 +23,10 @@ export interface INetworkPort {
 }
 
 export interface IChainPort {
-  /** task için stake yatırır, tx hash döner */
+  /** task için stake yatırır (planner kullanır), tx hash döner */
   stake(taskId: string, amount: string): Promise<string>
+  /** Subtask seviyesinde stake kilidi (worker kullanır) */
+  stakeForSubtask(taskId: string, nodeId: string, amount: string): Promise<string>
   /** FCFS — ilk çağıran true alır, sonrakiler false */
   claimPlanner(taskId: string): Promise<boolean>
   /** DAG'ı on-chain'e mühürler (sadece planner çağırabilir) */
@@ -37,12 +39,20 @@ export interface IChainPort {
   submitOutput(nodeId: string, outputHash: string): Promise<void>
   /** node'u validated olarak işaretler, tüm DAG bitince settle tetiklenir */
   markValidated(nodeId: string): Promise<void>
+  /** Tüm node'ları tek tx'te validated işaretler, otomatik settle ETMEZ */
+  markValidatedBatch(nodeIds: string[]): Promise<void>
   /** task'ın bittiğini kaydeder */
   completeTask(taskId: string): Promise<boolean>
-  /** hatalı node'a itiraz açar */
-  challenge(nodeId: string): Promise<void>
+  /** hatalı node'a itiraz açar; challengerNodeId challenger'ın kendi subtask'ı (planner ise '0x0') */
+  challenge(nodeId: string, challengerNodeId?: string): Promise<void>
   /** ödülleri dağıtır ve escrow'u kapatır */
   settle(taskId: string, winners: string[]): Promise<void>
+  /** Explicit per-agent ödül dağıtımı (planner yetkili) */
+  settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void>
+  /** Bir node'un on-chain claimant adresini döner */
+  getNodeClaimant(nodeId: string): Promise<string>
+  /** Task'ın budget'ını döner (smallest unit, decimals'a göre) */
+  getTaskBudget(taskId: string): Promise<string>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
 

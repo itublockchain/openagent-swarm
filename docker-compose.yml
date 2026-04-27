@@ -32,6 +32,9 @@ services:
         aliases:
           - api
 
+  # Default agent service. The frontend deploy flow spawns additional
+  # agents with their own generated wallets via Dockerode; this entry is
+  # the always-on baseline that uses the API wallet.
   agent:
     image: swarm-agent:latest
     build:
@@ -47,11 +50,14 @@ services:
       - AGENT_PRIVATE_KEY=${AGENT_PRIVATE_KEY}
       - AXL_PEER=tcp://axl-seed:7000
       - AXL_URL=http://localhost:9002
-      - OG_RPC_URL=https://evmrpc-testnet.0g.ai
-      - L2_USDC_ADDRESS=0x901A99ae2886067d9F3f0c0bEb00c7A8b253Ef97
-      - L2_ESCROW_ADDRESS=0xCFAd97859D9a2ef187015566c0c5D91697c5F321
-      - L2_DAG_REGISTRY_ADDRESS=0x9B4Ddd3fF8a0F3e6cF21A40345425ee09B73b410
-      - L2_SLASHING_VAULT_ADDRESS=0x3A7D797Ee75A05d66C9DAC276624ccA573F99457
+      - OG_RPC_URL=${OG_RPC_URL:-https://evmrpc-testnet.0g.ai}
+      # Pulled from .env so a contract redeploy doesn't strand this container
+      # on a stale address. Previously hardcoded — caused "Task does not
+      # exist" reverts whenever contracts were redeployed.
+      - L2_USDC_ADDRESS=${L2_USDC_ADDRESS}
+      - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
+      - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
+      - L2_SLASHING_VAULT_ADDRESS=${L2_SLASHING_VAULT_ADDRESS}
     restart: on-failure
     depends_on:
       api:

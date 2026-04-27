@@ -2,11 +2,12 @@ import { http, createConfig } from 'wagmi'
 import { mainnet, sepolia } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors'
 
-// 0G Testnet chain tanımı
+// 0G Testnet chain tanımı. ChainId verified live against evmrpc-testnet.0g.ai
+// — eth_chainId returns 0x40DA = 16602.
 export const ogTestnet = {
-  id: 16600,
+  id: 16602,
   name: '0G Galileo Testnet',
-  nativeCurrency: { name: 'A0GI', symbol: 'A0GI', decimals: 18 },
+  nativeCurrency: { name: '0G', symbol: '0G', decimals: 18 },
   rpcUrls: {
     default: { http: ['https://evmrpc-testnet.0g.ai'] },
   },

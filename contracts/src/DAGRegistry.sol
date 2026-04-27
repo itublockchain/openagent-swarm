@@ -5,6 +5,12 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface ISwarmEscrow {
     function settle(bytes32 taskId, address[] calldata winners) external;
+    function settleWithAmounts(
+        bytes32 taskId,
+        address[] calldata winners,
+        uint256[] calldata amounts
+    ) external;
+    function releaseSubtaskStake(bytes32 taskId, bytes32 nodeId) external;
 }
 
 /**
@@ -86,8 +92,10 @@ contract DAGRegistry is Ownable {
         bytes32 tid = nodes[nodeId].taskId;
         require(tid != bytes32(0), "Node not found");
         require(msg.sender == vault || msg.sender == planners[tid], "Unauthorized");
-        
+
         nodes[nodeId].validated = true;
+        // Worker's subtask stake is now safe to return.
+        escrow.releaseSubtaskStake(tid, nodeId);
 
         bytes32[] memory nodeIds = taskNodes[tid];
         bool allValidated = true;
@@ -105,6 +113,40 @@ contract DAGRegistry is Ownable {
             emit DAGCompleted(tid);
             escrow.settle(tid, winners);
         }
+    }
+
+    /// Validates many nodes in one tx WITHOUT triggering automatic settlement.
+    /// Caller (typically the planner) is expected to follow up with an explicit
+    /// SwarmEscrow.settleWithAmounts call to control payout amounts.
+    function markValidatedBatch(bytes32[] calldata nodeIds) external {
+        require(nodeIds.length > 0, "Empty list");
+        bytes32 tid = nodes[nodeIds[0]].taskId;
+        require(tid != bytes32(0), "Node not found");
+        require(msg.sender == vault || msg.sender == planners[tid], "Unauthorized");
+
+        for (uint256 i = 0; i < nodeIds.length; i++) {
+            bytes32 nid = nodeIds[i];
+            require(nodes[nid].taskId == tid, "Mixed tasks");
+            nodes[nid].validated = true;
+            escrow.releaseSubtaskStake(tid, nid);
+        }
+        emit DAGCompleted(tid);
+    }
+
+    function getTaskNodes(bytes32 taskId) external view returns (bytes32[] memory) {
+        return taskNodes[taskId];
+    }
+
+    /// Planner-gated explicit settlement. Forwards to SwarmEscrow.settleWithAmounts
+    /// after verifying the caller is the registered planner for this task.
+    function requestSettle(
+        bytes32 taskId,
+        address[] calldata winners,
+        uint256[] calldata amounts
+    ) external {
+        require(planners[taskId] == msg.sender, "Only planner");
+        require(winners.length == amounts.length, "Length mismatch");
+        escrow.settleWithAmounts(taskId, winners, amounts);
     }
 
     function resetNode(bytes32 nodeId) external {

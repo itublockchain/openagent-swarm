@@ -18,6 +18,11 @@ export class MockChain implements IChainPort {
     return `fake-tx-hash-${Math.random().toString(36).substring(7)}`;
   }
 
+  async stakeForSubtask(taskId: string, nodeId: string, amount: string): Promise<string> {
+    console.log(`[MockChain] subtask stake locked: task=${taskId} node=${nodeId} amount=${amount}`);
+    return `fake-tx-hash-${Math.random().toString(36).substring(7)}`;
+  }
+
   async claimPlanner(taskId: string): Promise<boolean> {
     const existing = MockChain.plannerClaims.get(taskId);
     if (existing && existing !== this.agentId) return false;
@@ -64,6 +69,27 @@ export class MockChain implements IChainPort {
     console.log(`[MockChain] Node ${nodeId} marked validated`);
   }
 
+  async markValidatedBatch(nodeIds: string[]): Promise<void> {
+    for (const nid of nodeIds) MockChain.validated.add(nid);
+    console.log(`[MockChain] ${nodeIds.length} nodes marked validated (batch)`);
+  }
+
+  async getNodeClaimant(nodeId: string): Promise<string> {
+    // In mock world the agentId serves as the on-chain address proxy.
+    return MockChain.subtaskClaims.get(nodeId) ?? '';
+  }
+
+  async getTaskBudget(_taskId: string): Promise<string> {
+    // Mock has no escrow accounting; return a fixed default so the
+    // planner's settle math has a non-zero divisor in tests.
+    return '100000000000000000000'; // 100 mUSDC (18 decimals)
+  }
+
+  async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {
+    console.log(`[MockChain] settleTask ${taskId}:`,
+      winners.map((w, i) => `${w}=${amounts[i]}`).join(', '));
+  }
+
   async completeTask(taskId: string): Promise<boolean> {
     if (MockChain.completedTasks.has(taskId)) return false;
     MockChain.completedTasks.set(taskId, this.agentId);
@@ -74,8 +100,8 @@ export class MockChain implements IChainPort {
     MockChain.completedTasks.set(taskId, agentId);
   }
 
-  async challenge(nodeId: string): Promise<void> {
-    console.warn(`[MockChain] Challenge initiated for node: ${nodeId}`);
+  async challenge(nodeId: string, challengerNodeId?: string): Promise<void> {
+    console.warn(`[MockChain] Challenge initiated for node: ${nodeId} (challenger node: ${challengerNodeId ?? 'planner'})`);
   }
 
   async settle(taskId: string, winners: string[]): Promise<void> {
