@@ -19,7 +19,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "accounts": ["./src/accounts.ts"],
+      "@/*": ["./src/*"],
+      "@swarm/shared": ["../../shared/index.ts"]
     }
   },
   "include": [

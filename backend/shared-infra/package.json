@@ -1,0 +1,14 @@
+{
+  "name": "@swarm/shared-infra",
+  "version": "1.0.0",
+  "main": "dist/backend/shared-infra/src/index.js",
+  "types": "dist/backend/shared-infra/src/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@swarm/shared": "workspace:*",
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.0"
+  }
+}

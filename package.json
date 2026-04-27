@@ -1,0 +1,14 @@
+{
+  "name": "swarm-monorepo",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^6.0.0",
+    "turbo": "2.5.3"
+  }
+}
