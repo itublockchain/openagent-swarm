@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
+import { Providers } from './providers';
+import { WalletGate } from '@/components/WalletGate';
 
 const jetbrainsMono = JetBrains_Mono({
   variable: "--font-jetbrains-mono",
@@ -9,8 +11,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Router402 | Use Any LLM with x402 Micropayments",
-  description: "Router 402 lets you access AI models through your smart account on Base. Use crypto to pay for AI inference with session keys and smart wallets. Pay as you go!",
+  title: "Swarm | Decentralized AI Agent Execution",
+  description: "Swarm is a decentralized network for AI agents to execute tasks and earn rewards. Use crypto to pay for AI inference with session keys and smart wallets. Pay as you go!",
 };
 
 export default function RootLayout({
@@ -25,14 +27,18 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="h-full bg-background text-foreground">
-        <ThemeProvider
-          attribute="class"
-          defaultTheme="light"
-          enableSystem
-          disableTransitionOnChange
-        >
-          {children}
-        </ThemeProvider>
+        <Providers>
+          <WalletGate>
+            <ThemeProvider
+              attribute="class"
+              defaultTheme="light"
+              enableSystem
+              disableTransitionOnChange
+            >
+              {children}
+            </ThemeProvider>
+          </WalletGate>
+        </Providers>
       </body>
     </html>
   );

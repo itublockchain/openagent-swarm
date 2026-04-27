@@ -107,14 +107,22 @@ export class SwarmAgent {
       }
 
       this.lastActivity = Date.now()
-      // Sadece planner olmak için yarış, worker dinleyicisi zaten aktif
+      // Plancı olmak için niyetini belli et
+      await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId: this.deps.config.agentId, taskId }))
+      
+      // 1 saniye bekle, bakalım başkası daha önce davranmış mı (Sync kontrolü)
+      await new Promise(r => setTimeout(r, 1000))
+      
       const claimed = await this.deps.chain.claimPlanner(taskId)
+      // Who won?
+      const chosenPlanner = (this.deps.chain as any).plannerClaims?.get(taskId) || this.deps.config.agentId;
 
       if (claimed) {
         this.currentTaskId = taskId
+        console.log(`[Agent ${this.deps.config.agentId}] WON planner race. Acting as planner.`)
         await this.runAsPlanner(event)
       } else {
-        console.log(`[Agent ${this.deps.config.agentId}] lost planner race, acting as worker`)
+        console.log(`[Agent ${this.deps.config.agentId}] LOST planner race to ${chosenPlanner}. Acting as worker.`)
       }
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] onTaskSubmitted error:`, err)
@@ -133,6 +141,7 @@ export class SwarmAgent {
       await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
 
       await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId, taskId }))
+      await new Promise(r => setTimeout(r, 100))
       await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, { 
         nodes, 
         taskId, 

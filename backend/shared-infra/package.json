@@ -8,6 +8,7 @@
   },
   "devDependencies": {
     "@swarm/shared": "workspace:*",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "@types/node": "^20.11.0"
   }
 }

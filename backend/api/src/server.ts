@@ -5,6 +5,11 @@ import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
 import { TaskSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { EventType } from '../../../shared/types';
+import { generateNonce, SiweMessage } from 'siwe'
+import jwt from 'jsonwebtoken'
+
+const JWT_SECRET = process.env.JWT_SECRET ?? 'swarm-dev-secret'
+const nonces = new Map<string, number>() // nonce → expiry
 
 export interface ServerDeps {
   storage: IStoragePort;
@@ -13,7 +18,15 @@ export interface ServerDeps {
 }
 
 export default async function createServer(deps: ServerDeps) {
-  const fastify = Fastify({ logger: true });
+  const fastify = Fastify({ 
+    logger: true,
+    ignoreTrailingSlash: true 
+  });
+
+  // Global request logger
+  fastify.addHook('onRequest', async (request) => {
+    console.log(`[BACKEND] Incoming request: ${request.method} ${request.url}`);
+  });
 
   // In-memory results store: taskId → { nodes: [{nodeId, result}] }
   const taskResults = new Map<string, { nodes: Array<{ nodeId: string; result: string }> }>()
@@ -31,7 +44,7 @@ export default async function createServer(deps: ServerDeps) {
   })
 
   await fastify.register(cors, {
-    origin: true // Allow all origins for dev
+    origin: true 
   });
 
   await fastify.register(websocket);
@@ -41,18 +54,81 @@ export default async function createServer(deps: ServerDeps) {
     return { status: 'ok', timestamp: Date.now() };
   });
 
+  // GET /auth/nonce
+  fastify.get('/auth/nonce', async () => {
+    const nonce = generateNonce()
+    nonces.set(nonce, Date.now() + 5 * 60 * 1000) // 5 dakika
+    return { nonce }
+  })
+
+  // POST /auth/verify
+  fastify.post('/auth/verify', async (request, reply) => {
+    const { message, signature } = request.body as any
+
+    try {
+      const siwe = new SiweMessage(message)
+      
+      // Nonce kontrolü
+      const expiry = nonces.get(siwe.nonce)
+      if (!expiry || expiry < Date.now()) {
+        return reply.status(401).send({ error: 'Invalid or expired nonce' })
+      }
+
+      const { data, error } = await siwe.verify({ signature })
+
+      if (error || !data) {
+        return reply.status(401).send({ error: 'Invalid signature' })
+      }
+
+      // Nonce kullanıldı, sil
+      nonces.delete(siwe.nonce)
+
+      // JWT oluştur
+      const token = jwt.sign(
+        { address: data.address, chainId: data.chainId },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      )
+
+      return { token, address: data.address }
+    } catch (err) {
+      console.error('[AUTH] Verify error:', err)
+      return reply.status(401).send({ error: 'Auth failed' })
+    }
+  })
+
+  // JWT doğrulama helper
+  function verifyJWT(token: string): { address: string; chainId: number } | null {
+    try {
+      return jwt.verify(token, JWT_SECRET) as any
+    } catch {
+      return null
+    }
+  }
+
   /**
    * POST /task
    * API just broadcasts the task to the AXL mesh.
    * A "Runner Agent" in the pool will pick it up and plan it.
    */
   fastify.post('/task', async (request, reply) => {
+    const authHeader = request.headers.authorization
+    if (!authHeader?.startsWith('Bearer ')) {
+      return reply.status(401).send({ error: 'Unauthorized' })
+    }
+
+    const token = authHeader.slice(7)
+    const user = verifyJWT(token)
+    if (!user) {
+      return reply.status(401).send({ error: 'Invalid token' })
+    }
+
     const body = TaskSchema.parse(request.body);
     const specHash = await deps.storage.append(body);
     
     const event = {
       type: EventType.TASK_SUBMITTED,
-      payload: { ...body, taskId: specHash, specHash },
+      payload: { ...body, taskId: specHash, specHash, submittedBy: user.address },
       timestamp: Date.now(),
       agentId: 'api-server'
     };
@@ -128,7 +204,17 @@ export default async function createServer(deps: ServerDeps) {
     };
 
     Object.values(EventType).forEach(type => {
-      const handler = (event: any) => send(event);
+      const handler = (event: any) => {
+        const now = Date.now();
+        const diff = Math.abs(now - (event.timestamp || 0));
+        
+        if (diff < 60000) { // 60 seconds tolerance
+          console.log(`[WS] OK: Transmitting ${event.type} to dashboard (diff: ${diff}ms)`);
+          send(event);
+        } else {
+          console.warn(`[WS] FILTERED: ${event.type} too old or clock drift (diff: ${diff}ms, eventTs: ${event.timestamp}, now: ${now})`);
+        }
+      };
       handlers.set(type, handler);
       deps.network.on(type as EventType, handler);
     });

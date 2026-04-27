@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import createServer from './server';
 import { MockStorage } from '../../agent/src/adapters/mock/MockStorage';
+import { ZeroGStorage } from '../../agent/src/adapters/ZeroGStorage';
 import { AxlNetwork } from '@swarm/shared-infra';
 import { AgentManager } from './AgentRunner';
 
@@ -10,7 +11,10 @@ async function start() {
   const agentId = 'api-core';
   
   // Choose implementation based on ENV
-  const storage = new MockStorage(agentId);
+  const storage = process.env.USE_ZG_STORAGE === 'true'
+    ? new ZeroGStorage()
+    : new MockStorage(agentId);
+
   const network = new AxlNetwork();
   await network.connect();
   
