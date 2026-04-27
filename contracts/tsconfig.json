@@ -6,8 +6,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "rootDir": "."
   },
-  "include": ["./test/**/*.ts"],
-  "files": ["hardhat.config.js"]
+  "include": ["./scripts/**/*.ts", "./test/**/*.ts"],
+  "files": ["hardhat.config.ts"]
 }

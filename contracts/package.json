@@ -2,7 +2,6 @@
   "name": "@swarm/contracts",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test"
@@ -28,6 +27,7 @@
     "solidity-coverage": "^0.8.17",
     "ts-node": "^10.9.2",
     "typechain": "^8.3.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "dotenv": "^16.4.5"
   }
 }
