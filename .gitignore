@@ -39,3 +39,14 @@ coverage/
 # Misc
 .turbo/
 .eslintcache
+
+# Lockfiles
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Contracts
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+contracts/deployments/
