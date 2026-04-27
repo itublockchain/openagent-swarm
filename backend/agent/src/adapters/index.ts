@@ -1,4 +1,4 @@
-import { OpenAICompute } from './OpenAICompute'
+import { ZGComputeAdapter } from './ZGComputeAdapter'
 import { MockCompute } from './mock/MockCompute'
 import { MockStorage } from './mock/MockStorage'
 import { MockChain } from './mock/MockChain'
@@ -9,7 +9,7 @@ export async function createAdapters(agentId: string) {
 
   const compute = useMock
     ? new MockCompute(agentId)
-    : new OpenAICompute()
+    : new ZGComputeAdapter()
 
   const network = new AxlNetwork()
   await network.connect()

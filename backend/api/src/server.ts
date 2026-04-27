@@ -15,6 +15,21 @@ export interface ServerDeps {
 export default async function createServer(deps: ServerDeps) {
   const fastify = Fastify({ logger: true });
 
+  // In-memory results store: taskId → { nodes: [{nodeId, result}] }
+  const taskResults = new Map<string, { nodes: Array<{ nodeId: string; result: string }> }>()
+
+  // Listen to SUBTASK_DONE and store results in API memory
+  deps.network.on(EventType.SUBTASK_DONE, (event: any) => {
+    const { taskId, nodeId, result } = event.payload ?? {}
+    if (!taskId || !nodeId || !result) return
+    if (!taskResults.has(taskId)) taskResults.set(taskId, { nodes: [] })
+    const entry = taskResults.get(taskId)!
+    // avoid duplicates
+    if (!entry.nodes.find(n => n.nodeId === nodeId)) {
+      entry.nodes.push({ nodeId, result })
+    }
+  })
+
   await fastify.register(cors, {
     origin: true // Allow all origins for dev
   });
@@ -65,6 +80,26 @@ export default async function createServer(deps: ServerDeps) {
     const { taskId } = request.params as any;
     const task = await deps.storage.fetch(taskId);
     return { ...(task as any) };
+  });
+
+  /**
+   * GET /result/:taskId
+   * Returns the aggregated subtask results for a completed task.
+   * Results are collected from SUBTASK_DONE events broadcast by agents.
+   */
+  fastify.get('/result/:taskId', async (request, reply) => {
+    const { taskId } = request.params as any;
+    const result = taskResults.get(taskId);
+    if (!result) {
+      reply.code(404)
+      return { error: 'No results yet for task: ' + taskId }
+    }
+    // Combine all node results into a single string
+    const combined = result.nodes
+      .sort((a, b) => a.nodeId.localeCompare(b.nodeId))
+      .map(n => `=== ${n.nodeId} ===\n${n.result}`)
+      .join('\n\n')
+    return { taskId, nodes: result.nodes, combined }
   });
 
   // DELETE /agent/:id
