@@ -3,7 +3,7 @@
 # 1. Generate unique AGENT_ID if not set
 if [ -z "$AGENT_ID" ]; then
   RAND_ID=$(cat /dev/urandom | tr -dc 'a-z0-9' | fold -w 4 | head -n 1)
-  export AGENT_ID="agent-$RAND_ID"
+  export AGENT_ID="0-agent-$RAND_ID"
 fi
 
 echo "[Start] Starting Agent: $AGENT_ID"

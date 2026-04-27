@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { SwarmCanvas } from '../../components/SwarmCanvas'
+import { TopologyMap } from '../../components/TopologyMap'
 import { Header } from '../../components/Header'
 import { DeployAgentModal } from '../../components/DeployAgentModal'
 import { cn } from '@/lib/utils'
@@ -46,11 +46,11 @@ export default function PoolPage() {
       <Header onDeployClick={() => setIsDeployOpen(true)} />
       
       <div className="flex flex-1 overflow-hidden">
-        {/* Three.js canvas */}
+        {/* 3D Topology Map */}
         <div className="flex-1 relative">
-          <SwarmCanvas agents={agents} onSelect={handleSelect} />
-          <div className="absolute top-4 left-4 text-muted-foreground text-xs font-medium bg-background/50 backdrop-blur-sm px-2 py-1 rounded-md border border-border/50">
-            {agents.length} agent · drag to rotate · scroll to zoom · click to select
+          <TopologyMap agents={agents} onSelect={handleSelect} />
+          <div className="absolute top-4 right-4 text-muted-foreground text-[10px] font-bold uppercase tracking-widest bg-background/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-border/50 z-20">
+            P2P MESH: {agents.length} NODES ACTIVE
           </div>
         </div>
 

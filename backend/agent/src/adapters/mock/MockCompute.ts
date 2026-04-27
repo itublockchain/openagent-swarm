@@ -5,30 +5,25 @@ export class MockCompute implements IComputePort {
   constructor(private agentId: string) {}
 
   async buildDAG(spec: string): Promise<DAGNode[]> {
-    const suffix = Math.random().toString(36).substring(7);
-    const n1 = `node-1-${suffix}`;
-    const n2 = `node-2-${suffix}`;
-    const n3 = `node-3-${suffix}`;
-
     return [
       {
-        id: n1,
+        id: 'node-1',
         subtask: `Process part 1 of ${spec}`,
         prevHash: null,
         status: 'idle',
         claimedBy: null
       },
       {
-        id: n2,
+        id: 'node-2',
         subtask: `Process part 2 of ${spec}`,
-        prevHash: `${n1}-hash`,
+        prevHash: 'placeholder-1',
         status: 'idle',
         claimedBy: null
       },
       {
-        id: n3,
+        id: 'node-3',
         subtask: `Process part 3 of ${spec}`,
-        prevHash: `${n2}-hash`,
+        prevHash: 'placeholder-2',
         status: 'idle',
         claimedBy: null
       }

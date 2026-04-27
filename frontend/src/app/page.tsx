@@ -10,6 +10,7 @@ import { Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
 import { useSwarmEvents } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
+import { apiRequest } from '../../lib/api';
 
 const nodeTypes = {
   task: TaskNode,
@@ -74,10 +75,8 @@ function DashboardContent() {
     setLogs(prev => [...prev, `[USER] Submitting spec: ${intent}`]);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-      const res = await fetch(`${apiUrl}/task`, {
+      const res = await apiRequest('/task', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ spec: intent, budget: "10" })
       });
       if (!res.ok) throw new Error("API request failed");

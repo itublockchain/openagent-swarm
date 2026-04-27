@@ -3,8 +3,8 @@
 /* eslint-disable */
 import type * as openzeppelin from "./@openzeppelin";
 export type { openzeppelin };
-import type * as contracts from "./contracts";
-export type { contracts };
+import type * as src from "./src";
+export type { src };
 export * as factories from "./factories";
 export type { Ownable } from "./@openzeppelin/contracts/access/Ownable";
 export { Ownable__factory } from "./factories/@openzeppelin/contracts/access/Ownable__factory";
@@ -28,15 +28,15 @@ export type { IERC165 } from "./@openzeppelin/contracts/utils/introspection/IERC
 export { IERC165__factory } from "./factories/@openzeppelin/contracts/utils/introspection/IERC165__factory";
 export type { ReentrancyGuard } from "./@openzeppelin/contracts/utils/ReentrancyGuard";
 export { ReentrancyGuard__factory } from "./factories/@openzeppelin/contracts/utils/ReentrancyGuard__factory";
-export type { DAGRegistry } from "./contracts/DAGRegistry.sol/DAGRegistry";
-export { DAGRegistry__factory } from "./factories/contracts/DAGRegistry.sol/DAGRegistry__factory";
-export type { ISwarmEscrow } from "./contracts/DAGRegistry.sol/ISwarmEscrow";
-export { ISwarmEscrow__factory } from "./factories/contracts/DAGRegistry.sol/ISwarmEscrow__factory";
-export type { MockERC20 } from "./contracts/MockERC20";
-export { MockERC20__factory } from "./factories/contracts/MockERC20__factory";
-export type { IDAGRegistry } from "./contracts/SlashingVault.sol/IDAGRegistry";
-export { IDAGRegistry__factory } from "./factories/contracts/SlashingVault.sol/IDAGRegistry__factory";
-export type { SlashingVault } from "./contracts/SlashingVault.sol/SlashingVault";
-export { SlashingVault__factory } from "./factories/contracts/SlashingVault.sol/SlashingVault__factory";
-export type { SwarmEscrow } from "./contracts/SwarmEscrow";
-export { SwarmEscrow__factory } from "./factories/contracts/SwarmEscrow__factory";
+export type { DAGRegistry } from "./src/DAGRegistry.sol/DAGRegistry";
+export { DAGRegistry__factory } from "./factories/src/DAGRegistry.sol/DAGRegistry__factory";
+export type { ISwarmEscrow } from "./src/DAGRegistry.sol/ISwarmEscrow";
+export { ISwarmEscrow__factory } from "./factories/src/DAGRegistry.sol/ISwarmEscrow__factory";
+export type { MockERC20 } from "./src/MockERC20";
+export { MockERC20__factory } from "./factories/src/MockERC20__factory";
+export type { IDAGRegistry } from "./src/SlashingVault.sol/IDAGRegistry";
+export { IDAGRegistry__factory } from "./factories/src/SlashingVault.sol/IDAGRegistry__factory";
+export type { SlashingVault } from "./src/SlashingVault.sol/SlashingVault";
+export { SlashingVault__factory } from "./factories/src/SlashingVault.sol/SlashingVault__factory";
+export type { SwarmEscrow } from "./src/SwarmEscrow";
+export { SwarmEscrow__factory } from "./factories/src/SwarmEscrow__factory";

@@ -47,9 +47,8 @@ export class AxlNetwork implements INetworkPort {
             const parsed = JSON.parse(body) as AXLEvent<any>;
             const now = Date.now();
             
-            // Ignore stale messages (older than 60s)
-            if (now - parsed.timestamp > 60000) {
-              // console.log(`[AxlNetwork] Ignoring stale event: ${parsed.type}`);
+            // Ignore stale messages (older than 5s) or messages without timestamp
+            if (!parsed.timestamp || isNaN(parsed.timestamp) || (now - parsed.timestamp > 5000)) {
               continue;
             }
 
@@ -57,16 +56,17 @@ export class AxlNetwork implements INetworkPort {
             
             if (this.seenEvents.has(eventId)) continue;
             this.seenEvents.add(eventId);
-            if (this.seenEvents.size > 1000) this.seenEvents.clear(); // Basic cache management
+            if (this.seenEvents.size > 10000) {
+              // FIFO-ish: remove oldest 1000 instead of clearing all
+              const arr = Array.from(this.seenEvents);
+              this.seenEvents = new Set(arr.slice(1000));
+            }
 
-            console.log(`[AxlNetwork] Received NEW event: ${parsed.type} from ${parsed.agentId}`);
+            console.log(`[AxlNetwork V3-FIXED] Received NEW event: ${parsed.type} from ${parsed.agentId}`);
             
             // Remember the sender
             if (parsed.senderPubKey) this.knownNodes.add(parsed.senderPubKey);
             if (fromPeer) this.knownNodes.add(fromPeer);
-
-            // GOSSIP RELAY: Re-broadcast to our known nodes to ensure everyone gets it
-            this.emit(parsed).catch(() => {});
 
             const channel = `axl-events:${parsed.type}`;
             const globalChannel = 'axl-events';
@@ -95,6 +95,26 @@ export class AxlNetwork implements INetworkPort {
 
   async emit<T>(event: AXLEvent<T>): Promise<void> {
     try {
+      const eventId = `${event.type}:${event.agentId}:${event.timestamp}`;
+      this.seenEvents.add(eventId);
+
+      // Trigger local handlers immediately so we process our own events
+      const channel = `axl-events:${event.type}`;
+      const globalChannel = 'axl-events';
+      const triggerHandlers = async () => {
+        if (this.handlers.has(channel)) {
+          for (const handler of this.handlers.get(channel)!) {
+            await handler(event);
+          }
+        }
+        if (this.handlers.has(globalChannel)) {
+          for (const handler of this.handlers.get(globalChannel)!) {
+            await handler(event);
+          }
+        }
+      };
+      triggerHandlers().catch(err => console.error('[AxlNetwork] local trigger error:', err));
+
       const res = await fetch(`${this.baseUrl}/topology`);
       if (!res.ok) return;
 
@@ -102,21 +122,19 @@ export class AxlNetwork implements INetworkPort {
       const nodes: any[] = topology.tree || []; 
       const ourKey = topology.our_public_key;
 
-      // Attach our public key so others can reply to us directly
       event.senderPubKey = ourKey;
       const payload = JSON.stringify(event);
 
-      // Fire-and-forget message to all nodes in the mesh + known nodes
+      // Collect all potential targets
       const allTargetNodes = new Set<string>();
-      nodes.forEach(n => allTargetNodes.add(n.public_key));
+      nodes.forEach(n => { if (n.public_key) allTargetNodes.add(n.public_key); });
       this.knownNodes.forEach(n => allTargetNodes.add(n));
 
-      console.log(`[AxlNetwork] Broadcasting ${event.type} to ${allTargetNodes.size - 1} target nodes...`);
+      console.log(`[AxlNetwork] Broadcasting ${event.type} to ${allTargetNodes.size} nodes...`);
       
       await Promise.all(Array.from(allTargetNodes).map(async (peerId) => {
         if (!peerId || peerId === ourKey) return;
         try {
-          console.log(`[AxlNetwork] Sending to ${peerId.slice(0, 8)}...`);
           await fetch(`${this.baseUrl}/send`, {
             method: 'POST',
             headers: {
@@ -125,9 +143,7 @@ export class AxlNetwork implements INetworkPort {
             },
             body: payload
           });
-        } catch (sendErr) {
-          console.error(`[AxlNetwork] Failed to send to node ${peerId}:`, sendErr);
-        }
+        } catch {}
       }));
     } catch (err) {
       console.error(`[AxlNetwork] Broadcast error:`, err);

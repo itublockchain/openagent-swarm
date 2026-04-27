@@ -19,6 +19,7 @@
       }
     ],
     "paths": {
+      "accounts": ["./src/accounts.ts"],
       "@/*": ["./src/*"],
       "@swarm/shared": ["../../shared/index.ts"]
     }

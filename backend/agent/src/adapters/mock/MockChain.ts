@@ -16,14 +16,20 @@ export class MockChain implements IChainPort {
   }
 
   async claimPlanner(taskId: string): Promise<boolean> {
-    if (MockChain.plannerClaims.has(taskId)) return false;
+    const existing = MockChain.plannerClaims.get(taskId);
+    if (existing && existing !== this.agentId) return false;
+    
     MockChain.plannerClaims.set(taskId, this.agentId);
     return true;
   }
 
   // External sync from network events
   async syncPlannerClaim(taskId: string, agentId: string): Promise<void> {
-    MockChain.plannerClaims.set(taskId, agentId);
+    const existing = MockChain.plannerClaims.get(taskId);
+    // Tie-break: smallest agentId wins to ensure all agents agree on same planner
+    if (!existing || agentId < existing) {
+      MockChain.plannerClaims.set(taskId, agentId);
+    }
   }
 
   async claimSubtask(nodeId: string): Promise<boolean> {
