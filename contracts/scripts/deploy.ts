@@ -6,13 +6,18 @@ async function main() {
   const [deployer] = await ethers.getSigners()
   console.log('Deploying with:', deployer.address)
 
-  // 0. MockERC20 (Used as USDC)
+  // 0. MockERC20 (USDC for Testnet)
   console.log('Deploying MockERC20...')
   const MockERC20 = await ethers.getContractFactory('MockERC20')
   const usdc = await MockERC20.deploy('Mock USDC', 'mUSDC')
   await usdc.waitForDeployment()
   const usdcAddress = await usdc.getAddress()
   console.log('MockERC20 (USDC):', usdcAddress)
+
+  // 0.1 Mint for the deployer (API wallet)
+  console.log('Minting USDC to deployer...')
+  const mintTx = await usdc.mint(deployer.address, ethers.parseEther('1000'))
+  await mintTx.wait()
 
   // 1. SwarmEscrow
   console.log('Deploying SwarmEscrow...')
@@ -40,16 +45,16 @@ async function main() {
 
   // 4. Setup Connections
   console.log('Setting up contract connections...')
-  
-  // Set addresses in Registry
   const setRegTx = await registry.setAddresses(escrowAddress, vaultAddress)
   await setRegTx.wait()
-  console.log('Registry addresses set.')
-
-  // Set authorities in Escrow
   const setEscrowTx = await escrow.setAuthorities(registryAddress, vaultAddress)
   await setEscrowTx.wait()
-  console.log('Escrow authorities set.')
+  
+  // 5. Approve Escrow
+  console.log('Approving SwarmEscrow to spend USDC...')
+  const approveTx = await usdc.approve(escrowAddress, ethers.MaxUint256)
+  await approveTx.wait()
+  console.log('Approved.')
 
   // Adresleri kaydet
   const addresses = {
@@ -62,25 +67,9 @@ async function main() {
   }
 
   const deploymentsDir = path.join(__dirname, '../deployments')
-  if (!fs.existsSync(deploymentsDir)) {
-    fs.mkdirSync(deploymentsDir)
-  }
-
-  fs.writeFileSync(
-    path.join(deploymentsDir, 'og_testnet.json'),
-    JSON.stringify(addresses, null, 2)
-  )
+  if (!fs.existsSync(deploymentsDir)) fs.mkdirSync(deploymentsDir)
+  fs.writeFileSync(path.join(deploymentsDir, 'og_testnet.json'), JSON.stringify(addresses, null, 2))
   console.log('Saved to deployments/og_testnet.json')
-
-  // Log for .env update
-  console.log('\n--- Update your .env file with these values ---')
-  console.log(`L2_USDC_ADDRESS=${usdcAddress}`)
-  console.log(`L2_ESCROW_ADDRESS=${escrowAddress}`)
-  console.log(`L2_DAG_REGISTRY_ADDRESS=${registryAddress}`)
-  console.log(`L2_SLASHING_VAULT_ADDRESS=${vaultAddress}`)
 }
 
-main().catch((error) => {
-  console.error(error)
-  process.exit(1)
-})
+main().catch(console.error)

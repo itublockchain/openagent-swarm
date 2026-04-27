@@ -4,11 +4,19 @@ import cors from '@fastify/cors';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
 import { TaskSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
+import { ethers } from 'ethers';
+import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json';
+import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json';
+import deployments from '../../../contracts/deployments/og_testnet.json';
 import { EventType } from '../../../shared/types';
 import { generateNonce, SiweMessage } from 'siwe'
 import jwt from 'jsonwebtoken'
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'swarm-dev-secret'
+const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
+const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET)) {
+  throw new Error('[API] JWT_SECRET must be set to a non-default value in production')
+}
 const nonces = new Map<string, number>() // nonce → expiry
 
 export interface ServerDeps {
@@ -43,8 +51,38 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
+  // JWT helpers — declared early so all routes can use them
+  function verifyJWT(token: string): { address: string; chainId: number } | null {
+    try {
+      return jwt.verify(token, JWT_SECRET) as any
+    } catch {
+      return null
+    }
+  }
+  function requireAuth(request: any, reply: any): { address: string; chainId: number } | null {
+    const authHeader = request.headers.authorization
+    if (!authHeader?.startsWith('Bearer ')) {
+      reply.status(401).send({ error: 'Unauthorized' })
+      return null
+    }
+    const user = verifyJWT(authHeader.slice(7))
+    if (!user) {
+      reply.status(401).send({ error: 'Invalid token' })
+      return null
+    }
+    return user
+  }
+
+  // CORS allow-list — accept comma-separated origins via env in production
+  const corsEnv = process.env.CORS_ORIGINS?.trim()
+  const corsOrigins: string[] | true = corsEnv
+    ? corsEnv.split(',').map(s => s.trim()).filter(Boolean)
+    : true
+  if (process.env.NODE_ENV === 'production' && corsOrigins === true) {
+    throw new Error('[API] CORS_ORIGINS must be set to an explicit allow-list in production')
+  }
   await fastify.register(cors, {
-    origin: true 
+    origin: corsOrigins,
   });
 
   await fastify.register(websocket);
@@ -97,34 +135,66 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
-  // JWT doğrulama helper
-  function verifyJWT(token: string): { address: string; chainId: number } | null {
-    try {
-      return jwt.verify(token, JWT_SECRET) as any
-    } catch {
-      return null
-    }
-  }
-
   /**
    * POST /task
    * API just broadcasts the task to the AXL mesh.
    * A "Runner Agent" in the pool will pick it up and plan it.
    */
   fastify.post('/task', async (request, reply) => {
-    const authHeader = request.headers.authorization
-    if (!authHeader?.startsWith('Bearer ')) {
-      return reply.status(401).send({ error: 'Unauthorized' })
-    }
-
-    const token = authHeader.slice(7)
-    const user = verifyJWT(token)
-    if (!user) {
-      return reply.status(401).send({ error: 'Invalid token' })
-    }
+    const user = requireAuth(request, reply)
+    if (!user) return
 
     const body = TaskSchema.parse(request.body);
     const specHash = await deps.storage.append(body);
+
+    // On-chain: Create task in SwarmEscrow.
+    // Without this, the agent's stake() call later reverts with "Task does not
+    // exist". Flow: read decimals → ensure allowance → createTask.
+    try {
+      const rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai';
+      const privateKey = process.env.PRIVATE_KEY;
+      if (!privateKey) {
+        return reply.status(500).send({
+          error: 'PRIVATE_KEY env var is required for on-chain task creation',
+        });
+      }
+
+      const escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow;
+      const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC;
+
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const signer = new ethers.Wallet(privateKey, provider);
+      const escrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, signer);
+      const usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, signer);
+
+      // Read decimals at runtime — supports both 18-decimal MockERC20 and
+      // 6-decimal real USDC without code changes.
+      const decimals: number = Number(await usdc.decimals());
+      const budget = ethers.parseUnits(body.budget || '0.01', decimals);
+      const taskIdBytes32 = specHash.startsWith('0x')
+        ? specHash
+        : ethers.keccak256(ethers.toUtf8Bytes(specHash));
+
+      // Approve escrow to pull USDC. Use MaxUint256 once and re-use across
+      // tasks to avoid an approval tx per submission.
+      const allowance: bigint = await usdc.allowance(signer.address, escrowAddr);
+      if (allowance < budget) {
+        console.log(`[L2] Approving USDC for escrow (current allowance ${allowance})...`);
+        const approveTx = await usdc.approve(escrowAddr, ethers.MaxUint256);
+        await approveTx.wait();
+      }
+
+      console.log(`[L2] Creating task ${taskIdBytes32} on-chain with budget ${body.budget}...`);
+      const tx = await escrow.createTask(taskIdBytes32, budget);
+      await tx.wait();
+      console.log(`[L2] Task created on-chain. TX: ${tx.hash}`);
+    } catch (err) {
+      console.error('[L2] Failed to create task on-chain:', err);
+      return reply.status(500).send({
+        error: 'Failed to create task on-chain',
+        details: (err as Error).message,
+      });
+    }
     
     const event = {
       type: EventType.TASK_SUBMITTED,
@@ -138,7 +208,8 @@ export default async function createServer(deps: ServerDeps) {
   });
 
   // POST /agent/deploy
-  fastify.post('/agent/deploy', async (request: any) => {
+  fastify.post('/agent/deploy', async (request: any, reply) => {
+    if (!requireAuth(request, reply)) return
     const body = AgentDeploySchema.parse(request.body)
     const containerId = await deps.manager.deploy(body)
     return { containerId }
@@ -180,6 +251,7 @@ export default async function createServer(deps: ServerDeps) {
 
   // DELETE /agent/:id
   fastify.delete('/agent/:id', async (request, reply) => {
+    if (!requireAuth(request, reply)) return
     const { id } = AgentIdParamsSchema.parse(request.params);
     await deps.manager.stop(id);
     return { ok: true };

@@ -5,6 +5,9 @@ export class MockChain implements IChainPort {
   private static plannerClaims = new Map<string, string>();
   private static subtaskClaims = new Map<string, string>();
   private static completedTasks = new Map<string, string>();
+  private static dagRegistry = new Map<string, string[]>();
+  private static outputs = new Map<string, string>();
+  private static validated = new Set<string>();
 
   constructor(private agentId: string) {
     console.log(`[MockChain] Initialized for ${agentId}`);
@@ -18,9 +21,14 @@ export class MockChain implements IChainPort {
   async claimPlanner(taskId: string): Promise<boolean> {
     const existing = MockChain.plannerClaims.get(taskId);
     if (existing && existing !== this.agentId) return false;
-    
+
     MockChain.plannerClaims.set(taskId, this.agentId);
     return true;
+  }
+
+  async registerDAG(taskId: string, nodeIds: string[]): Promise<void> {
+    MockChain.dagRegistry.set(taskId, nodeIds);
+    console.log(`[MockChain] DAG registered for task ${taskId} with ${nodeIds.length} nodes`);
   }
 
   // External sync from network events
@@ -46,6 +54,16 @@ export class MockChain implements IChainPort {
     return MockChain.subtaskClaims.has(nodeId);
   }
 
+  async submitOutput(nodeId: string, outputHash: string): Promise<void> {
+    MockChain.outputs.set(nodeId, outputHash);
+    console.log(`[MockChain] Output submitted for node ${nodeId}: ${outputHash}`);
+  }
+
+  async markValidated(nodeId: string): Promise<void> {
+    MockChain.validated.add(nodeId);
+    console.log(`[MockChain] Node ${nodeId} marked validated`);
+  }
+
   async completeTask(taskId: string): Promise<boolean> {
     if (MockChain.completedTasks.has(taskId)) return false;
     MockChain.completedTasks.set(taskId, this.agentId);
@@ -66,6 +84,8 @@ export class MockChain implements IChainPort {
 
   async resetSubtask(nodeId: string): Promise<void> {
     MockChain.subtaskClaims.delete(nodeId);
+    MockChain.outputs.delete(nodeId);
+    MockChain.validated.delete(nodeId);
     console.log(`[MockChain] subtask reset: ${nodeId}`);
   }
 }

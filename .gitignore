@@ -40,6 +40,12 @@ coverage/
 .turbo/
 .eslintcache
 
+# Local dev helpers (may contain secrets)
+gen_token.js
+trigger_task.js
+test_task.json
+test_output.log
+
 # Lockfiles
 pnpm-lock.yaml
 package-lock.json

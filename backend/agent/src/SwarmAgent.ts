@@ -10,10 +10,12 @@ export interface AgentDeps {
 }
 
 export class SwarmAgent {
-  // taskId → { nodes, taskId }
-  private tasks = new Map<string, { nodes: DAGNode[], taskId: string }>()
+  // taskId → { nodes, taskId, plannerAgentId }
+  private tasks = new Map<string, { nodes: DAGNode[], taskId: string, plannerAgentId?: string }>()
   private currentTaskId: string | null = null
   private lastActivity: number = Date.now()
+  // Track which tasks this agent is planner for (keeper responsibility)
+  private plannerFor = new Set<string>()
 
   constructor(private deps: AgentDeps) {}
 
@@ -66,16 +68,26 @@ export class SwarmAgent {
       }
     })
 
-    this.deps.network.on(EventType.DAG_COMPLETED, (event) => {
-      const { taskId, agentId } = event.payload as any
-      console.log(`[Agent ${this.deps.config.agentId}] Received DAG_COMPLETED for ${taskId} from ${agentId || 'mesh'}`)
-      this.deps.chain.syncTaskCompletion(taskId, agentId)
-      
+    this.deps.network.on(EventType.DAG_COMPLETED, async (event) => {
+      const { taskId, agentId, lastNodeId, lastOutputHash, needsPlannerValidation, settled } = event.payload as any
+      console.log(`[Agent ${this.deps.config.agentId}] Received DAG_COMPLETED for ${taskId} from ${agentId || event.agentId}`)
+
+      // Planner keeper sorumluluğu: Başka bir agent son node'u tamamladıysa,
+      // planner olarak son çıktıyı denetle
+      if (needsPlannerValidation && this.plannerFor.has(taskId) && event.agentId !== this.deps.config.agentId) {
+        console.log(`[Agent ${this.deps.config.agentId}] KEEPER: Received last node for validation`)
+        await this.validateLastNodeAsPlanner(lastNodeId, lastOutputHash, taskId)
+        return
+      }
+
+      this.deps.chain.syncTaskCompletion(taskId, agentId || event.agentId)
+
       // task bitti, boşa çık
       if (this.currentTaskId === taskId) {
         console.log(`[Agent ${this.deps.config.agentId}] Resetting busy state for task ${taskId}`)
         this.currentTaskId = null
         this.tasks.delete(taskId)
+        this.plannerFor.delete(taskId)
       }
     })
 
@@ -140,20 +152,24 @@ export class SwarmAgent {
       await this.deps.storage.append(nodes)
       await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
 
+      // Register DAG on-chain (mühürleme)
+      const nodeIds = nodes.map(n => n.id)
+      await this.deps.chain.registerDAG(taskId, nodeIds)
+      console.log(`[Agent ${agentId}] DAG registered on-chain with ${nodeIds.length} nodes`)
+
       await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId, taskId }))
       await new Promise(r => setTimeout(r, 100))
-      await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, { 
-        nodes, 
-        taskId, 
-        plannerAgentId: agentId 
+      await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, {
+        nodes,
+        taskId,
+        plannerAgentId: agentId
       }))
 
       console.log(`[Agent ${agentId}] DAG_READY emitted, ${nodes.length} nodes`)
 
-      // planner DAG_COMPLETED dinler → keeper olur
-      this.deps.network.on(EventType.DAG_COMPLETED, () => {
-        console.log(`[Agent ${agentId}] keeper role — not implemented yet`)
-      })
+      // Track planner responsibility — keeper role for validating last node
+      this.plannerFor.add(taskId)
+      this.tasks.set(taskId, { nodes, taskId, plannerAgentId: agentId })
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner FAILED:`, err)
     }
@@ -170,7 +186,8 @@ export class SwarmAgent {
       this.lastActivity = Date.now()
       // cache'e al ve sahiplen
       this.currentTaskId = taskId
-      this.tasks.set(taskId, { nodes, taskId })
+      const plannerAgentId = event.payload.plannerAgentId
+      this.tasks.set(taskId, { nodes, taskId, plannerAgentId })
       console.log(`[Agent ${this.deps.config.agentId}] DAG cached, trying first node`)
       // sadece ilk node'u claim etmeye çalış
       await this.claimFirstAvailable(taskId)
@@ -232,6 +249,10 @@ export class SwarmAgent {
       const output = await this.deps.compute.complete(node.subtask, prevOutput as string | null)
       const outputHash = await this.deps.storage.append(output)
       node.status = 'done'
+      node.outputHash = outputHash
+
+      // Submit output hash on-chain
+      await this.deps.chain.submitOutput(node.id, outputHash)
 
       console.log(`[Agent ${agentId}] subtask result (${node.id}):`, output.substring(0, 200))
 
@@ -259,11 +280,20 @@ export class SwarmAgent {
     // bir sonraki node var mı?
     const nextNode = nodes[doneIndex + 1]
     if (!nextNode) {
-      // DAG bitti — atomic emit
-      const won = await this.deps.chain.completeTask(taskId)
-      if (won) {
-        console.log(`[Agent ${agentId}] DAG_COMPLETED`)
-        await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, { taskId }))
+      // Son node tamamlandı — planner'a denetleme sorumluluğu devret
+      // Eğer biz planner'sak, son node'u validate et ve settlement'ı tetikle
+      if (this.plannerFor.has(taskId)) {
+        await this.validateLastNodeAsPlanner(doneNodeId, outputHash, taskId)
+      } else {
+        // Son node'u tamamlayan agent planner değilse, DAG_COMPLETED sinyali gönder
+        // Planner bu sinyali alıp son node'u denetleyecek
+        console.log(`[Agent ${agentId}] Last node done, signaling planner for validation`)
+        await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
+          taskId,
+          lastNodeId: doneNodeId,
+          lastOutputHash: outputHash,
+          needsPlannerValidation: true,
+        }))
       }
       return
     }
@@ -279,6 +309,51 @@ export class SwarmAgent {
       await this.executeSubtask(nextNode, taskId)
     } else {
       console.log(`[Agent ${agentId}] next node ${nextNode.id} taken by another agent`)
+    }
+  }
+
+  /**
+   * Planner'ın keeper rolü: Son agent'ın çıktısını denetler.
+   * Mimari gereği son agent'ı denetleyecek bir sonraki agent olmadığı için
+   * bu sorumluluk planner'a aittir.
+   */
+  private async validateLastNodeAsPlanner(lastNodeId: string, outputHash: string, taskId: string): Promise<void> {
+    const agentId = this.deps.config.agentId
+    const task = this.tasks.get(taskId)
+    if (!task) return
+
+    console.log(`[Agent ${agentId}] KEEPER: Validating last node ${lastNodeId} output`)
+
+    try {
+      // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle
+      const lastOutput = await this.deps.storage.fetch(outputHash)
+      const isValid = await this.deps.compute.judge(lastOutput as string)
+
+      if (!isValid) {
+        console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} FAILED validation. Challenging.`)
+        const lastNode = task.nodes.find(n => n.id === lastNodeId)
+        if (lastNode) {
+          await this.challengeNode(lastNode, taskId)
+        }
+        return
+      }
+
+      console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} validated. Marking all nodes on-chain.`)
+
+      // Tüm node'ları on-chain'de validated olarak işaretle
+      // markValidated son node'da çağrıldığında, kontrat otomatik olarak
+      // tüm DAG'ın bittiğini algılayıp escrow.settle() tetikler
+      for (const node of task.nodes) {
+        await this.deps.chain.markValidated(node.id)
+      }
+
+      const won = await this.deps.chain.completeTask(taskId)
+      if (won) {
+        console.log(`[Agent ${agentId}] KEEPER: DAG_COMPLETED — settlement triggered on-chain`)
+        await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, { taskId, settled: true }))
+      }
+    } catch (err) {
+      console.error(`[Agent ${agentId}] KEEPER validation error:`, err)
     }
   }
 

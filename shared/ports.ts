@@ -27,10 +27,16 @@ export interface IChainPort {
   stake(taskId: string, amount: string): Promise<string>
   /** FCFS — ilk çağıran true alır, sonrakiler false */
   claimPlanner(taskId: string): Promise<boolean>
+  /** DAG'ı on-chain'e mühürler (sadece planner çağırabilir) */
+  registerDAG(taskId: string, nodeIds: string[]): Promise<void>
   /** FCFS — nodeId bazlı, ilk çağıran true alır */
   claimSubtask(nodeId: string): Promise<boolean>
   /** subtask claim durumunu kontrol eder */
   isSubtaskClaimed(nodeId: string): Promise<boolean>
+  /** subtask çıktısını on-chain'e kaydeder */
+  submitOutput(nodeId: string, outputHash: string): Promise<void>
+  /** node'u validated olarak işaretler, tüm DAG bitince settle tetiklenir */
+  markValidated(nodeId: string): Promise<void>
   /** task'ın bittiğini kaydeder */
   completeTask(taskId: string): Promise<boolean>
   /** hatalı node'a itiraz açar */
@@ -39,7 +45,7 @@ export interface IChainPort {
   settle(taskId: string, winners: string[]): Promise<void>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
-  
+
   // Sync methods
   syncPlannerClaim(taskId: string, agentId: string): Promise<void>
   syncSubtaskClaim(nodeId: string, agentId: string): Promise<void>

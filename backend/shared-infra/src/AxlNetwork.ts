@@ -143,7 +143,9 @@ export class AxlNetwork implements INetworkPort {
             },
             body: payload
           });
-        } catch {}
+        } catch (peerErr) {
+          console.warn(`[AxlNetwork] Failed to send to peer ${peerId}:`, peerErr);
+        }
       }));
     } catch (err) {
       console.error(`[AxlNetwork] Broadcast error:`, err);

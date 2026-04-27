@@ -7,8 +7,8 @@ import { EventBus } from './core/EventBus';
 import { EventType } from '../../../shared/types';
 import { createAdapters } from './adapters';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables from root
+dotenv.config({ path: '../../.env' });
 
 const agentId = process.env.AGENT_ID || 'swarm-agent-001';
 const stakeAmount = process.env.STAKE_AMOUNT || '100';
