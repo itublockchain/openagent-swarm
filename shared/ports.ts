@@ -45,6 +45,10 @@ export interface IChainPort {
   completeTask(taskId: string): Promise<boolean>
   /** hatalı node'a itiraz açar; challengerNodeId challenger'ın kendi subtask'ı (planner ise '0x0') */
   challenge(nodeId: string, challengerNodeId?: string): Promise<void>
+  /** açık bir challenge'a jüri oyu kullanır. agentId çağıranın kendi AgentRegistry id'si */
+  voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void>
+  /** süresi dolan challenge'ı çoğunluğa göre kapatır (kimse oy vermediyse drop) */
+  finalizeExpiredChallenge(nodeId: string): Promise<void>
   /** ödülleri dağıtır ve escrow'u kapatır */
   settle(taskId: string, winners: string[]): Promise<void>
   /** Explicit per-agent ödül dağıtımı (planner yetkili) */

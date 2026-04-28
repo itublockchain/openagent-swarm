@@ -35,15 +35,8 @@ async function main() {
   const registryAddress = await registry.getAddress()
   console.log('DAGRegistry:', registryAddress)
 
-  // 3. SlashingVault
-  console.log('Deploying SlashingVault...')
-  const SlashingVault = await ethers.getContractFactory('SlashingVault')
-  const vault = await SlashingVault.deploy(escrowAddress, registryAddress)
-  await vault.waitForDeployment()
-  const vaultAddress = await vault.getAddress()
-  console.log('SlashingVault:', vaultAddress)
-
-  // 3.1 AgentRegistry — public list of agents in the swarm.
+  // 3. AgentRegistry — must be deployed BEFORE SlashingVault, because the
+  //    vault's jury-vote path verifies juror eligibility against this registry.
   console.log('Deploying AgentRegistry...')
   const AgentRegistry = await ethers.getContractFactory('AgentRegistry')
   const agentRegistry = await AgentRegistry.deploy()
@@ -51,14 +44,23 @@ async function main() {
   const agentRegistryAddress = await agentRegistry.getAddress()
   console.log('AgentRegistry:', agentRegistryAddress)
 
-  // 4. Setup Connections
+  // 4. SlashingVault — admin-free; resolves challenges by quorum of registered
+  //    RUNNING agents acting as LLM-Judge jurors.
+  console.log('Deploying SlashingVault...')
+  const SlashingVault = await ethers.getContractFactory('SlashingVault')
+  const vault = await SlashingVault.deploy(escrowAddress, registryAddress, agentRegistryAddress)
+  await vault.waitForDeployment()
+  const vaultAddress = await vault.getAddress()
+  console.log('SlashingVault:', vaultAddress)
+
+  // 5. Setup Connections
   console.log('Setting up contract connections...')
   const setRegTx = await registry.setAddresses(escrowAddress, vaultAddress)
   await setRegTx.wait()
   const setEscrowTx = await escrow.setAuthorities(registryAddress, vaultAddress)
   await setEscrowTx.wait()
-  
-  // 5. Approve Escrow
+
+  // 6. Approve Escrow
   console.log('Approving SwarmEscrow to spend USDC...')
   const approveTx = await usdc.approve(escrowAddress, ethers.MaxUint256)
   await approveTx.wait()

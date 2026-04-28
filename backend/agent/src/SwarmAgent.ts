@@ -68,6 +68,12 @@ export class SwarmAgent {
       }
     })
 
+    this.deps.network.on(EventType.CHALLENGE, (event) => {
+      this.onChallengeRaised(event).catch(err =>
+        console.error(`[Agent ${this.deps.config.agentId}] juror flow error:`, err),
+      )
+    })
+
     this.deps.network.on(EventType.DAG_COMPLETED, async (event) => {
       const { taskId, agentId, lastNodeId, lastOutputHash, needsPlannerValidation, settled } = event.payload as any
       console.log(`[Agent ${this.deps.config.agentId}] Received DAG_COMPLETED for ${taskId} from ${agentId || event.agentId}`)
@@ -389,6 +395,49 @@ export class SwarmAgent {
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] challenge error:`, err)
     }
+  }
+
+  /**
+   * LLM-Judge jury vote. When another agent raises a CHALLENGE on AXL, every
+   * other agent in the swarm runs its own judge over the disputed output and
+   * casts a verdict. The on-chain SlashingVault auto-resolves the slash once
+   * QUORUM votes land — there is no admin path. Self-events (we are the
+   * challenger), missing local cache, or ineligibility (we are the accused
+   * worker, not RUNNING in AgentRegistry, already voted) are silently skipped:
+   * the contract is the authoritative gate, the agent only proposes a verdict.
+   */
+  private async onChallengeRaised(event: AXLEvent<any>): Promise<void> {
+    const { nodeId, taskId } = event.payload
+    const myAgentId = this.deps.config.agentId
+
+    if (event.agentId === myAgentId) return
+
+    const task = this.tasks.get(taskId)
+    if (!task) return
+    const node = task.nodes.find(n => n.id === nodeId)
+    if (!node?.outputHash) {
+      console.log(`[Agent ${myAgentId}] CHALLENGE: no cached output for ${nodeId}, abstain`)
+      return
+    }
+
+    // Don't vote on a node we ourselves produced — the contract would reject
+    // the tx anyway, but skipping early saves an RPC round-trip.
+    if (node.claimedBy === myAgentId) return
+
+    let output: unknown
+    try {
+      output = await this.deps.storage.fetch(node.outputHash)
+    } catch (err) {
+      console.warn(`[Agent ${myAgentId}] juror could not fetch output for ${nodeId}:`, err)
+      return
+    }
+
+    const isValid = await this.deps.compute.judge(output as string)
+    const accusedGuilty = !isValid
+    console.log(
+      `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'}`,
+    )
+    await this.deps.chain.voteOnChallenge(nodeId, myAgentId, accusedGuilty)
   }
 
   private async onTaskReopened(event: AXLEvent<any>): Promise<void> {
