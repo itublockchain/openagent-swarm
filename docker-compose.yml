@@ -47,7 +47,7 @@ services:
       dockerfile: backend/agent/Dockerfile
     env_file: .env
     environment:
-      - AGENT_ID=${AGENT_ID:-agent-1}
+      - AGENT_ID=${AGENT_ID:-swarm-genesis}
       - USE_MOCK=${USE_MOCK:-false}
       - COMPUTE_PROVIDER=0g
       - ZG_COMPUTE_RPC_URL=${ZG_COMPUTE_RPC_URL:-https://evmrpc-testnet.0g.ai}

@@ -170,7 +170,8 @@ export default async function createServer(deps: ServerDeps) {
       console.error('[L2] Failed to read USDC decimals:', err);
       return reply.status(502).send({ error: 'L2 RPC unreachable' });
     }
-    const budgetWei = ethers.parseUnits(body.budget || '0.01', decimals).toString();
+    // TaskSchema.refine already guarantees a positive numeric string here.
+    const budgetWei = ethers.parseUnits(body.budget, decimals).toString();
 
     return {
       specHash,
@@ -210,8 +211,9 @@ export default async function createServer(deps: ServerDeps) {
     if (taskOnChain.owner === ethers.ZeroAddress) {
       if (process.env.ALLOW_API_CREATE_TASK === 'true') {
         // Legacy / dev path: fall back to API-funded createTask. Useful for
-        // server-to-server testing without a connected wallet.
-        const r = await apiFundedCreateTask(taskIdBytes32, body.budget || '0.01');
+        // server-to-server testing without a connected wallet. Schema has
+        // already validated body.budget is a positive numeric string.
+        const r = await apiFundedCreateTask(taskIdBytes32, body.budget);
         if (!r.ok) return reply.status(500).send(r.payload);
       } else {
         return reply.status(402).send({

@@ -78,12 +78,22 @@ export class L2Contract implements IChainPort {
   }
 
   async claimPlanner(taskId: string): Promise<boolean> {
+    const formatted = this.formatId(taskId)
     try {
-      const tx = await this.registry.claimPlanner(this.formatId(taskId))
+      const tx = await this.registry.claimPlanner(formatted)
       await tx.wait()
-      return true
     } catch (error) {
-      console.log(`[L2Contract] claimPlanner failed for ${taskId}:`, error)
+      console.log(`[L2Contract] claimPlanner tx failed for ${taskId}:`, error)
+      return false
+    }
+    // The contract returns false silently when the planner slot is already
+    // taken (no revert), so a successful tx does NOT imply a successful claim.
+    // Read the registry state and compare to our signer to know who actually won.
+    try {
+      const winner: string = await this.registry.planners(formatted)
+      return winner.toLowerCase() === this.signer.address.toLowerCase()
+    } catch (error) {
+      console.log(`[L2Contract] claimPlanner verify failed for ${taskId}:`, error)
       return false
     }
   }
@@ -97,12 +107,21 @@ export class L2Contract implements IChainPort {
   }
 
   async claimSubtask(nodeId: string): Promise<boolean> {
+    const formatted = this.formatId(nodeId)
     try {
-      const tx = await this.registry.claimSubtask(this.formatId(nodeId))
+      const tx = await this.registry.claimSubtask(formatted)
       await tx.wait()
-      return true
     } catch (error) {
-      console.log(`[L2Contract] claimSubtask failed for ${nodeId}:`, error)
+      console.log(`[L2Contract] claimSubtask tx failed for ${nodeId}:`, error)
+      return false
+    }
+    // Same lying-true issue as claimPlanner: claimSubtask silently returns
+    // false when the slot is already filled. Verify via state read.
+    try {
+      const node = await this.registry.nodes(formatted)
+      return (node.claimedBy as string).toLowerCase() === this.signer.address.toLowerCase()
+    } catch (error) {
+      console.log(`[L2Contract] claimSubtask verify failed for ${nodeId}:`, error)
       return false
     }
   }

@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Edge, Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi';
-import { waitForTransactionReceipt, readContract } from '@wagmi/core';,
+import { waitForTransactionReceipt, readContract } from '@wagmi/core';
 import TaskNode, { NodeData } from '@/components/flow/task-node';                                                       
 import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';

@@ -242,7 +242,21 @@ export class SwarmAgent {
     const task = this.tasks.get(taskId)
     if (!task) return
 
+    // Role separation: the planner of this task is its keeper-validator and
+    // does NOT race for its own subtasks. The settlement split (20% planner,
+    // 80% workers) collapses to "planner takes everything" if the planner
+    // also fills the worker slots. Trade-off: in a single-agent swarm the
+    // DAG simply stalls until another agent comes online.
+    if (this.plannerFor.has(taskId)) return
+
     for (const node of task.nodes) {
+      // Already handled — either we (or a peer) marked it claimed/done locally.
+      // Without this guard, the SUBTASK_DONE listener re-enters claimFirstAvailable
+      // for every completion and re-tries already-finished nodes; with the new
+      // honest claimSubtask the contract correctly says "not yours" but the
+      // wasted RPC + spurious "Already staked" reverts pollute the logs.
+      if (node.status === 'done' || node.status === 'claimed') continue
+
       // prevHash henüz gerçek storage hash değilse (bağımlılık bitmediyse) atla
       // Gerçek hash'lerde 'placeholder-' kelimesi geçmez.
       if (node.prevHash && node.prevHash.includes('placeholder-')) continue
@@ -414,17 +428,36 @@ export class SwarmAgent {
     console.log(`[Agent ${agentId}] KEEPER: Validating last node ${lastNodeId} output`)
 
     try {
-      // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle
-      const lastOutput = await this.deps.storage.fetch(outputHash)
-      const isValid = await this.deps.compute.judge(lastOutput as string)
+      // Self-claimant guard: if the planner-keeper also worked the last node,
+      // a judge → challenge flow is impossible (SlashingVault rejects
+      // self-challenge: `accused != msg.sender`). There is also no peer
+      // worker to peer-validate the last node. Trust own work and mark
+      // validated; the per-node SUBTASK_PEER_VALIDATED signal earlier in the
+      // chain still gives meaningful jury coverage to every other node.
+      const myAddr = (this.deps.config.agentAddress ?? '').toLowerCase()
+      let claimant = ''
+      try {
+        claimant = (await this.deps.chain.getNodeClaimant(lastNodeId)).toLowerCase()
+      } catch (err) {
+        console.warn(`[Agent ${agentId}] KEEPER: getNodeClaimant failed for ${lastNodeId}:`, err)
+      }
+      const selfClaimed = !!myAddr && claimant === myAddr
 
-      if (!isValid) {
-        console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} FAILED validation. Challenging.`)
-        const lastNode = task.nodes.find(n => n.id === lastNodeId)
-        if (lastNode) {
-          await this.challengeNode(lastNode, taskId)
+      if (!selfClaimed) {
+        // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle
+        const lastOutput = await this.deps.storage.fetch(outputHash)
+        const isValid = await this.deps.compute.judge(lastOutput as string)
+
+        if (!isValid) {
+          console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} FAILED validation. Challenging.`)
+          const lastNode = task.nodes.find(n => n.id === lastNodeId)
+          if (lastNode) {
+            await this.challengeNode(lastNode, taskId)
+          }
+          return
         }
-        return
+      } else {
+        console.log(`[Agent ${agentId}] KEEPER: I worked the last node — skipping self-judge, trusting own output`)
       }
 
       console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} validated. Marking all nodes on-chain (batch).`)
@@ -540,15 +573,80 @@ export class SwarmAgent {
 
   private async onTaskReopened(event: AXLEvent<any>): Promise<void> {
     const { nodeId, taskId } = event.payload
-    if (event.agentId === this.deps.config.agentId) return
 
+    // Self-events are NOT skipped: if WE were the challenger, no peer may
+    // have the DAG cached (e.g. they were offline during DAG_READY), so we
+    // are still responsible for trying to re-claim once the slot opens up.
     const task = this.tasks.get(taskId)
     if (!task) return
 
     const node = task.nodes.find(n => n.id === nodeId)
-    if (node) node.status = undefined as any
+    if (node) {
+      node.status = undefined as any
+      node.outputHash = undefined
+    }
 
+    // Try once immediately in case the on-chain reset has already landed
+    // (jury hit quorum before this event reached us). If still un-claimed
+    // locally afterwards, schedule a polling watchdog — the vault only
+    // resets the node after QUORUM guilty votes or finalizeExpired.
     await this.claimFirstAvailable(taskId)
+
+    const fresh = task.nodes.find(n => n.id === nodeId)
+    if (fresh && fresh.status !== 'claimed' && fresh.status !== 'done') {
+      this.scheduleReopenWatchdog(nodeId, taskId)
+    }
+  }
+
+  /**
+   * After a CHALLENGE, the vault only calls registry.resetNode once enough
+   * jurors have voted GUILTY (QUORUM = 3) or finalizeExpired closes a
+   * majority-guilty window. Until that happens, claimSubtask returns false
+   * because claimedBy is still the slashed worker. Poll the registry
+   * periodically and re-attempt the claim once the slot is empty. Also nudges
+   * finalizeExpiredChallenge every few iterations so a stale window with one
+   * or two guilty votes can resolve without a manual operator step.
+   */
+  private scheduleReopenWatchdog(nodeId: string, taskId: string): void {
+    const POLL_MS = 30_000
+    const MAX_ITERATIONS = 24 // ~12 min; vault VOTING_WINDOW is 1h
+    const ZERO = '0x0000000000000000000000000000000000000000'
+    let attempt = 0
+    const agentId = this.deps.config.agentId
+
+    const tick = async (): Promise<void> => {
+      attempt++
+      const task = this.tasks.get(taskId)
+      if (!task) return // task abandoned / completed
+      const node = task.nodes.find(n => n.id === nodeId)
+      if (node && (node.status === 'claimed' || node.status === 'done')) return
+      if (attempt > MAX_ITERATIONS) {
+        console.log(`[Agent ${agentId}] reopen watchdog: giving up on ${nodeId}`)
+        return
+      }
+
+      // Best-effort kick to close a stale challenge. Reverts with
+      // "Still voting" before the deadline; harmless to attempt.
+      if (attempt % 4 === 0) {
+        try {
+          await this.deps.chain.finalizeExpiredChallenge(nodeId)
+        } catch { /* expected before deadline */ }
+      }
+
+      try {
+        const claimant = await this.deps.chain.getNodeClaimant(nodeId)
+        if (!claimant || claimant.toLowerCase() === ZERO) {
+          console.log(`[Agent ${agentId}] reopen watchdog: ${nodeId} reset detected, retrying claim`)
+          await this.claimFirstAvailable(taskId)
+        }
+      } catch (err) {
+        console.warn(`[Agent ${agentId}] reopen watchdog poll failed:`, err)
+      }
+
+      setTimeout(tick, POLL_MS)
+    }
+
+    setTimeout(tick, POLL_MS)
   }
 
   private buildEvent<T>(type: EventType, payload: T): AXLEvent<T> {
