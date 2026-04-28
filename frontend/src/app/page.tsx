@@ -3,6 +3,7 @@
 import { LandingHeader } from '@/components/landing/LandingHeader'
 import { Hero } from '@/components/landing/Hero'
 import { DemoShowcase } from '@/components/landing/DemoShowcase'
+import { HowItWorks } from '@/components/landing/HowItWorks'
 import { Features } from '@/components/landing/Features'
 import { PoweredBy } from '@/components/landing/PoweredBy'
 import { CTASection } from '@/components/landing/CTASection'
@@ -15,6 +16,7 @@ export default function LandingPage() {
       <main>
         <Hero />
         <DemoShowcase />
+        <HowItWorks />
         <Features />
         <PoweredBy />
         <CTASection />

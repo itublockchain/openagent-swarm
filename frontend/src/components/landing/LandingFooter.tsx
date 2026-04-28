@@ -27,7 +27,18 @@ export function LandingFooter() {
           </Link>
         </nav>
 
-        <p className="text-xs text-zinc-500">© 2026 Swarm. All rights reserved.</p>
+        <div className="flex flex-col md:items-end gap-2">
+          <a
+            href="https://ethglobal.com"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-zinc-700 bg-zinc-900 text-[11px] font-mono uppercase tracking-widest text-zinc-300 hover:text-white hover:border-zinc-500 transition-colors"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-pink-400" />
+            Built for ETHGlobal
+          </a>
+          <p className="text-xs text-zinc-500">© 2026 Swarm. All rights reserved.</p>
+        </div>
       </div>
     </footer>
   )
