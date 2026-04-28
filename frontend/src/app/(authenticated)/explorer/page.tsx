@@ -6,8 +6,12 @@ import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState,
 import '@xyflow/react/dist/style.css';
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi';
 import { waitForTransactionReceipt, readContract } from '@wagmi/core';
-import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
-import { Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
+import TaskNode, { NodeData } from '@/components/flow/task-node';
+import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
+import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
+import { LogsPanel } from '@/components/flow/LogsPanel';
+import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
+import { Send } from 'lucide-react';
 import { useSwarmEvents } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
@@ -27,6 +31,9 @@ function DashboardContent() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<NodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [inputText, setInputText] = useState("");
+  const [model, setModel] = useState<ModelId>('gpt-4o');
+  const [budget, setBudget] = useState<number>(10);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   const [submitStep, setSubmitStep] = useState<SubmitStep>('idle');
   const [logs, setLogs] = useState<string[]>([
@@ -35,6 +42,21 @@ function DashboardContent() {
   ]);
 
   const { dag, events, taskIdFromUrl } = useSwarmEvents();
+
+  // Elapsed-time ticker for status bar. Resets when a new taskId arrives.
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!taskIdFromUrl) return;
+    const start = Date.now();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setElapsedSec(0);
+    const id = setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [taskIdFromUrl]);
+  const elapsedFmt = `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`;
+  const completedCount = nodes.filter(n => n.data?.status === 'completed').length;
   const { address: walletAddress } = useAccount();
   const currentChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
@@ -91,12 +113,12 @@ function DashboardContent() {
       return;
     }
 
-    const budget = "10";
+    const budgetStr = String(budget);
     // Fresh nonce per submission so identical specs don't collide on the
     // content-addressed taskId (would revert with "Task already exists").
     const submissionNonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setSubmitStep('preparing');
-    setLogs(prev => [...prev, `[USER] Submitting spec: ${intent}`]);
+    setLogs(prev => [...prev, `[USER] Submitting spec: ${intent} (model=${model}, budget=${budgetStr} USDC)`]);
 
     try {
       // 0. Switch wallet to 0G Galileo if it's on a different chain.
@@ -115,7 +137,7 @@ function DashboardContent() {
       // 1. Prepare
       const prepRes = await apiRequest('/task/prepare', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget, nonce: submissionNonce }),
+        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce }),
       });
       if (!prepRes.ok) throw new Error(`prepare failed: ${prepRes.status}`);
       const prep = await prepRes.json() as {
@@ -126,7 +148,7 @@ function DashboardContent() {
         escrowAddress: `0x${string}`;
         usdcAddress: `0x${string}`;
       };
-      setLogs(prev => [...prev, `[L2] Prepared task ${prep.taskIdBytes32.slice(0, 12)}... budget=${budget} mUSDC`]);
+      setLogs(prev => [...prev, `[L2] Prepared task ${prep.taskIdBytes32.slice(0, 12)}... budget=${budgetStr} mUSDC`]);
       const budgetWei = BigInt(prep.budgetWei);
 
       // 2. Approve USDC if allowance is insufficient.
@@ -209,7 +231,7 @@ function DashboardContent() {
       setSubmitStep('submitting');
       const submitRes = await apiRequest('/task', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget, nonce: submissionNonce }),
+        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce }),
       });
       if (!submitRes.ok) {
         const detail = await submitRes.json().catch(() => ({}));
@@ -257,69 +279,69 @@ function DashboardContent() {
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
         
         {/* Left: Swarm Intelligence Flow (React Flow) */}
-        <div className="flex-1 relative border-r border-border bg-muted/5">
-          <div className="absolute top-4 left-4 z-10 flex flex-col gap-2">
-             <div className="bg-background/80 backdrop-blur px-3 py-1.5 rounded-lg border border-border shadow-sm flex items-center gap-2">
-                <span className="flex h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
-                <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">Gensyn AXL Stream Active</span>
-             </div>
-             {taskIdFromUrl && (
-               <div className="bg-primary/10 text-primary px-3 py-1.5 rounded-lg border border-primary/20 shadow-sm text-[10px] font-bold">
-                 TASK: {taskIdFromUrl.slice(0, 12)}...
-               </div>
-             )}
+        <div className="flex-1 flex flex-col border-r border-border bg-muted/5 min-w-0">
+          <div className="h-9 px-4 border-b border-border bg-background/85 backdrop-blur flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-muted-foreground shrink-0">
+            <div className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              <span className="text-foreground/85 font-semibold">Gensyn AXL Live</span>
+            </div>
+            {taskIdFromUrl && (
+              <>
+                <span className="opacity-30">·</span>
+                <span><span className="opacity-60">Task</span> {taskIdFromUrl.slice(0, 8)}…{taskIdFromUrl.slice(-6)}</span>
+              </>
+            )}
+            {nodes.length > 0 && (
+              <>
+                <span className="opacity-30">·</span>
+                <span><span className="opacity-60">Nodes</span> {completedCount}/{nodes.length}</span>
+              </>
+            )}
+            {taskIdFromUrl && (
+              <span className="ml-auto tabular-nums">
+                <span className="opacity-60">Elapsed</span> {elapsedFmt}
+              </span>
+            )}
           </div>
-          
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            nodeTypes={nodeTypes}
-            fitView
-            className="bg-dot-pattern"
-          >
-            <Background color="#888" gap={20} />
-            <Controls className="fill-foreground" />
-          </ReactFlow>
+
+          <div className="relative flex-1 min-h-0">
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              nodeTypes={nodeTypes}
+              fitView
+              className="bg-dot-pattern"
+            >
+              <Background color="#888" gap={20} />
+              <Controls className="fill-foreground" />
+            </ReactFlow>
+            {nodes.length === 0 && <CanvasEmptyState />}
+          </div>
         </div>
 
         {/* Right: Terminal & Prompt */}
         <div className="w-full md:w-[380px] flex flex-col bg-background/50 backdrop-blur-sm shrink-0 border-t md:border-t-0 md:border-l border-border">
           
-          {/* Logs Terminal */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="h-9 px-4 border-b border-border flex items-center justify-between bg-muted/20">
-              <div className="flex items-center gap-2">
-                <TerminalIcon className="w-3.5 h-3.5 text-muted-foreground" />
-                <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Orchestration Logs</span>
-              </div>
-              <div className="flex gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-red-500/20" />
-                <div className="w-2 h-2 rounded-full bg-yellow-500/20" />
-                <div className="w-2 h-2 rounded-full bg-green-500/20" />
-              </div>
-            </div>
-            
-            <div className="flex-1 p-4 font-mono text-[11px] overflow-y-auto space-y-1.5 bg-background/30">
-              {logs.map((log, i) => (
-                <div key={i} className={cn(
-                  "border-l-2 pl-2 transition-all",
-                  log.includes('[ERROR]') ? "border-red-500 text-red-400 bg-red-500/5" : 
-                  log.includes('[SYSTEM]') ? "border-blue-500 text-blue-400" :
-                  log.includes('[USER]') ? "border-green-500 text-foreground font-bold" :
-                  "border-muted text-muted-foreground"
-                )}>
-                  {log}
-                </div>
-              ))}
-            </div>
-          </div>
+          <LogsPanel logs={logs} onClear={() => setLogs([])} />
+
+          {/* Suggested intents — fills textarea, user reviews + dispatches */}
+          <IntentSuggestions
+            onPick={(text) => {
+              setInputText(text);
+              requestAnimationFrame(() => {
+                const ta = textareaRef.current;
+                if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); }
+              });
+            }}
+          />
 
           {/* Prompt Area */}
           <div className="p-4 border-t border-border bg-background">
             <div className="relative group">
               <textarea
+                ref={textareaRef}
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
@@ -356,13 +378,12 @@ function DashboardContent() {
                 </div>
               )}
             </div>
-            <div className="mt-3 flex items-center justify-between px-1">
-               <div className="flex gap-2">
-                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">GPT-4o</span>
-                  <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">10 USDC Budget</span>
-               </div>
-               <span className="text-[10px] text-muted-foreground italic">Press Enter to dispatch</span>
-            </div>
+            <PromptConfigRow
+              model={model}
+              budget={budget}
+              onModelChange={setModel}
+              onBudgetChange={setBudget}
+            />
           </div>
         </div>
       </div>
