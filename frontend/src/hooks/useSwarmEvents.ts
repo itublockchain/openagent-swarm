@@ -142,6 +142,13 @@ export function useSwarmEvents() {
       updateBox(nodeId, taskId, b => ({ ...b, status: 'done' }))
     }
 
+    // Next worker's LLM-Judge accepted this output and is using it as context.
+    // Optimistic green ahead of the planner's on-chain finality at DAG end.
+    const handleSubtaskPeerValidated = (event: WSEvent) => {
+      const { nodeId, taskId } = event.payload as any
+      updateBox(nodeId, taskId, b => b.status === 'done' ? b : { ...b, status: 'done' })
+    }
+
     // Self-selection said NO. Track agents that passed for the badge UI.
     const handleAgentPassed = (event: WSEvent) => {
       const { nodeId, agentId, taskId } = event.payload as any
@@ -193,6 +200,7 @@ export function useSwarmEvents() {
     wsClient.on(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
     wsClient.on(EventType.SUBTASK_DONE, handleSubtaskDone)
     wsClient.on(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
+    wsClient.on(EventType.SUBTASK_PEER_VALIDATED, handleSubtaskPeerValidated)
     wsClient.on(EventType.AGENT_PASSED, handleAgentPassed)
     wsClient.on(EventType.JUROR_VOTED, handleJurorVoted)
     wsClient.on(EventType.CHALLENGE, handleChallenge)
@@ -204,6 +212,7 @@ export function useSwarmEvents() {
       wsClient.off(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
       wsClient.off(EventType.SUBTASK_DONE, handleSubtaskDone)
       wsClient.off(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
+      wsClient.off(EventType.SUBTASK_PEER_VALIDATED, handleSubtaskPeerValidated)
       wsClient.off(EventType.AGENT_PASSED, handleAgentPassed)
       wsClient.off(EventType.JUROR_VOTED, handleJurorVoted)
       wsClient.off(EventType.CHALLENGE, handleChallenge)

@@ -11,6 +11,11 @@ export enum EventType {
   /** Output passed validation on-chain (planner/keeper batch-validated this
    *  node). UI promotes the box from 'pending' (yellow) to 'done' (green). */
   SUBTASK_VALIDATED = 'SUBTASK_VALIDATED',
+  /** The next worker's local LLM-Judge accepted this node's output and is
+   *  using it as context. Optimistic UI signal — flips the box green ahead
+   *  of the planner's on-chain markValidatedBatch (which still fires at
+   *  DAG end and is the authoritative finality). */
+  SUBTASK_PEER_VALIDATED = 'SUBTASK_PEER_VALIDATED',
   /** Self-selection: agent's assess() returned NO for this node. UI shows a
    *  small "passed" badge so viewers see the skill filter at work. */
   AGENT_PASSED      = 'AGENT_PASSED',

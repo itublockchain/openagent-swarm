@@ -284,12 +284,12 @@ export class SwarmAgent {
       let prevOutput: unknown = null
       if (node.prevHash) {
         prevOutput = await this.deps.storage.fetch(node.prevHash)
-        
+
         // LLM-Judge step
         const isValid = await this.deps.compute.judge(prevOutput as string)
         if (!isValid) {
           console.log(`[Agent ${this.deps.config.agentId}] LLM-Judge rejected output. Challenging previous node.`)
-          
+
           // Find the previous node id to challenge. The challenger here is
           // the current worker (this agent), whose subtask is `node.id` —
           // pass it so the vault knows where their stake lives.
@@ -302,6 +302,23 @@ export class SwarmAgent {
             }
           }
           return // Stop execution of current subtask
+        }
+
+        // Peer-validation: judge accepted the previous output, so we're about
+        // to use it as context. Surface this to the UI so the prev box flips
+        // green immediately — the planner's on-chain markValidatedBatch at
+        // DAG end is the authoritative finality and still fires later.
+        const task = this.tasks.get(taskId)
+        if (task) {
+          const currentIndex = task.nodes.findIndex(n => n.id === node.id)
+          if (currentIndex > 0) {
+            const prevNode = task.nodes[currentIndex - 1]
+            this.deps.network.emit(this.buildEvent(EventType.SUBTASK_PEER_VALIDATED, {
+              nodeId: prevNode.id,
+              taskId,
+              validatorAgentId: this.deps.config.agentId,
+            })).catch(() => {})
+          }
         }
       }
 
