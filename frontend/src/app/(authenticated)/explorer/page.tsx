@@ -8,7 +8,7 @@ import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt, readContract } from '@wagmi/core';
 import TaskNode, { NodeData, cn } from '@/components/flow/task-node';
 import { Send, Terminal as TerminalIcon, Rocket, X } from 'lucide-react';
-import { useSwarmEvents } from '@/hooks/useSwarmEvents';
+import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
@@ -56,15 +56,31 @@ function DashboardContent() {
       { id: 'e1-2', source: '1', target: '2', animated: true }
     ];
 
+    // Map our 5-state lifecycle (idle / claimed / pending / done / failed)
+    // to TaskNode's visual states. 'pending' from the hook means the worker
+    // has submitted output and is waiting for batch validation — that's the
+    // userflow's "yellow" stage and maps to TaskNode's 'validating'.
+    const statusMap: Record<SubtaskStatus, NodeData['status']> = {
+      idle: 'pending',
+      claimed: 'claimed',
+      pending: 'validating',
+      done: 'completed',
+      failed: 'slashed',
+    };
+
     dag.boxes.forEach((box, index) => {
       newFlowNodes.push({
         id: box.nodeId,
         type: 'task',
         position: { x: 400, y: currentY + index * spacingY },
-        data: { 
-          label: box.subtask, 
-          status: box.status === 'done' ? 'completed' : (box.status === 'claimed' ? 'claimed' : (box.status === 'failed' ? 'slashed' : 'pending')),
-          agent: box.agentId
+        data: {
+          label: box.subtask,
+          status: statusMap[box.status] ?? 'pending',
+          agent: box.agentId,
+          passCount: box.passes?.length ?? 0,
+          jury: box.jury
+            ? { guilty: box.jury.guilty, innocent: box.jury.innocent, voters: box.jury.voters.length }
+            : undefined,
         },
       });
 

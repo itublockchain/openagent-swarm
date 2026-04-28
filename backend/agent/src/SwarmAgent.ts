@@ -195,14 +195,50 @@ export class SwarmAgent {
       const plannerAgentId = event.payload.plannerAgentId
       this.tasks.set(taskId, { nodes, taskId, plannerAgentId })
       console.log(`[Agent ${this.deps.config.agentId}] DAG cached, trying first node`)
-      // sadece ilk node'u claim etmeye çalış
-      await this.claimFirstAvailable(taskId)
+      // Skill-aware first pass — only race for nodes the agent's prompt
+      // claims to be a fit for.
+      await this.claimFirstAvailable(taskId, false)
+
+      // Fallback: if 30s pass and the task still has uncllaimed nodes, every
+      // agent drops the skill filter and tries again. Prevents a DAG from
+      // stalling when no one self-selected as a fit (e.g. very generic
+      // prompts that all said NO, or a subtask domain no agent specialised in).
+      const FALLBACK_MS = 30_000
+      setTimeout(async () => {
+        const task = this.tasks.get(taskId)
+        if (!task) return // task already completed / abandoned
+        if (this.currentTaskId !== taskId) return // we moved on
+        const anyUnclaimed = task.nodes.some(n => n.status !== 'claimed' && n.status !== 'done')
+        if (!anyUnclaimed) return
+        console.log(`[Agent ${this.deps.config.agentId}] skill filter timed out — retrying without filter`)
+        await this.claimFirstAvailable(taskId, true).catch(err => {
+          console.error(`[Agent ${this.deps.config.agentId}] fallback claim error:`, err)
+        })
+      }, FALLBACK_MS)
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] onDAGReady error:`, err)
     }
   }
 
-  private async claimFirstAvailable(taskId: string): Promise<void> {
+  /**
+   * Cheap one-token YES/NO probe gating subtask claims by the agent's own
+   * system prompt. Returns true when the assessor LLM thinks the agent is
+   * a good match, OR when no system prompt is set (generalist agents claim
+   * everything by default), OR when `bypass=true` (fallback path).
+   */
+  private async fitsSkill(subtask: string, bypass: boolean): Promise<boolean> {
+    if (bypass) return true
+    const prompt = this.deps.config.systemPrompt
+    if (!prompt || !prompt.trim()) return true
+    try {
+      return await this.deps.compute.assess(subtask, prompt)
+    } catch (err) {
+      console.warn(`[Agent ${this.deps.config.agentId}] assess error, claiming anyway:`, err)
+      return true
+    }
+  }
+
+  private async claimFirstAvailable(taskId: string, bypassSkill = false): Promise<void> {
     const task = this.tasks.get(taskId)
     if (!task) return
 
@@ -210,6 +246,18 @@ export class SwarmAgent {
       // prevHash henüz gerçek storage hash değilse (bağımlılık bitmediyse) atla
       // Gerçek hash'lerde 'placeholder-' kelimesi geçmez.
       if (node.prevHash && node.prevHash.includes('placeholder-')) continue
+
+      // Skill self-selection: skip nodes the agent says don't match its prompt.
+      const fits = await this.fitsSkill(node.subtask, bypassSkill)
+      if (!fits) {
+        console.log(`[Agent ${this.deps.config.agentId}] passing on ${node.id} — outside skill`)
+        // Surface the skill miss to the dashboard so viewers can see the
+        // self-selection layer at work. Bypass mode (fallback) doesn't pass.
+        this.deps.network.emit(this.buildEvent(EventType.AGENT_PASSED, {
+          nodeId: node.id, taskId, agentId: this.deps.config.agentId, reason: 'outside_skill',
+        })).catch(() => {})
+        continue
+      }
 
       // Gentleman's delay to avoid double claims in P2P mesh
       await new Promise(resolve => setTimeout(resolve, Math.random() * 500));
@@ -313,6 +361,19 @@ export class SwarmAgent {
     nextNode.prevHash = outputHash
     nextNode.status = undefined as any
 
+    // Skill check the next node too — sequential DAG nodes can require
+    // different specializations (research → write → review). If this agent
+    // is a poor fit, hand off to the SUBTASK_DONE listeners on other
+    // agents who'll race claimFirstAvailable.
+    const fits = await this.fitsSkill(nextNode.subtask, false)
+    if (!fits) {
+      console.log(`[Agent ${agentId}] next node ${nextNode.id} outside skill, leaving for others`)
+      this.deps.network.emit(this.buildEvent(EventType.AGENT_PASSED, {
+        nodeId: nextNode.id, taskId, agentId, reason: 'outside_skill',
+      })).catch(() => {})
+      return
+    }
+
     const claimed = await this.deps.chain.claimSubtask(nextNode.id)
     if (claimed) {
       nextNode.status = 'claimed'
@@ -355,6 +416,16 @@ export class SwarmAgent {
       // controls payout amounts via the explicit settleTask call below.
       const nodeIds = task.nodes.map(n => n.id)
       await this.deps.chain.markValidatedBatch(nodeIds)
+
+      // Per-node validated event so the dashboard can flip each box from
+      // 'pending' (yellow / output written) to 'done' (green / validated).
+      // Emitting individually keeps the UI animation natural even though the
+      // contract validates all in one tx.
+      for (const nid of nodeIds) {
+        this.deps.network.emit(this.buildEvent(EventType.SUBTASK_VALIDATED, {
+          nodeId: nid, taskId, agentId,
+        })).catch(() => {})
+      }
 
       // Resolve claimant addresses + compute payouts.
       const workerAddrs = await Promise.all(
@@ -437,7 +508,17 @@ export class SwarmAgent {
     console.log(
       `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'}`,
     )
-    await this.deps.chain.voteOnChallenge(nodeId, myAgentId, accusedGuilty)
+    try {
+      await this.deps.chain.voteOnChallenge(nodeId, myAgentId, accusedGuilty)
+      // Surface to the dashboard. We rely on the chain tx succeeding to
+      // emit, so a duplicate or ineligible vote (e.g. the contract rejected
+      // it because we already voted) doesn't leak into the UI.
+      this.deps.network.emit(this.buildEvent(EventType.JUROR_VOTED, {
+        nodeId, taskId, agentId: myAgentId, accusedGuilty,
+      })).catch(() => {})
+    } catch (err) {
+      console.warn(`[Agent ${myAgentId}] juror vote failed for ${nodeId}:`, err)
+    }
   }
 
   private async onTaskReopened(event: AXLEvent<any>): Promise<void> {

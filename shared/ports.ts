@@ -14,6 +14,13 @@ export interface IComputePort {
   complete(subtask: string, context: string | null): Promise<string>
   /** çıktıyı doğrular, false ise slash tetiklenir */
   judge(output: string): Promise<boolean>
+  /**
+   * Self-fitness check: given the agent's own systemPrompt and an incoming
+   * subtask, return true iff the agent considers itself a good match. Used
+   * by SwarmAgent before racing to claim, so a researcher-prompted agent
+   * doesn't grab a code-generation node it'll fumble. Cheap one-token call.
+   */
+  assess(subtask: string, systemPrompt: string): Promise<boolean>
 }
 
 export interface INetworkPort {
