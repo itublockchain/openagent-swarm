@@ -1,9 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { TopologyMap } from '../../components/TopologyMap'
-import { Header } from '../../components/Header'
-import { DeployAgentModal } from '../../components/DeployAgentModal'
+import { TopologyMap } from '@/components/TopologyMap'
+import { Header } from '@/components/Header'
+import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { cn } from '@/lib/utils'
 
 interface AgentRecord {
@@ -45,11 +45,10 @@ export default function PoolPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+    <div className="flex flex-col h-full bg-background text-foreground overflow-hidden">
       <Header onDeployClick={() => setIsDeployOpen(true)} />
-      
+
       <div className="flex flex-1 overflow-hidden">
-        {/* 3D Topology Map */}
         <div className="flex-1 relative">
           <TopologyMap agents={agents} onSelect={handleSelect} />
           <div className="absolute top-4 right-4 text-muted-foreground text-[10px] font-bold uppercase tracking-widest bg-background/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-border/50 z-20">
@@ -57,7 +56,6 @@ export default function PoolPage() {
           </div>
         </div>
 
-        {/* Sidebar */}
         <div className="w-80 bg-card text-card-foreground p-6 overflow-y-auto border-l border-border animate-in slide-in-from-right duration-300">
           <h2 className="text-xl font-bold mb-6 tracking-tight">Agent Pool</h2>
 
@@ -109,8 +107,8 @@ export default function PoolPage() {
                 onClick={() => handleSelect(agent.agentId)}
                 className={cn(
                   "p-3 rounded-lg cursor-pointer transition-all border",
-                  selected?.agentId === agent.agentId 
-                    ? "bg-accent border-primary/30 shadow-sm" 
+                  selected?.agentId === agent.agentId
+                    ? "bg-accent border-primary/30 shadow-sm"
                     : "bg-background/50 border-border/50 hover:border-border hover:bg-accent/50"
                 )}
                 style={{
@@ -126,8 +124,8 @@ export default function PoolPage() {
         </div>
       </div>
 
-      <DeployAgentModal 
-        isOpen={isDeployOpen} 
+      <DeployAgentModal
+        isOpen={isDeployOpen}
         onClose={() => setIsDeployOpen(false)}
         onSuccess={() => {}}
       />
