@@ -4,5 +4,6 @@
   "DAGRegistry": "0x6860B8f891CF8aA1C3f98112AF4644FD5860efeE",
   "SlashingVault": "0xbD269639b91F09Da305176794990480F77C2564e",
   "network": "og_testnet",
-  "deployedAt": "2026-04-27T22:35:18.908Z"
+  "deployedAt": "2026-04-28T15:24:35.124Z",
+  "AgentRegistry": "0x6Fc8505F9977242E9969DF3834BC435b644EBdFC"
 }

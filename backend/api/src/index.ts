@@ -28,6 +28,15 @@ async function start() {
   await network.connect();
   
   const manager = new AgentManager();
+  // Reconcile against on-chain registry + Docker before serving traffic, so
+  // /agent/pool reflects reality from the very first request after restart.
+  // Failures here are logged but non-fatal — a partially-restored pool is
+  // still better than a dead API.
+  try {
+    await manager.restore();
+  } catch (err) {
+    console.error('[API] manager.restore() failed:', err);
+  }
 
   const server = await createServer({
     storage,

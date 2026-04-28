@@ -43,6 +43,14 @@ async function main() {
   const vaultAddress = await vault.getAddress()
   console.log('SlashingVault:', vaultAddress)
 
+  // 3.1 AgentRegistry — public list of agents in the swarm.
+  console.log('Deploying AgentRegistry...')
+  const AgentRegistry = await ethers.getContractFactory('AgentRegistry')
+  const agentRegistry = await AgentRegistry.deploy()
+  await agentRegistry.waitForDeployment()
+  const agentRegistryAddress = await agentRegistry.getAddress()
+  console.log('AgentRegistry:', agentRegistryAddress)
+
   // 4. Setup Connections
   console.log('Setting up contract connections...')
   const setRegTx = await registry.setAddresses(escrowAddress, vaultAddress)
@@ -62,6 +70,7 @@ async function main() {
     SwarmEscrow: escrowAddress,
     DAGRegistry: registryAddress,
     SlashingVault: vaultAddress,
+    AgentRegistry: agentRegistryAddress,
     network: 'og_testnet',
     deployedAt: new Date().toISOString(),
   }
