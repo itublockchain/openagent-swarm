@@ -27,6 +27,7 @@ async function bootstrap() {
       agentId,
       stakeAmount,
       agentAddress,
+      systemPrompt: process.env.AGENT_SYSTEM_PROMPT,
     }
   };
 

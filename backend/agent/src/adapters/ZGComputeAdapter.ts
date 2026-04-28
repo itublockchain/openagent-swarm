@@ -313,6 +313,31 @@ Output to judge: ${output.substring(0, 500)}`
     return false
   }
 
+  /**
+   * Single-token YES/NO fitness probe. Designed to be cheap: temperature 0,
+   * max_tokens 4, no system prompt baggage beyond the agent's own description.
+   * On any error or unparseable output we return `true` (fail-open) — better
+   * to let an agent over-claim and lose stake than to lock the whole DAG out
+   * because the assessor model glitched.
+   */
+  async assess(subtask: string, systemPrompt: string): Promise<boolean> {
+    if (!systemPrompt || !systemPrompt.trim()) return true
+    const prompt = `An agent has this system prompt: "${systemPrompt.trim()}"
+A subtask has been broadcast: "${subtask}"
+Is this agent a good fit to execute the subtask? Reply with a SINGLE word: YES or NO.`
+    try {
+      const raw = await this.chat([{ role: 'user', content: prompt }], 0.0)
+      const verdict = raw.trim().toUpperCase()
+      if (verdict.startsWith('YES')) return true
+      if (verdict.startsWith('NO')) return false
+      console.warn(`[ZGCompute] assess unparseable verdict "${raw.substring(0, 40)}", defaulting to YES`)
+      return true
+    } catch (err) {
+      console.warn('[ZGCompute] assess failed, defaulting to YES:', err)
+      return true
+    }
+  }
+
   async ping(): Promise<boolean> {
     try {
       await this.chat([{ role: 'user', content: 'ping' }])

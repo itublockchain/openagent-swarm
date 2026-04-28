@@ -8,6 +8,15 @@ export enum EventType {
   DAG_READY         = 'DAG_READY',
   SUBTASK_CLAIMED   = 'SUBTASK_CLAIMED',
   SUBTASK_DONE      = 'SUBTASK_DONE',
+  /** Output passed validation on-chain (planner/keeper batch-validated this
+   *  node). UI promotes the box from 'pending' (yellow) to 'done' (green). */
+  SUBTASK_VALIDATED = 'SUBTASK_VALIDATED',
+  /** Self-selection: agent's assess() returned NO for this node. UI shows a
+   *  small "passed" badge so viewers see the skill filter at work. */
+  AGENT_PASSED      = 'AGENT_PASSED',
+  /** Cast jury vote on a challenge (voteOnChallenge tx succeeded). UI
+   *  surfaces a vote counter on the disputed node. */
+  JUROR_VOTED       = 'JUROR_VOTED',
   CHALLENGE         = 'CHALLENGE',
   SLASH_EXECUTED    = 'SLASH_EXECUTED',
   TASK_REOPENED     = 'TASK_REOPENED',
@@ -45,4 +54,8 @@ export interface AgentConfig {
   /** Agent's on-chain wallet address. Required for explicit settlement
    *  (planner reward) and partial slashing logic. */
   agentAddress?: string
+  /** User-supplied prompt that defines the agent's specialization. Read
+   *  by SwarmAgent.assess() to skip subtasks outside the agent's skill
+   *  before racing to claim. Empty / undefined → claim everything. */
+  systemPrompt?: string
 }

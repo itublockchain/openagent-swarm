@@ -38,4 +38,10 @@ export class MockCompute implements IComputePort {
     // Return true to ensure demo completes successfully
     return true;
   }
+
+  async assess(_subtask: string, _systemPrompt: string): Promise<boolean> {
+    // Mock agents claim everything — the production self-selection logic
+    // belongs in ZGComputeAdapter.
+    return true;
+  }
 }

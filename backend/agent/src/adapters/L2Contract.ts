@@ -188,9 +188,37 @@ export class L2Contract implements IChainPort {
   }
 
   async resetSubtask(nodeId: string): Promise<void> {
-    // resetNode can only be called by the vault — this is invoked
-    // as part of resolveChallenge on-chain. Agent-side we just log.
-    console.log(`[L2Contract] resetSubtask for ${nodeId} — handled by vault on-chain via resolveChallenge`)
+    // resetNode is invoked by the vault on a successful challenge resolution
+    // (jury verdict = guilty). Agent-side this is a no-op, kept for the port
+    // contract.
+    console.log(`[L2Contract] resetSubtask for ${nodeId} — handled by vault on-chain on guilty verdict`)
+  }
+
+  async voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void> {
+    const formattedNodeId = this.formatId(nodeId)
+    const formattedAgentId = this.formatId(agentId)
+    try {
+      const tx = await this.vault.vote(formattedNodeId, formattedAgentId, accusedGuilty)
+      await tx.wait()
+      console.log(
+        `[L2Contract] Voted ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} on challenge for node ${nodeId}`,
+      )
+    } catch (err: any) {
+      // The vote can fail benignly if quorum was reached just before our tx
+      // landed, the window expired, or another juror's tx tied the slot.
+      // Log and swallow so the agent's main loop is not derailed.
+      console.warn(`[L2Contract] voteOnChallenge skipped for ${nodeId}: ${err?.shortMessage ?? err?.message ?? err}`)
+    }
+  }
+
+  async finalizeExpiredChallenge(nodeId: string): Promise<void> {
+    try {
+      const tx = await this.vault.finalizeExpired(this.formatId(nodeId))
+      await tx.wait()
+      console.log(`[L2Contract] finalizeExpired closed challenge for node ${nodeId}`)
+    } catch (err: any) {
+      console.warn(`[L2Contract] finalizeExpiredChallenge skipped for ${nodeId}: ${err?.shortMessage ?? err?.message ?? err}`)
+    }
   }
 
   async completeTask(taskId: string): Promise<boolean> {

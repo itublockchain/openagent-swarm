@@ -17,8 +17,12 @@ services:
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
       - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
       - L2_SLASHING_VAULT_ADDRESS=${L2_SLASHING_VAULT_ADDRESS}
+      - L2_AGENT_REGISTRY_ADDRESS=${L2_AGENT_REGISTRY_ADDRESS}
+      - MASTER_KEY=${MASTER_KEY}
+      - AGENT_SECRETS_PATH=/data/agent-secrets.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - agents-data:/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
@@ -117,3 +121,11 @@ services:
 networks:
   swarm_default:
     name: swarm_default
+
+volumes:
+  # Persists API-side agent secrets (encrypted private keys, container ids)
+  # across `docker compose down/up` so the pool can be reconstructed on the
+  # next boot. Loss of this volume = loss of agent control (on-chain entries
+  # would be marked ERROR by the orphan sweep on next start).
+  agents-data:
+    name: swarm_agents_data
