@@ -279,7 +279,7 @@ function DashboardContent() {
             fitView
             className="bg-dot-pattern"
           >
-            <Background color="#888" strokeWidth={0.5} gap={20} />
+            <Background color="#888" gap={20} />
             <Controls className="fill-foreground" />
           </ReactFlow>
         </div>

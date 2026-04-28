@@ -11,6 +11,7 @@ services:
       - DOCKER_HOST=tcp://docker-proxy:2375
       - AXL_PEER=tcp://axl-seed:7000
       - AXL_URL=http://localhost:9002
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
       - OG_RPC_URL=${OG_RPC_URL:-https://evmrpc-testnet.0g.ai}
       - L2_USDC_ADDRESS=${L2_USDC_ADDRESS}
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
@@ -96,7 +97,23 @@ services:
         aliases:
           - docker-proxy
 
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+      - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:3001/ws}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      swarm_default:
+        aliases:
+          - frontend
+
 networks:
   swarm_default:
     name: swarm_default
-

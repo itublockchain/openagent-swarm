@@ -37,7 +37,7 @@ ENV NODE_ENV=production
 COPY --from=axl-builder /app/axl-node .
 # Copy Startup script
 COPY backend/agent/start.sh .
-RUN chmod +x start.sh
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/backend/agent/dist ./
