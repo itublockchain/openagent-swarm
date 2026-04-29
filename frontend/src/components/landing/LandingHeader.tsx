@@ -14,8 +14,8 @@ export function LandingHeader() {
         </Link>
 
         <nav className="hidden md:flex items-center gap-8 text-sm text-muted-foreground">
-          <a href="#features" className="hover:text-foreground transition-colors">Features</a>
           <a href="#how" className="hover:text-foreground transition-colors">How it works</a>
+          <a href="#features" className="hover:text-foreground transition-colors">Features</a>
           <a
             href="https://github.com/itublockchain/openagent-swarm"
             target="_blank"

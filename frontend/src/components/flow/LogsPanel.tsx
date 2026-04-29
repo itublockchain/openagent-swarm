@@ -1,15 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Terminal as TerminalIcon, Search, X, Trash2 } from 'lucide-react'
-import { cn } from '@/components/flow/task-node'
+import { Terminal as TerminalIcon, Search, X, Trash2, ArrowDownToLine } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 export function LogsPanel({ logs, onClear }: { logs: string[]; onClear: () => void }) {
   const [search, setSearch] = useState('')
+  const [follow, setFollow] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
-  // Stick-to-bottom flag: true while the user is at the bottom; we suspend auto-scroll
-  // when they scroll up, and resume once they scroll back down.
-  const stickyRef = useRef(true)
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -19,15 +17,24 @@ export function LogsPanel({ logs, onClear }: { logs: string[]; onClear: () => vo
 
   useEffect(() => {
     const el = scrollRef.current
-    if (!el || !stickyRef.current) return
+    if (!el || !follow) return
     el.scrollTop = el.scrollHeight
-  }, [filtered])
+  }, [filtered, follow])
 
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    stickyRef.current = dist < 24
+    // Disengage follow when the user scrolls up; re-engage at the bottom
+    if (dist > 32 && follow) setFollow(false)
+    else if (dist < 24 && !follow) setFollow(true)
+  }
+
+  const scrollToBottom = () => {
+    const el = scrollRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    setFollow(true)
   }
 
   return (
@@ -38,15 +45,32 @@ export function LogsPanel({ logs, onClear }: { logs: string[]; onClear: () => vo
           <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
             Orchestration Logs
           </span>
+          <span className="text-[10px] tabular-nums text-muted-foreground/60">{logs.length}</span>
         </div>
-        <button
-          onClick={onClear}
-          className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-          title="Clear logs"
-          aria-label="Clear logs"
-        >
-          <Trash2 className="w-3 h-3" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setFollow(f => !f)}
+            className={cn(
+              'flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider transition-colors',
+              follow
+                ? 'text-green-500 bg-green-500/10'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
+            )}
+            title={follow ? 'Auto-scroll on' : 'Auto-scroll off'}
+            aria-label="Toggle auto-scroll"
+          >
+            <span className={cn('w-1.5 h-1.5 rounded-full', follow ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground/40')} />
+            Live
+          </button>
+          <button
+            onClick={onClear}
+            className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            title="Clear logs"
+            aria-label="Clear logs"
+          >
+            <Trash2 className="w-3 h-3" />
+          </button>
+        </div>
       </div>
 
       <div className="px-3 py-2 border-b border-border bg-muted/10 shrink-0">
@@ -71,30 +95,42 @@ export function LogsPanel({ logs, onClear }: { logs: string[]; onClear: () => vo
         </div>
       </div>
 
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="flex-1 p-4 font-mono text-[11px] overflow-y-auto space-y-1.5 bg-background/30 min-h-0"
-      >
-        {filtered.length === 0 ? (
-          <div className="text-muted-foreground/60 italic">
-            {logs.length === 0 ? 'No logs yet.' : 'No logs match your search.'}
-          </div>
-        ) : (
-          filtered.map((log, i) => (
-            <div
-              key={i}
-              className={cn(
-                'border-l-2 pl-2 transition-all',
-                log.includes('[ERROR]')  ? 'border-red-500 text-red-400 bg-red-500/5' :
-                log.includes('[SYSTEM]') ? 'border-blue-500 text-blue-400' :
-                log.includes('[USER]')   ? 'border-green-500 text-foreground font-bold' :
-                'border-muted text-muted-foreground',
-              )}
-            >
-              {log}
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="absolute inset-0 p-4 font-mono text-[11px] overflow-y-auto space-y-1.5 bg-background/30"
+        >
+          {filtered.length === 0 ? (
+            <div className="text-muted-foreground/60 italic">
+              {logs.length === 0 ? 'No logs yet.' : 'No logs match your search.'}
             </div>
-          ))
+          ) : (
+            filtered.map((log, i) => (
+              <div
+                key={i}
+                className={cn(
+                  'border-l-2 pl-2 transition-all',
+                  log.includes('[ERROR]')  ? 'border-red-500 text-red-400 bg-red-500/5' :
+                  log.includes('[SYSTEM]') ? 'border-blue-500 text-blue-400' :
+                  log.includes('[USER]')   ? 'border-green-500 text-foreground font-bold' :
+                  'border-muted text-muted-foreground',
+                )}
+              >
+                {log}
+              </div>
+            ))
+          )}
+        </div>
+        {!follow && filtered.length > 0 && (
+          <button
+            onClick={scrollToBottom}
+            className="absolute bottom-3 right-3 flex items-center gap-1 bg-primary text-primary-foreground text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md shadow-md hover:bg-primary/90 transition-colors"
+            aria-label="Jump to bottom"
+          >
+            <ArrowDownToLine className="w-3 h-3" />
+            New
+          </button>
         )}
       </div>
     </div>

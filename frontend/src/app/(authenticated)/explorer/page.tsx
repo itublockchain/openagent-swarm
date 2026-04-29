@@ -12,12 +12,14 @@ import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
 import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
 import { Send } from 'lucide-react';
+import { CopyableId } from '@/components/ui/copyable-id';
 import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
 import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi';
 import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts';
+import { cn } from '@/lib/utils';
 
 const nodeTypes = {
   task: TaskNode,
@@ -57,6 +59,26 @@ function DashboardContent() {
   }, [taskIdFromUrl]);
   const elapsedFmt = `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`;
   const completedCount = nodes.filter(n => n.data?.status === 'completed').length;
+
+  // Five-phase indicator strip. Each phase is "done", "active", or "pending"
+  // based on observable state (DAG / node statuses).
+  const phases = (() => {
+    const taskNodes = nodes.filter(n => !['1', '2'].includes(n.id));
+    const hasClaim = taskNodes.some(n => ['claimed', 'validating', 'completed', 'slashed'].includes(n.data?.status as string));
+    const hasValidate = taskNodes.some(n => ['validating', 'completed'].includes(n.data?.status as string));
+    const allDone = taskNodes.length > 0 && taskNodes.every(n => n.data?.status === 'completed');
+
+    const stepOf = (done: boolean, active: boolean) =>
+      done ? 'done' as const : active ? 'active' as const : 'pending' as const;
+
+    return [
+      { key: 'spec',     label: 'Spec',     state: stepOf(!!dag || !!taskIdFromUrl, !!taskIdFromUrl && !dag) },
+      { key: 'plan',     label: 'Plan',     state: stepOf(!!dag, !taskIdFromUrl ? false : !dag) },
+      { key: 'claim',    label: 'Claim',    state: stepOf(hasValidate || allDone, !!dag && !hasValidate && hasClaim) },
+      { key: 'validate', label: 'Validate', state: stepOf(allDone, hasValidate && !allDone) },
+      { key: 'settle',   label: 'Settle',   state: stepOf(false, allDone) },
+    ];
+  })();
   const { address: walletAddress } = useAccount();
   const currentChainId = useChainId();
   const { switchChainAsync } = useSwitchChain();
@@ -270,10 +292,12 @@ function DashboardContent() {
   };
 
   // Auto-submit ?intent= from landing CTA. Guard against React 19 Strict Mode double-effect.
+  // Wait for wallet — submitRealDAG no-ops without one and the user gets a confusing
+  // "[ERROR] No wallet connected" log instead of an actionable hint.
   const intentParam = searchParams.get('intent');
   const submittedIntentRef = useRef(false);
   useEffect(() => {
-    if (intentParam && !submittedIntentRef.current && !taskIdFromUrl) {
+    if (intentParam && !submittedIntentRef.current && !taskIdFromUrl && walletAddress) {
       submittedIntentRef.current = true;
       submitRealDAG(intentParam);
     }
@@ -304,13 +328,13 @@ function DashboardContent() {
             {taskIdFromUrl && (
               <>
                 <span className="opacity-30">·</span>
-                <span><span className="opacity-60">Task</span> {taskIdFromUrl.slice(0, 8)}…{taskIdFromUrl.slice(-6)}</span>
+                <span className="flex items-center gap-1.5"><span className="opacity-60">Task</span><CopyableId value={taskIdFromUrl} head={6} tail={4} /></span>
               </>
             )}
             {nodes.length > 0 && (
               <>
                 <span className="opacity-30">·</span>
-                <span><span className="opacity-60">Nodes</span> {completedCount}/{nodes.length}</span>
+                <span><span className="opacity-60">Nodes</span> <span className="tabular-nums">{completedCount}/{nodes.length}</span></span>
               </>
             )}
             {taskIdFromUrl && (
@@ -319,6 +343,41 @@ function DashboardContent() {
               </span>
             )}
           </div>
+
+          {/* Phase strip */}
+          {taskIdFromUrl && (
+            <div className="px-4 py-2 border-b border-border bg-background/60 backdrop-blur shrink-0">
+              <ol className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest">
+                {phases.map((p, i) => (
+                  <li key={p.key} className="flex items-center gap-1 flex-1 min-w-0">
+                    <span
+                      className={cn(
+                        'flex items-center justify-center w-4 h-4 rounded-full border text-[9px] font-bold tabular-nums shrink-0',
+                        p.state === 'done' && 'bg-green-500 border-green-500 text-white',
+                        p.state === 'active' && 'bg-yellow-500/20 border-yellow-500 text-yellow-600 dark:text-yellow-400 animate-pulse',
+                        p.state === 'pending' && 'bg-muted border-border text-muted-foreground',
+                      )}
+                    >
+                      {i + 1}
+                    </span>
+                    <span
+                      className={cn(
+                        'truncate',
+                        p.state === 'done' && 'text-foreground',
+                        p.state === 'active' && 'text-yellow-600 dark:text-yellow-400 font-semibold',
+                        p.state === 'pending' && 'text-muted-foreground/60',
+                      )}
+                    >
+                      {p.label}
+                    </span>
+                    {i < phases.length - 1 && (
+                      <span className={cn('flex-1 h-px', p.state === 'done' ? 'bg-green-500/40' : 'bg-border')} />
+                    )}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
 
           <div className="relative flex-1 min-h-0">
             <ReactFlow
@@ -334,6 +393,18 @@ function DashboardContent() {
               <Controls className="fill-foreground" />
             </ReactFlow>
             {nodes.length === 0 && <CanvasEmptyState />}
+
+            {/* Status legend */}
+            {nodes.length > 0 && (
+              <div className="absolute bottom-3 left-3 z-10 hidden lg:flex flex-wrap items-center gap-x-3 gap-y-1 bg-background/85 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-border/50 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-purple-500" />Planner</span>
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-neutral-500" />Idle</span>
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" />Claimed</span>
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-yellow-500" />Validating</span>
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500" />Done</span>
+                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-red-500" />Slashed</span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -341,6 +412,21 @@ function DashboardContent() {
         <div className="w-full md:w-[380px] flex flex-col bg-background/50 backdrop-blur-sm shrink-0 border-t md:border-t-0 md:border-l border-border">
           
           <LogsPanel logs={logs} onClear={() => setLogs([])} />
+
+          {/* Pending-intent banner — shown when an ?intent= came from the landing
+              CTA but the wallet isn't connected yet. Once the user connects, the
+              auto-submit effect above kicks in. */}
+          {intentParam && !walletAddress && !taskIdFromUrl && (
+            <div className="px-4 py-2.5 border-t border-border bg-yellow-500/5 flex items-start gap-2 text-[11px]">
+              <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-yellow-500 animate-pulse shrink-0" />
+              <div className="min-w-0">
+                <div className="font-bold text-yellow-600 dark:text-yellow-400 uppercase tracking-wider text-[10px] mb-0.5">Intent queued</div>
+                <p className="text-muted-foreground leading-snug">
+                  Connect your wallet to dispatch <span className="text-foreground italic">&ldquo;{intentParam.length > 60 ? intentParam.slice(0, 60) + '…' : intentParam}&rdquo;</span> to the swarm.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Suggested intents — fills textarea, user reviews + dispatches */}
           <IntentSuggestions
