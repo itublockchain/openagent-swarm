@@ -22,20 +22,20 @@ export function PromptConfigRow({ model, budget, onModelChange, onBudgetChange, 
   return (
     <div className="mt-3 flex items-center justify-between px-1">
       <div className="flex items-center gap-2">
-        <div className="relative">
+        <div className="relative inline-flex items-center h-6 rounded border border-border bg-muted hover:border-foreground/30 focus-within:border-foreground/30">
           <select
             value={model}
             onChange={e => onModelChange(e.target.value as ModelId)}
-            className="appearance-none text-[10px] bg-muted text-foreground/80 px-1.5 pr-5 py-0.5 rounded border border-border hover:border-foreground/30 focus:outline-none focus:ring-1 focus:ring-primary/30 cursor-pointer"
+            className="appearance-none h-full bg-transparent pl-2 pr-5 text-[10px] leading-none text-foreground/80 focus:outline-none cursor-pointer"
           >
             {MODELS.map(m => (
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
-          <ChevronDown className="absolute right-1 top-1/2 -translate-y-1/2 w-2.5 h-2.5 text-muted-foreground pointer-events-none" />
+          <ChevronDown className="absolute right-1 w-2.5 h-2.5 text-muted-foreground pointer-events-none" />
         </div>
 
-        <div className="flex items-center text-[10px] bg-muted text-muted-foreground rounded border border-border focus-within:border-foreground/30">
+        <div className="inline-flex items-center h-6 rounded border border-border bg-muted focus-within:border-foreground/30">
           <input
             type="number"
             min={1}
@@ -46,9 +46,9 @@ export function PromptConfigRow({ model, budget, onModelChange, onBudgetChange, 
               const n = Number(e.target.value)
               if (Number.isFinite(n)) onBudgetChange(Math.max(1, Math.min(1000, Math.floor(n))))
             }}
-            className="w-10 bg-transparent px-1.5 py-0.5 text-right text-foreground/80 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+            className="w-10 h-full bg-transparent px-1.5 text-[10px] leading-none text-right text-foreground/80 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
           />
-          <span className="pr-1.5 text-muted-foreground">USDC</span>
+          <span className="pr-1.5 text-[10px] leading-none text-muted-foreground">USDC</span>
         </div>
       </div>
       <span className="text-[10px] text-muted-foreground italic">

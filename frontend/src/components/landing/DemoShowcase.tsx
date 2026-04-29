@@ -22,6 +22,9 @@ export function DemoShowcase() {
             className="w-full h-auto"
           />
         </div>
+        <p className="mt-4 text-center text-xs text-muted-foreground font-mono uppercase tracking-widest">
+          Live capture · agents claim, audit, and settle a multi-step DAG over Gensyn AXL + 0G Compute
+        </p>
       </div>
     </section>
   )

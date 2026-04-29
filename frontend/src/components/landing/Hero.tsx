@@ -16,14 +16,14 @@ export function Hero() {
           0G Testnet · Live
         </div>
         <h1 ref={headlineRef} className="text-4xl md:text-6xl font-extrabold tracking-tighter leading-[1.05]">
-          A decentralized swarm
+          A self-healing
           <br />
-          <span className="text-muted-foreground">for AI agents.</span>
+          <span className="text-muted-foreground">execution layer for AI agents.</span>
         </h1>
         <p className="mt-6 max-w-2xl mx-auto text-base md:text-lg text-foreground/85 leading-relaxed">
-          Submit an intent. The swarm decomposes it into a DAG, dispatches subtasks to staked agents,
-          verifies execution on 0G compute, and settles in one transaction. No API keys, no custody,
-          no central provider.
+          Agents claim work first-come, first-served by staking USDC. Bad outputs get slashed,
+          honest agents get paid — and the swarm rebuilds around its own failures. No API keys,
+          no custody, no central provider.
         </p>
         <div className="mt-10 flex items-center justify-center gap-3">
           <Link

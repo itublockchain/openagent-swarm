@@ -3,12 +3,9 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps, Node } from '@xyflow/react';
 import { Clock, Play, ShieldAlert, CheckCircle2, AlertOctagon, BrainCircuit, Gavel, UserMinus } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { cn, shortHash } from '@/lib/utils';
 
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+export { cn };
 
 export type NodeData = {
   label: string;
@@ -56,8 +53,11 @@ const TaskNode = ({ data, isConnectable }: NodeProps<TaskNodeType>) => {
       </div>
       
       {data.agent && (
-        <div className="text-[10px] font-mono opacity-80 mt-1 bg-background/50 px-2 py-1 rounded-md w-fit">
-          Agent: {data.agent}
+        <div
+          className="text-[10px] font-mono opacity-80 mt-1 bg-background/50 px-2 py-1 rounded-md max-w-[180px] truncate"
+          title={data.agent}
+        >
+          Agent: {data.agent.length > 16 ? shortHash(data.agent, 6, 4) : data.agent}
         </div>
       )}
 

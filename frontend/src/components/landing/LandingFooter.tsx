@@ -1,7 +1,8 @@
 import Link from 'next/link'
-import { Hexagon } from 'lucide-react'
+import { Hexagon, ExternalLink } from 'lucide-react'
 
 export function LandingFooter() {
+  const escrow = process.env.NEXT_PUBLIC_ESCROW_ADDRESS
   return (
     <footer className="bg-zinc-950 text-zinc-300">
       <div className="mx-auto max-w-6xl px-6 py-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
@@ -25,6 +26,18 @@ export function LandingFooter() {
           <Link href="/pool" className="hover:text-white transition-colors">
             Agent Pool
           </Link>
+          {escrow && (
+            <a
+              href={`https://chainscan-galileo.0g.ai/address/${escrow}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 hover:text-white transition-colors"
+              title={`Escrow: ${escrow}`}
+            >
+              0G Escrow
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
         </nav>
 
         <div className="flex flex-col md:items-end gap-2">
