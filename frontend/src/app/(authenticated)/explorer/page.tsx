@@ -45,6 +45,60 @@ function DashboardContent() {
 
   const { dag, events, taskIdFromUrl } = useSwarmEvents();
 
+  // Resizable right panel: min = 380px (initial size), max = 50vw.
+  // Inline width is only applied at md+ — below that the panel stacks full-width.
+  const PANEL_MIN = 380;
+  const [panelWidth, setPanelWidth] = useState(PANEL_MIN);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const isResizingRef = useRef(false);
+
+  useEffect(() => {
+    const check = () => setIsDesktop(window.innerWidth >= 768);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // Clamp panel width when the viewport shrinks so the 50vw cap stays honored.
+  useEffect(() => {
+    const clamp = () => {
+      setPanelWidth((w) => {
+        const max = Math.floor(window.innerWidth * 0.5);
+        return Math.min(Math.max(PANEL_MIN, w), Math.max(PANEL_MIN, max));
+      });
+    };
+    window.addEventListener('resize', clamp);
+    return () => window.removeEventListener('resize', clamp);
+  }, []);
+
+  const onResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const max = Math.floor(window.innerWidth * 0.5);
+      const next = window.innerWidth - e.clientX;
+      setPanelWidth(Math.min(Math.max(PANEL_MIN, next), Math.max(PANEL_MIN, max)));
+    };
+    const onUp = () => {
+      if (!isResizingRef.current) return;
+      isResizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
   // Elapsed-time ticker for status bar. Resets when a new taskId arrives.
   const [elapsedSec, setElapsedSec] = useState(0);
   useEffect(() => {
@@ -409,8 +463,18 @@ function DashboardContent() {
         </div>
 
         {/* Right: Terminal & Prompt */}
-        <div className="w-full md:w-[380px] flex flex-col bg-background/50 backdrop-blur-sm shrink-0 border-t md:border-t-0 md:border-l border-border">
-          
+        <div
+          className="w-full md:w-[380px] flex flex-col bg-background/50 backdrop-blur-sm shrink-0 border-t md:border-t-0 md:border-l border-border relative"
+          style={isDesktop ? { width: panelWidth } : undefined}
+        >
+          {/* Drag handle — hidden on mobile (panel stacks full-width). */}
+          <div
+            onMouseDown={onResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            className="hidden md:block absolute top-0 bottom-0 -left-0.5 w-1 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 transition-colors z-20"
+          />
+
           <LogsPanel logs={logs} onClear={() => setLogs([])} />
 
           {/* Pending-intent banner — shown when an ?intent= came from the landing
