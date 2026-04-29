@@ -9,62 +9,42 @@ import { useTheme } from 'next-themes'
 
 interface ThemeColors {
   bg: string
-  pulse: string
+  // Sphere body — single greyscale tone for the whole swarm so the mesh
+  // reads as one cohesive system. Per-agent status semantics live in the
+  // sidebar's pill UI, not on the 3D nodes.
+  body: string
+  // Used for the brief glow when a node is selected or just received an
+  // event — same theme-aware monochrome highlight.
+  highlight: string
   line: string
   flow: string
   text: string
   textOutline: string
 }
 
-// Status → ring colour. Drives the orbital ring around each sphere so the
-// agent's health is readable at a glance even though its body colour is
-// driven by identity instead.
-const STATUS_RING: Record<string, string> = {
-  running: '#22c55e',
-  error: '#ef4444',
-  pending: '#f59e0b',
-  stopped: '#94a3b8',
-}
-
-// Deterministic agent hue. djb2-ish hash → golden-ratio rotation around
-// the wheel so adjacent ids spread out instead of clustering.
-function hashHue(s: string): number {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) + h) ^ s.charCodeAt(i)
-  }
-  return Math.abs(Math.round(h * 0.61803398875)) % 360
-}
-
 interface AgentNodeProps {
   id: string
   name?: string
   position: [number, number, number]
-  status: string
   onSelect?: (id: string) => void
   isPulsing?: boolean
   themeColors: ThemeColors
   groupRef: React.RefObject<THREE.Group | null>
   baseScaleFactor: number
-  isDark: boolean
 }
 
 const AgentNode = ({
   id,
   name,
   position,
-  status,
   onSelect,
   isPulsing,
   themeColors,
   groupRef,
   baseScaleFactor,
-  isDark,
 }: AgentNodeProps) => {
   const meshRef = useRef<THREE.Mesh>(null)
   const matRef = useRef<THREE.MeshStandardMaterial>(null)
-  const ringRef = useRef<THREE.Mesh>(null)
-  const ringMatRef = useRef<THREE.MeshBasicMaterial>(null)
   const labelRef = useRef<THREE.Group>(null)
   const labelTextMatRef = useRef<THREE.Material & { opacity?: number } | null>(null)
   const impulse = useRef(new THREE.Vector3(0, 0, 0))
@@ -75,19 +55,6 @@ const AgentNode = ({
   // so the swarm doesn't move in lockstep.
   const randomPhase = useMemo(() => Math.random() * Math.PI * 2, [])
   const bubblingSpeed = useMemo(() => 0.5 + Math.random() * 1.5, [])
-
-  // Identity colour — stable per id. Slightly brighter on dark theme so
-  // the spheres pop against the black backdrop.
-  const baseColor = useMemo(() => {
-    const c = new THREE.Color()
-    const hue = hashHue(id) / 360
-    const sat = status === 'stopped' ? 0.35 : 0.6
-    const light = isDark ? 0.55 : 0.5
-    c.setHSL(hue, sat, light)
-    return c
-  }, [id, status, isDark])
-
-  const ringColor = STATUS_RING[status] ?? STATUS_RING.stopped
 
   const labelText = useMemo(() => {
     if (name && name.trim()) return name.toUpperCase()
@@ -136,27 +103,14 @@ const AgentNode = ({
       }
     }
 
-    // Material emissive: identity-tinted glow at idle; status colour when
-    // the node is selected or active. Error nodes pulse on the ring, not
-    // the body, so the body never goes red.
+    // Material stays the same monochrome tone always; only emissive flares
+    // when the node is selected / just received an event.
     if (matRef.current) {
       if (isPulsing) {
-        matRef.current.emissive.set(ringColor)
-        matRef.current.emissiveIntensity = 0.45 + Math.sin(t * 4) * 0.1
+        matRef.current.emissiveIntensity = 0.35 + Math.sin(t * 4) * 0.1
       } else {
-        matRef.current.emissive.copy(baseColor)
-        matRef.current.emissiveIntensity = isDark ? 0.18 : 0.08
+        matRef.current.emissiveIntensity = 0
       }
-    }
-
-    // Ring: error nodes get a slow opacity pulse; running nodes glow
-    // steadily; everything else stays calm.
-    if (ringRef.current && ringMatRef.current) {
-      ringRef.current.rotation.z += 0.0025
-      let target = 0.85
-      if (status === 'error') target = 0.6 + Math.sin(t * 1.6) * 0.35
-      else if (status === 'running') target = 0.85 + Math.sin(t * 1.1) * 0.1
-      ringMatRef.current.opacity = target
     }
 
     // Label entrance + idle bob + pulse animation.
@@ -186,11 +140,14 @@ const AgentNode = ({
     }
   }
 
+  // One green tone for the whole swarm — keeps the topology a single
+  // accent against the otherwise greyscale UI. Status semantics still
+  // live in the sidebar's pill UI.
+  const bodyColor = themeColors.body
+
   return (
     <group ref={groupRef}>
       <Float speed={0.55} rotationIntensity={0.08} floatIntensity={0.16}>
-        {/* Identity-coloured sphere. Standard PBR material — soft sheen
-            without the plastic feel a metalness=0 matte gives. */}
         <Sphere
           ref={meshRef}
           args={[0.4, 64, 64]}
@@ -203,28 +160,13 @@ const AgentNode = ({
         >
           <meshStandardMaterial
             ref={matRef}
-            color={baseColor}
+            color={bodyColor}
             roughness={0.55}
             metalness={0.18}
-            emissive={baseColor}
-            emissiveIntensity={isDark ? 0.18 : 0.08}
+            emissive={themeColors.highlight}
+            emissiveIntensity={0}
           />
         </Sphere>
-
-        {/* Saturn-style status ring orbiting the sphere. Tilt is fixed so
-            it reads as a deliberate band, and a slow self-spin adds life
-            independently of the camera's auto-rotation. */}
-        <mesh ref={ringRef} rotation={[Math.PI / 2 - 0.35, 0.25, 0]}>
-          <torusGeometry args={[0.56, 0.022, 14, 80]} />
-          <meshBasicMaterial
-            ref={ringMatRef}
-            color={ringColor}
-            toneMapped={false}
-            transparent
-            opacity={0.85}
-            depthWrite={false}
-          />
-        </mesh>
       </Float>
 
       {/* Label sits above the sphere, billboarded to the camera. Outline
@@ -304,7 +246,7 @@ const P2PConnections = ({ agents, agentRefs, themeColors, isDark }: ConnectionsP
 
     if (mat) {
       const t = state.clock.elapsedTime
-      const baseline = isDark ? 0.78 : 0.62
+      const baseline = isDark ? 0.7 : 0.55
       mat.opacity = baseline + Math.sin(t * 0.8) * 0.05
     }
   })
@@ -319,7 +261,7 @@ const P2PConnections = ({ agents, agentRefs, themeColors, isDark }: ConnectionsP
           ref={matRef}
           color={themeColors.line}
           transparent
-          opacity={isDark ? 0.78 : 0.62}
+          opacity={isDark ? 0.7 : 0.55}
           blending={isDark ? THREE.AdditiveBlending : THREE.NormalBlending}
           toneMapped={false}
           depthWrite={false}
@@ -416,9 +358,9 @@ const FlowParticles = ({ pairs, agentRefs, color }: FlowProps) => {
   )
 }
 
-// Slow drift on two coloured fill lights so the spheres aren't lit
-// statically.
-const AmbientDrift = () => {
+// Slow drift on two greyscale fill lights so the spheres aren't lit
+// statically — pure white tones, no accent hue.
+const AmbientDrift = ({ isDark }: { isDark: boolean }) => {
   const a = useRef<THREE.PointLight>(null)
   const b = useRef<THREE.PointLight>(null)
   useFrame(({ clock }) => {
@@ -434,10 +376,11 @@ const AmbientDrift = () => {
       b.current.position.y = 4 + Math.cos(t * 0.35) * 1.2
     }
   })
+  const c = isDark ? '#fafafa' : '#e5e5e5'
   return (
     <>
-      <pointLight ref={a} color="#60a5fa" intensity={0.7} distance={28} />
-      <pointLight ref={b} color="#f472b6" intensity={0.45} distance={26} />
+      <pointLight ref={a} color={c} intensity={0.6} distance={28} />
+      <pointLight ref={b} color={c} intensity={0.35} distance={26} />
     </>
   )
 }
@@ -475,13 +418,21 @@ export function TopologyMap({
   const themeColors: ThemeColors = useMemo(
     () => ({
       bg: isDark ? '#000000' : '#ffffff',
-      pulse: isDark ? '#ffffff' : '#0a0a0a',
-      // Mesh edges: blue, additive on dark, normal on light.
-      line: isDark ? '#3B82F6' : '#1d4ed8',
-      // Cyan electron — matches the cool blue mesh, doesn't collide with
-      // the red error semantics on the status ring.
-      flow: isDark ? '#67e8f9' : '#0891b2',
-      text: isDark ? '#ffffff' : '#0a0a0a',
+      // The single accent in the otherwise greyscale UI — green, matched
+      // to the "running" pill colour the sidebar already uses. Slightly
+      // lighter on dark so it lifts off black.
+      body: isDark ? '#22c55e' : '#16a34a',
+      // Selected/active glow — bright white core that pops the picked
+      // node without introducing a second hue.
+      highlight: isDark ? '#ffffff' : '#fafafa',
+      // Mesh edges: subtle grey, additive on dark for a soft beam feel,
+      // normal blend on light so it stays calm.
+      line: isDark ? '#525252' : '#a3a3a3',
+      // Data flow electron: theme-matched monochrome — black on light
+      // (highest contrast against white bg), white on dark (otherwise it
+      // would vanish into the canvas).
+      flow: isDark ? '#fafafa' : '#0a0a0a',
+      text: isDark ? '#fafafa' : '#0a0a0a',
       textOutline: isDark ? '#000000' : '#ffffff',
     }),
     [isDark]
@@ -534,7 +485,7 @@ export function TopologyMap({
         <color attach="background" args={[themeColors.bg]} />
         <ambientLight intensity={0.55} />
         <directionalLight position={[5, 8, 6]} intensity={0.95} />
-        <AmbientDrift />
+        <AmbientDrift isDark={isDark} />
 
         {isDark && (
           <Stars radius={60} depth={40} count={800} factor={1.6} saturation={0} fade speed={0.3} />
@@ -553,13 +504,11 @@ export function TopologyMap({
             id={agent.id}
             name={agent.name}
             position={agent.position}
-            status={agent.status}
             onSelect={onSelect}
             isPulsing={activeAgentId === agent.agentId || selectedAgentId === agent.agentId}
             themeColors={themeColors}
             groupRef={agentRefs[i]}
             baseScaleFactor={agent.baseScaleFactor}
-            isDark={isDark}
           />
         ))}
 
