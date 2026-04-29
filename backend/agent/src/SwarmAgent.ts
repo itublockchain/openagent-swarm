@@ -1,5 +1,24 @@
 import { IStoragePort, IComputePort, INetworkPort, IChainPort } from '../../../shared/ports'
 import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types'
+import { runAgentLoop } from './agentLoop'
+import { JsonAgentFormat } from './agentFormat'
+import { TOOLS } from './tools/definitions'
+
+/**
+ * Storage may hold either the new structured payload (post tool-aware loop)
+ * or a legacy plain-string output. Coerce to a single readable string for
+ * judge() / context propagation.
+ */
+function extractFinal(stored: unknown): string {
+  if (stored == null) return ''
+  if (typeof stored === 'string') return stored
+  if (typeof stored === 'object') {
+    const obj = stored as any
+    if (typeof obj.finalAnswer === 'string') return obj.finalAnswer
+    return JSON.stringify(stored).slice(0, 4000)
+  }
+  return String(stored)
+}
 
 export interface AgentDeps {
   storage: IStoragePort
@@ -296,11 +315,13 @@ export class SwarmAgent {
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_CLAIMED, { nodeId: node.id, agentId, taskId }))
 
       let prevOutput: unknown = null
+      let prevText: string = ''
       if (node.prevHash) {
         prevOutput = await this.deps.storage.fetch(node.prevHash)
+        prevText = extractFinal(prevOutput)
 
         // LLM-Judge step
-        const isValid = await this.deps.compute.judge(prevOutput as string)
+        const isValid = await this.deps.compute.judge(prevText)
         if (!isValid) {
           console.log(`[Agent ${this.deps.config.agentId}] LLM-Judge rejected output. Challenging previous node.`)
 
@@ -336,18 +357,47 @@ export class SwarmAgent {
         }
       }
 
-      const output = await this.deps.compute.complete(node.subtask, prevOutput as string | null)
-      const outputHash = await this.deps.storage.append(output)
+      // Tool-aware agent loop. Returns a structured record that's preserved
+      // verbatim in 0G Storage, so the judge / next agent / UI can see
+      // exactly which tools fired and what they returned.
+      const loopResult = await runAgentLoop({
+        compute: this.deps.compute,
+        tools: TOOLS,
+        format: new JsonAgentFormat(),
+        systemPrompt: this.deps.config.systemPrompt,
+        subtask: node.subtask,
+        context: prevText || null,
+        agentId,
+      })
+
+      const persisted = {
+        subtask: node.subtask,
+        finalAnswer: loopResult.finalAnswer,
+        transcript: loopResult.transcript,
+        toolsUsed: loopResult.toolsUsed,
+        iterations: loopResult.iterations,
+        stopReason: loopResult.stopReason,
+      }
+      const outputHash = await this.deps.storage.append(persisted)
       node.status = 'done'
       node.outputHash = outputHash
 
       // Submit output hash on-chain
       await this.deps.chain.submitOutput(node.id, outputHash)
 
-      console.log(`[Agent ${agentId}] subtask result (${node.id}):`, output.substring(0, 200))
+      console.log(
+        `[Agent ${agentId}] subtask done (${node.id}) iters=${loopResult.iterations} tools=[${loopResult.toolsUsed.join(',')}] reason=${loopResult.stopReason}`,
+      )
 
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_DONE, {
-        nodeId: node.id, outputHash, result: output, agentId, taskId
+        nodeId: node.id,
+        outputHash,
+        // Plain-text final answer for downstream context + UI legibility.
+        // The full structured payload is in 0G Storage at outputHash.
+        result: loopResult.finalAnswer,
+        toolsUsed: loopResult.toolsUsed,
+        agentId,
+        taskId,
       }))
 
       // BEN tamamladım — BEN bir sonrakini claim ederim
@@ -446,7 +496,7 @@ export class SwarmAgent {
       if (!selfClaimed) {
         // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle
         const lastOutput = await this.deps.storage.fetch(outputHash)
-        const isValid = await this.deps.compute.judge(lastOutput as string)
+        const isValid = await this.deps.compute.judge(extractFinal(lastOutput))
 
         if (!isValid) {
           console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} FAILED validation. Challenging.`)
@@ -553,7 +603,7 @@ export class SwarmAgent {
       return
     }
 
-    const isValid = await this.deps.compute.judge(output as string)
+    const isValid = await this.deps.compute.judge(extractFinal(output))
     const accusedGuilty = !isValid
     console.log(
       `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'}`,

@@ -121,12 +121,32 @@ export class ZGComputeAdapter implements IComputePort {
     }
   }
 
-  private async chat(
+  /**
+   * Public single-call wrapper used by the agent loop. Internal helpers
+   * (buildDAG/judge/assess) keep using the variadic private overload below
+   * by going through this method too.
+   */
+  async chat(
     messages: { role: string; content: string }[],
-    temperature: number = 0.3,
-    maxRetries = 5,
-    maxTokens = 1024,
+    maxTokens?: number,
+  ): Promise<string>
+  async chat(
+    messages: { role: string; content: string }[],
+    temperature: number,
+    maxRetries: number,
+    maxTokens: number,
+  ): Promise<string>
+  async chat(
+    messages: { role: string; content: string }[],
+    arg2: number = 1024,
+    maxRetries: number = 5,
+    maxTokensArg = 1024,
   ): Promise<string> {
+    // Two call shapes: (messages, maxTokens) for the agent loop, and the
+    // legacy (messages, temperature, maxRetries, maxTokens) for internal use.
+    const isAgentLoopShape = arguments.length <= 2
+    const temperature = isAgentLoopShape ? 0.3 : arg2
+    const maxTokens = isAgentLoopShape ? arg2 : maxTokensArg
     await this.ensureBroker()
 
     const content = messages.map(m => m.content).join('\n')
@@ -178,16 +198,16 @@ export class ZGComputeAdapter implements IComputePort {
   }
 
   async buildDAG(spec: string): Promise<DAGNode[]> {
-    const systemPrompt = `You are a strict task decomposition expert.
-Break down the given task into AT MOST 3 sequential subtasks.
-Each subtask must be concrete and executable by an AI agent.
-DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
-{
-  "nodes": [
-    { "id": "node-1", "subtask": "description", "dependsOn": null },
-    { "id": "node-2", "subtask": "description", "dependsOn": "node-1" }
-  ]
-}`
+      const systemPrompt = `You are a strict task decomposition expert.
+  Break down the given task into AT MOST 3 sequential subtasks.
+  Each subtask must be concrete and executable by an AI agent.
+  DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
+  {
+    "nodes": [
+      { "id": "node-1", "subtask": "description", "dependsOn": null },
+      { "id": "node-2", "subtask": "description", "dependsOn": "node-1" }
+    ]
+  }`
 
     const userPrompt = `Task: ${spec}`
 

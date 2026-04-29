@@ -143,6 +143,11 @@ export class AgentManager {
       `L2_ESCROW_ADDRESS=${this.escrowAddr}`,
       `L2_DAG_REGISTRY_ADDRESS=${process.env.L2_DAG_REGISTRY_ADDRESS ?? deployments.DAGRegistry}`,
       `L2_SLASHING_VAULT_ADDRESS=${process.env.L2_SLASHING_VAULT_ADDRESS ?? deployments.SlashingVault}`,
+      // Tooling — propagate web search keys + internal API URL so spawned
+      // agents can hit the CodeExecutor sandbox and run real web search.
+      `TAVILY_API_KEY=${process.env.TAVILY_API_KEY ?? ''}`,
+      `BRAVE_API_KEY=${process.env.BRAVE_API_KEY ?? ''}`,
+      `API_INTERNAL_URL=${process.env.API_INTERNAL_URL ?? 'http://api:3001'}`,
     ]
     if (secret.systemPrompt) env.push(`AGENT_SYSTEM_PROMPT=${secret.systemPrompt}`)
     return env

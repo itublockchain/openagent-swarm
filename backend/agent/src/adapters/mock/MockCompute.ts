@@ -44,4 +44,15 @@ export class MockCompute implements IComputePort {
     // belongs in ZGComputeAdapter.
     return true;
   }
+
+  /**
+   * Stub chat for the agent loop. Echoes a canned final-action JSON so
+   * loop runs deterministically in mock mode without hitting any LLM.
+   * The agent loop will treat this as a final answer and exit cleanly.
+   */
+  async chat(messages: Array<{ role: string; content: string }>, _maxTokens?: number): Promise<string> {
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+    const stub = `[mock] processed: ${lastUser.slice(0, 100)}`
+    return JSON.stringify({ action: 'final', answer: stub })
+  }
 }

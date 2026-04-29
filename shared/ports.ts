@@ -21,6 +21,12 @@ export interface IComputePort {
    * doesn't grab a code-generation node it'll fumble. Cheap one-token call.
    */
   assess(subtask: string, systemPrompt: string): Promise<boolean>
+  /**
+   * Low-level multi-turn chat. Optional — only adapters that wire it can
+   * back the tool-aware agent loop (runAgentLoop). MockCompute echoes a
+   * canned final-answer; ZGComputeAdapter forwards to the 0G provider.
+   */
+  chat?(messages: Array<{ role: string; content: string }>, maxTokens?: number): Promise<string>
 }
 
 export interface INetworkPort {

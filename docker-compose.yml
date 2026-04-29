@@ -63,6 +63,11 @@ services:
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
       - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
       - L2_SLASHING_VAULT_ADDRESS=${L2_SLASHING_VAULT_ADDRESS}
+      # Agent tooling — TAVILY_API_KEY / BRAVE_API_KEY enable real web search;
+      # API_INTERNAL_URL is where the CodeExecutor tool POSTs sandbox requests.
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - API_INTERNAL_URL=${API_INTERNAL_URL:-http://api:3001}
     restart: on-failure
     depends_on:
       api:

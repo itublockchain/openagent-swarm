@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
+import Dockerode from 'dockerode';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
 import { TaskSchema, AgentPrepareSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
@@ -90,6 +91,126 @@ export default async function createServer(deps: ServerDeps) {
   // Health check
   fastify.get('/health', async () => {
     return { status: 'ok', timestamp: Date.now() };
+  });
+
+  /**
+   * POST /internal/execute
+   * Sandbox runtime for the CodeExecutor agent tool. Spawns an ephemeral
+   * container with `NetworkMode: none` so even an LLM-generated exfiltration
+   * attempt has nowhere to send data. 30s wall timeout. Output capped.
+   *
+   * NOT user-facing — only reachable from inside the swarm_default Docker
+   * network (i.e. agent containers). The agent's own network does not have
+   * docker-proxy access; that's why this endpoint exists rather than letting
+   * the agent spawn containers directly.
+   */
+  const execDocker = process.env.DOCKER_HOST
+    ? new Dockerode({
+        host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
+        port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
+      })
+    : new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
+
+  const EXEC_IMAGES: Record<'python' | 'javascript', string> = {
+    python: 'python:3.11-alpine',
+    javascript: 'node:22-alpine',
+  };
+  const EXEC_TIMEOUT_MS = 30_000;
+  const EXEC_OUTPUT_LIMIT = 8_000; // chars
+
+  // Concurrency caps for sandbox container spawns. Each running container
+  // reserves 256 MiB; without these limits an LLM in a tight loop could
+  // exhaust the host. Per-agent cap protects against a single misbehaving
+  // agent; the global cap protects against a fleet collectively saturating
+  // the daemon.
+  const EXEC_MAX_PER_AGENT = 2;
+  const EXEC_MAX_TOTAL = 8;
+  const inflightExec = new Map<string, number>();
+  let totalInflight = 0;
+
+  fastify.post('/internal/execute', async (request, reply) => {
+    const { code, language, agentId } = (request.body ?? {}) as {
+      code?: string;
+      language?: string;
+      agentId?: string;
+    };
+    if (!code || (language !== 'python' && language !== 'javascript')) {
+      return reply.status(400).send({ error: 'code + language (python|javascript) required' });
+    }
+    const aid = agentId?.trim() || 'unknown';
+
+    if (totalInflight >= EXEC_MAX_TOTAL) {
+      reply.header('Retry-After', '5');
+      return reply.status(429).send({ error: `Sandbox saturated (${totalInflight}/${EXEC_MAX_TOTAL}), retry later` });
+    }
+    const cur = inflightExec.get(aid) ?? 0;
+    if (cur >= EXEC_MAX_PER_AGENT) {
+      reply.header('Retry-After', '5');
+      return reply.status(429).send({ error: `Agent ${aid}: too many concurrent executions (${cur}/${EXEC_MAX_PER_AGENT})` });
+    }
+    inflightExec.set(aid, cur + 1);
+    totalInflight++;
+
+    const image = EXEC_IMAGES[language as 'python' | 'javascript'];
+    const cmd =
+      language === 'python'
+        ? ['python', '-c', code as string]
+        : ['node', '-e', code as string];
+
+    let container: Dockerode.Container | null = null;
+    let timedOut = false;
+    try {
+      container = await execDocker.createContainer({
+        Image: image,
+        Cmd: cmd,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        HostConfig: {
+          NetworkMode: 'none',
+          AutoRemove: false,
+          Memory: 256 * 1024 * 1024, // 256 MiB
+          PidsLimit: 64,
+        },
+      });
+
+      // Stream output before start so we don't miss the first bytes.
+      const stream = await container.attach({ stream: true, stdout: true, stderr: true });
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      // Demux Docker's multiplexed stream manually (no Tty).
+      execDocker.modem.demuxStream(
+        stream,
+        { write: (b: Buffer) => { stdoutChunks.push(Buffer.from(b)) } } as any,
+        { write: (b: Buffer) => { stderrChunks.push(Buffer.from(b)) } } as any,
+      );
+
+      await container.start();
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        container?.kill().catch(() => {});
+      }, EXEC_TIMEOUT_MS);
+
+      const wait = await container.wait();
+      clearTimeout(timer);
+
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8').slice(0, EXEC_OUTPUT_LIMIT);
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').slice(0, EXEC_OUTPUT_LIMIT);
+
+      return { stdout, stderr, exitCode: wait.StatusCode ?? -1, timedOut };
+    } catch (err: any) {
+      console.error('[/internal/execute] error:', err);
+      return reply.status(500).send({ error: err?.message ?? String(err) });
+    } finally {
+      if (container) {
+        try { await container.remove({ force: true }); } catch {}
+      }
+      const next = (inflightExec.get(aid) ?? 1) - 1;
+      if (next <= 0) inflightExec.delete(aid);
+      else inflightExec.set(aid, next);
+      totalInflight = Math.max(0, totalInflight - 1);
+    }
   });
 
   // GET /auth/nonce

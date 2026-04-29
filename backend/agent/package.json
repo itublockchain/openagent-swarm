@@ -12,6 +12,7 @@
     "@0glabs/0g-serving-broker": "^0.7.5",
     "@swarm/shared": "workspace:*",
     "@swarm/shared-infra": "workspace:*",
+    "cheerio": "1.0.0",
     "dotenv": "16.5.0",
     "ethers": "6.13.5",
     "ws": "8.18.0"
