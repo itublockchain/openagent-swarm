@@ -4,6 +4,7 @@ import { DAGNode, TaskStatus } from '../../../../shared/types'
 import { ethers } from 'ethers'
 import { createZGComputeNetworkBroker } from '@0glabs/0g-serving-broker'
 import { parseJudgeResponse } from './judgeParse'
+import { recoverDAGNodes } from './dagParse'
 
 export class ZGComputeAdapter implements IComputePort {
   private rpcUrl = process.env.ZG_COMPUTE_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'
@@ -24,7 +25,7 @@ export class ZGComputeAdapter implements IComputePort {
     const wallet = new ethers.Wallet(this.privateKey, provider)
 
     console.log(`[ZGCompute] Initializing broker with wallet: ${wallet.address}`)
-    this.broker = await createZGComputeNetworkBroker(wallet)
+    const broker = await createZGComputeNetworkBroker(wallet)
 
     // Ensure a ledger sub-account exists for this wallet on the 0G Serving
     // contract; without it, the planning phase silently stalls because the
@@ -36,12 +37,12 @@ export class ZGComputeAdapter implements IComputePort {
     // SDK still accepts the new floor.
     const initialFund = Number(process.env.ZG_COMPUTE_INITIAL_FUND ?? '3')
     try {
-      await this.broker.ledger.getLedger()
+      await broker.ledger.getLedger()
       console.log(`[ZGCompute] Ledger sub-account exists for ${wallet.address}`)
     } catch {
       console.log(`[ZGCompute] No ledger sub-account — creating with ${initialFund} OG initial fund`)
       try {
-        await this.broker.ledger.addLedger(initialFund)
+        await broker.ledger.addLedger(initialFund)
         console.log(`[ZGCompute] Ledger sub-account created and funded with ${initialFund} OG`)
       } catch (err: any) {
         const msg = String(err?.message ?? err)
@@ -60,7 +61,7 @@ export class ZGComputeAdapter implements IComputePort {
     }
 
     // Find an available provider that supports our model
-    const providers = await this.broker.inference.listService()
+    const providers = await broker.inference.listService()
     if (!providers || providers.length === 0) {
       throw new Error('[ZGCompute] No 0G inference providers found')
     }
@@ -96,7 +97,7 @@ export class ZGComputeAdapter implements IComputePort {
     // Whitelist the provider signer once per wallet/provider pair.
     // Without this, processResponse can never validate signatures and billing proofs are rejected.
     try {
-      await this.broker.inference.acknowledgeProviderSigner(this.providerAddress)
+      await broker.inference.acknowledgeProviderSigner(this.providerAddress)
       console.log(`[ZGCompute] Provider signer acknowledged`)
     } catch (err: any) {
       const msg = String(err?.message ?? err)
@@ -111,7 +112,7 @@ export class ZGComputeAdapter implements IComputePort {
     // The broker tops up from the ledger when balance drops, so requests
     // never fail silently due to insufficient funds. Default 30s interval.
     try {
-      await this.broker.inference.startAutoFunding(this.providerAddress, {
+      await broker.inference.startAutoFunding(this.providerAddress, {
         interval: 30_000,
         bufferMultiplier: 2,
       })
@@ -119,6 +120,8 @@ export class ZGComputeAdapter implements IComputePort {
     } catch (err) {
       console.warn(`[ZGCompute] startAutoFunding failed (non-fatal — manual top-ups required):`, err)
     }
+
+    this.broker = broker
   }
 
   /**
@@ -198,16 +201,28 @@ export class ZGComputeAdapter implements IComputePort {
   }
 
   async buildDAG(spec: string): Promise<DAGNode[]> {
-      const systemPrompt = `You are a strict task decomposition expert.
-  Break down the given task into AT MOST 3 sequential subtasks.
-  Each subtask must be concrete and executable by an AI agent.
-  DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
-  {
-    "nodes": [
-      { "id": "node-1", "subtask": "description", "dependsOn": null },
-      { "id": "node-2", "subtask": "description", "dependsOn": "node-1" }
-    ]
-  }`
+    const systemPrompt = `You are a task decomposition expert. Break the user's request into 1-3 sequential subtasks, each producing a concrete deliverable.
+
+Rules:
+- The LAST subtask MUST produce the FINAL artifact the user asked for, in full form.
+  Example: user asks "Python calculator" → last subtask is "Output the complete
+  runnable Python script with add/subtract/multiply/divide functions and a CLI loop",
+  NOT "implement the user interface".
+- Earlier subtasks can prepare context (research findings, design notes, gathered data),
+  but the full final output must come from the last subtask alone.
+- Do NOT add setup/install steps. Execution agents already have Python 3.11 and Node 22
+  available via the execute_code tool.
+- Each subtask description should name what to OUTPUT, not what to DO.
+  Bad:  "implement user interface"
+  Good: "Output the complete Python script with input prompt, parsing, and result print"
+
+DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
+{
+  "nodes": [
+    { "id": "node-1", "subtask": "concrete deliverable description", "dependsOn": null },
+    { "id": "node-2", "subtask": "...", "dependsOn": "node-1" }
+  ]
+}`
 
     const userPrompt = `Task: ${spec}`
 
@@ -230,48 +245,34 @@ export class ZGComputeAdapter implements IComputePort {
     // Log raw for debugging, then parse robustly
     console.log('[ZGCompute] buildDAG raw response:', raw.substring(0, 300))
 
-    // Strategy 1: find a JSON block
-    let parsed: any = null
-    const jsonMatch = raw.match(/\{[\s\S]*?"nodes"\s*:\s*\[[\s\S]*?\]\s*\}/)
-    if (jsonMatch) {
-      try {
-        parsed = JSON.parse(jsonMatch[0])
-      } catch {
-        // try sanitize
-        try {
-          const sanitized = jsonMatch[0]
-            .replace(/,\s*([\]}])/g, '$1')
-            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
-          parsed = JSON.parse(sanitized)
-        } catch {
-          parsed = null
-        }
-      }
-    }
-
-    // No silent line-extraction fallback. Earlier we'd reconstruct a DAG by
-    // splitting the raw text on newlines, or — last resort — wrap the first
-    // 200 chars of the spec into a single "subtask". That produced trivial
-    // 1-node DAGs that rolled all the way to settlement without a real
-    // planning step ever happening. Better to throw and let runAsPlanner's
-    // catch surface the failure (planner stake never gets locked because of
-    // Fix 3 ordering).
-    if (!parsed || !Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
+    // recoverDAGNodes handles both clean JSON and provider-truncated arrays
+    // (0G TEE caps responses regardless of max_tokens) by walking the
+    // response and pulling out every balanced {...} object it finds. Still
+    // throws when nothing is recoverable, so runAsPlanner's catch surfaces
+    // a planning failure rather than silently building a trivial DAG.
+    const recovered = recoverDAGNodes(raw)
+    if (!recovered || recovered.length === 0) {
       throw new Error(`[ZGCompute] buildDAG could not parse a node list from LLM output: ${raw.substring(0, 200)}`)
     }
 
     const MAX_NODES = 3
-    if (parsed.nodes.length > MAX_NODES) {
+    if (recovered.length > MAX_NODES) {
       console.warn(
-        `[ZGCompute] buildDAG: LLM returned ${parsed.nodes.length} nodes, truncating to ${MAX_NODES}. Consider raising MAX_NODES if the demo can spare more inference rounds.`,
+        `[ZGCompute] buildDAG: LLM returned ${recovered.length} nodes, truncating to ${MAX_NODES}.`,
+      )
+    }
+    if (recovered.length < 3) {
+      console.warn(
+        `[ZGCompute] buildDAG: only ${recovered.length} parseable node(s) recovered (likely provider-truncated response).`,
       )
     }
 
+    const usable = recovered.slice(0, MAX_NODES)
     // DAGNode formatına çevir
-    const nodes: DAGNode[] = parsed.nodes.slice(0, MAX_NODES).map((n: any, i: number) => ({
+    const nodes: DAGNode[] = usable.map((n: any, i: number) => ({
       id: n.id,
       subtask: n.subtask,
-      prevHash: i === 0 ? null : `placeholder-${parsed.nodes[i - 1].id}`,
+      prevHash: i === 0 ? null : `placeholder-${usable[i - 1].id}`,
       status: 'idle' as TaskStatus,
       claimedBy: null,
     }))

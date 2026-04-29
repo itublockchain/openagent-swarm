@@ -20,11 +20,11 @@ const AGENT_NETWORK = process.env.AGENT_NETWORK || 'swarm_default'
 // claim, submitOutput) — no per-agent ledger sub-account. 'local' falls
 // back to the legacy per-agent broker which costs ~3 OG ledger.
 const COMPUTE_MODE = (process.env.COMPUTE_MODE ?? 'central').toLowerCase()
-// Gas prefund: 3.5 OG was sized for 'local' mode (3 OG ledger min + 0.5
+// Gas prefund: 3.5 OG was sized for 'local' mode (3 OG ledger min + 0.01
 // OG tx headroom). In 'central' mode the agent only needs L2 tx gas, so
 // 0.5 OG is plenty. Override with AGENT_GAS_PREFUND_OG if needed.
 const GAS_PREFUND_OG =
-  process.env.AGENT_GAS_PREFUND_OG ?? (COMPUTE_MODE === 'local' ? '3.5' : '0.5')
+  process.env.AGENT_GAS_PREFUND_OG ?? (COMPUTE_MODE === 'local' ? '3.5' : '0.01')
 // Default model — only qwen variants are reachable on 0G Compute testnet
 // at the time of writing.
 const DEFAULT_MODEL = process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct'
@@ -32,7 +32,7 @@ const DEFAULT_MODEL = process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct
 const STATUS_PENDING = 0
 const STATUS_RUNNING = 1
 const STATUS_STOPPED = 2
-const STATUS_ERROR   = 3
+const STATUS_ERROR = 3
 
 const STATUS_NUM_TO_STR: Record<number, AgentRecord['status']> = {
   0: 'pending',
@@ -240,19 +240,41 @@ export class AgentManager {
 
     // Best-effort gas prefund. If it fails the user can still transfer USDC,
     // but the agent will be unable to submit txs until topped up another way.
-    if (this.fundingSigner) {
+    // tx.wait() is intentionally NOT awaited here — 0G testnet block times
+    // can exceed 30s and blocking the prepare() call causes the UI to show
+    // "Transaction receipt not found". The transfer is sent and confirmed in
+    // the background; the agent container starts a few seconds later and by
+    // then the funds are almost always available.
+    // Prefund must succeed before prepare() returns — otherwise we leak
+    // zombie agents (deploy() spawns the container, agent tries to claim,
+    // can't pay gas, slot gets locked, race conditions follow). Fail-loud
+    // here so the UI surfaces the error and the user can refill / retry.
+    if (!this.fundingSigner) {
+      throw new Error('[AgentManager] PRIVATE_KEY missing — cannot prefund agent gas')
+    }
+    try {
+      const tx = await this.fundingSigner.sendTransaction({
+        to: wallet.address,
+        value: ethers.parseEther(GAS_PREFUND_OG),
+      })
+      console.log(`[AgentManager] Prefund TX sent: ${tx.hash} → ${wallet.address} (${GAS_PREFUND_OG} OG)`)
       try {
-        const tx = await this.fundingSigner.sendTransaction({
-          to: wallet.address,
-          value: ethers.parseEther(GAS_PREFUND_OG),
-        })
         await tx.wait()
-        console.log(`[AgentManager] Prefunded ${GAS_PREFUND_OG} OG to ${wallet.address} (tx ${tx.hash})`)
-      } catch (err) {
-        console.error(`[AgentManager] Gas prefund failed for ${wallet.address}:`, err)
+        console.log(`[AgentManager] Prefund confirmed for ${wallet.address}`)
+      } catch (waitErr) {
+        // 0G RPC can lag on receipts; verify via direct balance read before
+        // giving up. If the funds arrived we still consider prefund OK.
+        const balance = await this.provider.getBalance(wallet.address)
+        const expected = ethers.parseEther(GAS_PREFUND_OG)
+        if (balance < expected) {
+          throw new Error(
+            `Prefund balance check failed for ${wallet.address}: have ${ethers.formatEther(balance)} OG, need ${GAS_PREFUND_OG}`,
+          )
+        }
+        console.log(`[AgentManager] Prefund receipt timed out but balance confirms ${ethers.formatEther(balance)} OG`)
       }
-    } else {
-      console.warn('[AgentManager] PRIVATE_KEY missing — agent will start without gas prefund')
+    } catch (err) {
+      throw new Error(`[AgentManager] Gas prefund failed for ${wallet.address}: ${(err as Error).message}`)
     }
 
     const decimals = await this.getDecimals()

@@ -114,7 +114,14 @@ export class AxlNetwork implements INetworkPort {
 
   async emit<T>(event: AXLEvent<T>): Promise<void> {
     try {
-      const eventId = `${event.type}:${event.agentId}:${event.timestamp}`;
+      // Key MUST match pollMessages' format — payload fingerprint included.
+      // If they diverge, the gossip-loopback event we just emitted comes
+      // back through pollMessages with a different key, doesn't match the
+      // seenEvents entry we just added, and gets handled a SECOND time.
+      // That second handling is what produces "Already staked" reverts:
+      // SUBTASK_DONE re-fires claimFirstAvailable, which races into a
+      // re-execution while the original is mid-stake.
+      const eventId = `${event.type}:${event.agentId}:${event.timestamp}:${payloadFingerprint(event.payload)}`;
       this.seenEvents.add(eventId);
 
       // Trigger local handlers immediately so we process our own events

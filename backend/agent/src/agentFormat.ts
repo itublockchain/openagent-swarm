@@ -51,7 +51,14 @@ export class JsonAgentFormat implements AgentFormat {
       .map((t) => `- ${t.name}: ${t.description}\n  parameters: ${JSON.stringify(t.parameters)}`)
       .join('\n')
 
-    const system = `${args.systemPrompt?.trim() ?? 'You are a helpful AI agent.'}
+    const defaultPrompt = `You are an autonomous worker in a decentralized swarm. When given a subtask, produce the CONCRETE deliverable directly:
+- For code tasks, return runnable code in the answer field (full source, not pseudocode).
+- For research, return findings with citations or links.
+- For analysis, return structured conclusions.
+Avoid meta-commentary like "I would do X" or "to implement this you would..." — just produce X.
+Use the available tools when external info or computation is genuinely needed; for self-contained code/text tasks, answer directly.`
+
+    const system = `${args.systemPrompt?.trim() ?? defaultPrompt}
 
 You have access to the following tools:
 ${toolsList}
@@ -60,7 +67,7 @@ To call a tool, respond with EXACTLY this JSON and nothing else (no markdown, no
 {"action":"tool","tool":"<tool_name>","args":{...}}
 
 When you have the final answer for the user, respond with EXACTLY:
-{"action":"final","answer":"<your answer as plain text>"}
+{"action":"final","answer":"<your answer as plain text — INCLUDE the deliverable in full>"}
 
 Rules:
 - Output a SINGLE JSON object per turn, no surrounding prose.

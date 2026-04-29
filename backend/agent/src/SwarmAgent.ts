@@ -35,6 +35,12 @@ export class SwarmAgent {
   private lastActivity: number = Date.now()
   // Track which tasks this agent is planner for (keeper responsibility)
   private plannerFor = new Set<string>()
+  // nodeId-keyed reentrancy guard for executeSubtask. Multiple paths can
+  // race into execution for the same node (SUBTASK_DONE re-entry, fallback
+  // timer, watchdog, AXL gossip-loopback) — without this, the second path
+  // re-stakes a node that's already mid-flight and the contract reverts
+  // with "Already staked". Cleared in the finally block.
+  private inflightSubtasks = new Set<string>()
 
   constructor(private deps: AgentDeps) {}
 
@@ -62,34 +68,62 @@ export class SwarmAgent {
       if (agentId !== this.deps.config.agentId) {
         console.log(`[Agent ${this.deps.config.agentId}] sync: subtask ${nodeId} claimed by ${agentId}`)
         this.deps.chain.syncSubtaskClaim(nodeId, agentId)
-        
-        // Update local DAG cache status if we have it
+
+        // Track who owns the slot in our local cache so the SUBTASK_DONE
+        // dispatch knows whether to fire executeSubtask for this node when
+        // prev finishes (it shouldn't, since the peer holds it).
         const task = this.tasks.get(taskId)
         if (task) {
           const node = task.nodes.find(n => n.id === nodeId)
-          if (node) node.status = 'claimed'
+          if (node) {
+            node.status = 'claimed'
+            node.claimedBy = agentId
+          }
         }
       }
     })
 
     this.deps.network.on(EventType.SUBTASK_DONE, (event) => {
       const { nodeId, outputHash, taskId } = event.payload as any
-      // lastActivity'yi sadece bizim aktif task'ımızla ilgili event'lerde
-      // tazele — başka task'lardan gelen event'ler busy timeout'umuzu
-      // suni olarak uzatıp yeni TASK_SUBMITTED'leri ignore ettiriyordu.
       if (taskId === this.currentTaskId) {
         this.lastActivity = Date.now()
       }
       const task = this.tasks.get(taskId)
-      if (task) {
-        const node = task.nodes.find(n => n.id === nodeId)
-        if (node) {
-          node.status = 'done'
-          node.outputHash = outputHash
-        }
-        // Bir iş bittiğine göre, boşalan başka bir işi almayı deneyebiliriz
-        this.claimFirstAvailable(taskId).catch(() => {})
+      if (!task) return
+
+      const doneIndex = task.nodes.findIndex(n => n.id === nodeId)
+      const doneNode = task.nodes[doneIndex]
+      if (doneNode) {
+        doneNode.status = 'done'
+        doneNode.outputHash = outputHash
       }
+
+      // Critical for parallel-claim/sequential-execute: lift the next node's
+      // prevHash from "placeholder-..." to the real outputHash so any agent
+      // (including the one holding the claim) can now execute it. Without
+      // this update, a peer who pre-claimed node-2 has no way to know prev
+      // is ready.
+      const nextNode = task.nodes[doneIndex + 1]
+      if (nextNode && nextNode.prevHash && nextNode.prevHash.includes('placeholder-')) {
+        nextNode.prevHash = outputHash
+      }
+
+      // Deferred-execute dispatch: if WE pre-claimed the next node and were
+      // waiting on prev, now's the time to run it.
+      if (
+        nextNode &&
+        nextNode.claimedBy === this.deps.config.agentId &&
+        nextNode.status === 'claimed'
+      ) {
+        console.log(`[Agent ${this.deps.config.agentId}] prev done, dispatching held claim ${nextNode.id}`)
+        this.executeSubtask(nextNode, taskId).catch(err =>
+          console.error(`[Agent ${this.deps.config.agentId}] deferred execute error:`, err),
+        )
+      }
+
+      // Always try to claim more — a slot we passed on earlier (prev not
+      // ready, network blip) might be takeable now.
+      this.claimFirstAvailable(taskId).catch(() => {})
     })
 
     this.deps.network.on(EventType.CHALLENGE, (event) => {
@@ -298,37 +332,33 @@ export class SwarmAgent {
     // passes allowSelfPlanner=true after waiting for peers.
     if (this.plannerFor.has(taskId) && !allowSelfPlanner) return
 
+    // Parallel claim, sequential execute: agents race to claim ALL eligible
+    // nodes upfront (regardless of whether prev is done). Once a node is
+    // claimed, the claimer waits for prev's SUBTASK_DONE — at which point
+    // the listener wakes up and dispatches executeSubtask. This breaks the
+    // single-agent-zincirleme bias of the old "claim only when prev is
+    // ready" rule, since every node opens for FCFS the moment the DAG is
+    // sealed.
     for (const node of task.nodes) {
-      // Already handled — either we (or a peer) marked it claimed/done locally.
-      // Without this guard, the SUBTASK_DONE listener re-enters claimFirstAvailable
-      // for every completion and re-tries already-finished nodes; with the new
-      // honest claimSubtask the contract correctly says "not yours" but the
-      // wasted RPC + spurious "Already staked" reverts pollute the logs.
+      // Already handled — either we or a peer claimed/finished it.
       if (node.status === 'done' || node.status === 'claimed') continue
-
-      // prevHash henüz gerçek storage hash değilse (bağımlılık bitmediyse) atla
-      // Gerçek hash'lerde 'placeholder-' kelimesi geçmez.
-      if (node.prevHash && node.prevHash.includes('placeholder-')) continue
 
       // Skill self-selection: skip nodes the agent says don't match its prompt.
       const fits = await this.fitsSkill(node.subtask, bypassSkill)
       if (!fits) {
         console.log(`[Agent ${this.deps.config.agentId}] passing on ${node.id} — outside skill`)
-        // Surface the skill miss to the dashboard so viewers can see the
-        // self-selection layer at work. Bypass mode (fallback) doesn't pass.
         this.deps.network.emit(this.buildEvent(EventType.AGENT_PASSED, {
           nodeId: node.id, taskId, agentId: this.deps.config.agentId, reason: 'outside_skill',
         })).catch(() => {})
         continue
       }
 
-      // Gentleman's delay to avoid double claims in P2P mesh
-      await new Promise(resolve => setTimeout(resolve, Math.random() * 500));
+      // Gentleman's delay so peers can race fairly (same agent isn't always
+      // first thanks to local network advantages).
+      await new Promise(resolve => setTimeout(resolve, Math.random() * 500))
 
       // Pre-check: if the chain already shows this node claimed, skip the
-      // tx. Saves gas and avoids polluting logs with "tx success / verify
-      // says not us" noise. The honest claim adapter still verifies after
-      // the tx for safety.
+      // tx. Saves gas and avoids "tx success / verify says not us" noise.
       try {
         if (await this.deps.chain.isSubtaskClaimed(node.id)) {
           node.status = 'claimed'
@@ -341,14 +371,36 @@ export class SwarmAgent {
       const claimed = await this.deps.chain.claimSubtask(node.id)
       if (claimed) {
         node.status = 'claimed'
+        node.claimedBy = this.deps.config.agentId
         console.log(`[Agent ${this.deps.config.agentId}] claimed ${node.id}`)
-        await this.executeSubtask(node, taskId)
-        return  // bir node al ve dur — bir sonrakini execute sonrası alacağız
+
+        // Dispatch decision: if prev is ready (or we're the first node)
+        // execute now; otherwise hold the claim and let the SUBTASK_DONE
+        // listener kick off execution when prev finishes.
+        const prevReady = !node.prevHash || !node.prevHash.includes('placeholder-')
+        if (prevReady) {
+          // Don't await — keep racing for more nodes in this loop iteration.
+          this.executeSubtask(node, taskId).catch(err =>
+            console.error(`[Agent ${this.deps.config.agentId}] execute error:`, err),
+          )
+        } else {
+          console.log(`[Agent ${this.deps.config.agentId}] holding ${node.id} — prev not ready`)
+        }
+        // Continue racing for additional eligible nodes on this same DAG.
       }
     }
   }
 
   private async executeSubtask(node: DAGNode, taskId: string): Promise<void> {
+    // Reentrancy guard — if any other path is mid-execution for this same
+    // node, skip. Without this, gossip-loopback / fallback timer / watchdog
+    // can each call executeSubtask concurrently and the second one hits
+    // "Already staked" on the SwarmEscrow when stakeForSubtask runs again.
+    if (this.inflightSubtasks.has(node.id)) {
+      console.log(`[Agent ${this.deps.config.agentId}] executeSubtask: ${node.id} already in flight, skipping`)
+      return
+    }
+    this.inflightSubtasks.add(node.id)
     try {
       const agentId = this.deps.config.agentId
       // Worker stake is locked against this specific subtask. It is auto-released
@@ -443,8 +495,27 @@ export class SwarmAgent {
         taskId,
       }))
 
-      // BEN tamamladım — BEN bir sonrakini claim ederim
-      await this.claimNextAfter(node.id, outputHash, taskId)
+      // Last-node check: under parallel-claim/sequential-execute, the next
+      // worker (if any) was already claimed at DAG_READY time and is sitting
+      // on its prevHash. Our SUBTASK_DONE broadcast is what unblocks them —
+      // so we don't re-claim here. We only need to handle the terminal case.
+      const task = this.tasks.get(taskId)
+      const isLastNode = !!task && task.nodes[task.nodes.length - 1]?.id === node.id
+      if (isLastNode) {
+        if (this.plannerFor.has(taskId)) {
+          // We're the planner-keeper — validate immediately.
+          await this.validateLastNodeAsPlanner(node.id, outputHash, taskId)
+        } else {
+          // Different agent finished the last node; signal the planner.
+          console.log(`[Agent ${agentId}] last node done, signaling planner for validation`)
+          await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
+            taskId,
+            lastNodeId: node.id,
+            lastOutputHash: outputHash,
+            needsPlannerValidation: true,
+          }))
+        }
+      }
 
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] executeSubtask error:`, err)
@@ -454,63 +525,8 @@ export class SwarmAgent {
       if (this.currentTaskId === taskId) {
         this.currentTaskId = null
       }
-    }
-  }
-
-  // sadece bu agent'ın tamamladığı node'dan sonrakini claim et
-  private async claimNextAfter(doneNodeId: string, outputHash: string, taskId: string): Promise<void> {
-    const task = this.tasks.get(taskId)
-    if (!task) return
-
-    const agentId = this.deps.config.agentId
-    const nodes = task.nodes
-    const doneIndex = nodes.findIndex(n => n.id === doneNodeId)
-
-    // bir sonraki node var mı?
-    const nextNode = nodes[doneIndex + 1]
-    if (!nextNode) {
-      // Son node tamamlandı — planner'a denetleme sorumluluğu devret
-      // Eğer biz planner'sak, son node'u validate et ve settlement'ı tetikle
-      if (this.plannerFor.has(taskId)) {
-        await this.validateLastNodeAsPlanner(doneNodeId, outputHash, taskId)
-      } else {
-        // Son node'u tamamlayan agent planner değilse, DAG_COMPLETED sinyali gönder
-        // Planner bu sinyali alıp son node'u denetleyecek
-        console.log(`[Agent ${agentId}] Last node done, signaling planner for validation`)
-        await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
-          taskId,
-          lastNodeId: doneNodeId,
-          lastOutputHash: outputHash,
-          needsPlannerValidation: true,
-        }))
-      }
-      return
-    }
-
-    // sonraki node'un prevHash'ini güncelle
-    nextNode.prevHash = outputHash
-    nextNode.status = undefined as any
-
-    // Skill check the next node too — sequential DAG nodes can require
-    // different specializations (research → write → review). If this agent
-    // is a poor fit, hand off to the SUBTASK_DONE listeners on other
-    // agents who'll race claimFirstAvailable.
-    const fits = await this.fitsSkill(nextNode.subtask, false)
-    if (!fits) {
-      console.log(`[Agent ${agentId}] next node ${nextNode.id} outside skill, leaving for others`)
-      this.deps.network.emit(this.buildEvent(EventType.AGENT_PASSED, {
-        nodeId: nextNode.id, taskId, agentId, reason: 'outside_skill',
-      })).catch(() => {})
-      return
-    }
-
-    const claimed = await this.deps.chain.claimSubtask(nextNode.id)
-    if (claimed) {
-      nextNode.status = 'claimed'
-      console.log(`[Agent ${agentId}] claimed next: ${nextNode.id}`)
-      await this.executeSubtask(nextNode, taskId)
-    } else {
-      console.log(`[Agent ${agentId}] next node ${nextNode.id} taken by another agent`)
+    } finally {
+      this.inflightSubtasks.delete(node.id)
     }
   }
 
@@ -533,14 +549,23 @@ export class SwarmAgent {
       // worker to peer-validate the last node. Trust own work and mark
       // validated; the per-node SUBTASK_PEER_VALIDATED signal earlier in the
       // chain still gives meaningful jury coverage to every other node.
-      const myAddr = (this.deps.config.agentAddress ?? '').toLowerCase()
+      //
+      // myAddr: prefer the explicitly configured agentAddress (set in env);
+      // fall back to AGENT_PRIVATE_KEY-derived address so we never skip the
+      // guard just because the config field was left blank.
+      const rawAddr = this.deps.config.agentAddress
+        ?? (process.env.AGENT_PRIVATE_KEY
+          ? new (require('ethers').Wallet)(process.env.AGENT_PRIVATE_KEY).address
+          : '')
+      const myAddr = rawAddr.toLowerCase()
       let claimant = ''
       try {
-        claimant = (await this.deps.chain.getNodeClaimant(lastNodeId)).toLowerCase()
+        claimant = await this.deps.chain.getNodeClaimant(lastNodeId)
       } catch (err) {
         console.warn(`[Agent ${agentId}] KEEPER: getNodeClaimant failed for ${lastNodeId}:`, err)
       }
-      const selfClaimed = !!myAddr && claimant === myAddr
+
+      const selfClaimed = !!myAddr && !!claimant && myAddr.toLowerCase() === claimant.toLowerCase()
 
       if (!selfClaimed) {
         // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle

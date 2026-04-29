@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
-import { waitForTransactionReceipt } from '@wagmi/core'
+import { waitForTransactionReceipt, readContract } from '@wagmi/core'
 import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi'
 import { ERC20_ABI } from '@/lib/contracts'
 import { apiRequest } from '../../lib/api'
@@ -118,12 +118,31 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       })
       console.log('[Deploy] transfer tx hash:', transferHash)
       // 0G RPC can take ~30-60s to surface receipts; bump default timeout.
-      await waitForTransactionReceipt(wagmiConfig, {
-        hash: transferHash,
-        timeout: 180_000,
-        pollingInterval: 3_000,
-      })
-      console.log('[Deploy] transfer confirmed')
+      // If receipt fetch times out, the tx may still have landed — verify by
+      // reading the agent's USDC balance directly. Same defensive pattern as
+      // task creation in /explorer/page.tsx.
+      try {
+        await waitForTransactionReceipt(wagmiConfig, {
+          hash: transferHash,
+          timeout: 300_000,
+          pollingInterval: 3_000,
+        })
+        console.log('[Deploy] transfer confirmed')
+      } catch (err: any) {
+        console.warn('[Deploy] receipt fetch timed out, verifying balance directly:', err?.shortMessage || err?.message)
+        const balance = (await readContract(wagmiConfig, {
+          address: prep.usdcAddress,
+          abi: ERC20_ABI,
+          functionName: 'balanceOf',
+          args: [prep.agentAddress],
+        })) as bigint
+        if (balance < BigInt(prep.stakeWei)) {
+          throw new Error(
+            `Transfer not confirmed and agent balance (${balance.toString()}) < required (${prep.stakeWei}). Try again or check the explorer.`,
+          )
+        }
+        console.log('[Deploy] receipt timed out but USDC arrived (balance check passed)')
+      }
 
       // 4. Backend verifies funding and starts the container.
       setStep('deploying')
