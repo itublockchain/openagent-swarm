@@ -1,11 +1,6 @@
 import * as dotenv from 'dotenv';
 import { ethers } from 'ethers';
 import { SwarmAgent, AgentDeps } from './SwarmAgent';
-import { MockStorage } from './adapters/mock/MockStorage';
-import { MockCompute } from './adapters/mock/MockCompute';
-import { MockChain } from './adapters/mock/MockChain';
-import { EventBus } from './core/EventBus';
-import { EventType } from '../../../shared/types';
 import { createAdapters } from './adapters';
 
 // Load environment variables from root

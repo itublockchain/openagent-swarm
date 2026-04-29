@@ -50,6 +50,7 @@ services:
       - AGENT_ID=${AGENT_ID:-swarm-genesis}
       - USE_MOCK=${USE_MOCK:-false}
       - COMPUTE_PROVIDER=0g
+      - COMPUTE_MODE=${COMPUTE_MODE:-central}
       - ZG_COMPUTE_RPC_URL=${ZG_COMPUTE_RPC_URL:-https://evmrpc-testnet.0g.ai}
       - ZG_COMPUTE_MODEL=${ZG_COMPUTE_MODEL:-qwen/qwen-2.5-7b-instruct}
       - AGENT_PRIVATE_KEY=${AGENT_PRIVATE_KEY}

@@ -74,7 +74,12 @@ export class SwarmAgent {
 
     this.deps.network.on(EventType.SUBTASK_DONE, (event) => {
       const { nodeId, outputHash, taskId } = event.payload as any
-      this.lastActivity = Date.now()
+      // lastActivity'yi sadece bizim aktif task'ımızla ilgili event'lerde
+      // tazele — başka task'lardan gelen event'ler busy timeout'umuzu
+      // suni olarak uzatıp yeni TASK_SUBMITTED'leri ignore ettiriyordu.
+      if (taskId === this.currentTaskId) {
+        this.lastActivity = Date.now()
+      }
       const task = this.tasks.get(taskId)
       if (task) {
         const node = task.nodes.find(n => n.id === nodeId)
@@ -151,15 +156,15 @@ export class SwarmAgent {
       await new Promise(r => setTimeout(r, 1000))
       
       const claimed = await this.deps.chain.claimPlanner(taskId)
-      // Who won?
-      const chosenPlanner = (this.deps.chain as any).plannerClaims?.get(taskId) || this.deps.config.agentId;
-
       if (claimed) {
         this.currentTaskId = taskId
         console.log(`[Agent ${this.deps.config.agentId}] WON planner race. Acting as planner.`)
         await this.runAsPlanner(event)
       } else {
-        console.log(`[Agent ${this.deps.config.agentId}] LOST planner race to ${chosenPlanner}. Acting as worker.`)
+        // Lost the race. The planner address is on-chain at planners[taskId];
+        // the previous "chosenPlanner" log read a MockChain-only field via
+        // `as any` and printed our own id on real chain — misleading. Skip.
+        console.log(`[Agent ${this.deps.config.agentId}] LOST planner race. Acting as worker.`)
       }
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] onTaskSubmitted error:`, err)
@@ -174,16 +179,26 @@ export class SwarmAgent {
 
       const nodes = await this.deps.compute.buildDAG(spec)
 
+      // Storage append is content-addressed and idempotent, safe to do early.
       await this.deps.storage.append(nodes)
-      await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
 
-      // Register DAG on-chain (mühürleme)
+      // Register DAG on-chain BEFORE staking so a registerDAG revert
+      // ("Already registered" / "Empty DAG") doesn't leave funds locked
+      // in escrow with no way to recover. Once registerDAG lands the seal
+      // is permanent; only then commit the stake.
       const nodeIds = nodes.map(n => n.id)
       await this.deps.chain.registerDAG(taskId, nodeIds)
       console.log(`[Agent ${agentId}] DAG registered on-chain with ${nodeIds.length} nodes`)
 
-      await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId, taskId }))
-      await new Promise(r => setTimeout(r, 100))
+      await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
+
+      // Mark planner responsibility BEFORE emitting DAG_READY. AxlNetwork.emit
+      // schedules local handlers on the microtask queue; if onDAGReady runs
+      // before this set is populated, claimFirstAvailable's `plannerFor.has()`
+      // guard fails open and the planner ends up racing for its own node-1.
+      this.plannerFor.add(taskId)
+      this.tasks.set(taskId, { nodes, taskId, plannerAgentId: agentId })
+
       await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, {
         nodes,
         taskId,
@@ -192,9 +207,23 @@ export class SwarmAgent {
 
       console.log(`[Agent ${agentId}] DAG_READY emitted, ${nodes.length} nodes`)
 
-      // Track planner responsibility — keeper role for validating last node
-      this.plannerFor.add(taskId)
-      this.tasks.set(taskId, { nodes, taskId, plannerAgentId: agentId })
+      // Single-agent fallback: if no peer claims any subtask within this
+      // window, the planner self-claims its own DAG. Without this a one-agent
+      // swarm hangs forever after DAG_READY (planners normally don't race for
+      // their own subtasks because settlement double-pays them). Settlement
+      // math still works — escrow happily pays the same address twice.
+      const SINGLE_AGENT_FALLBACK_MS = 30_000
+      setTimeout(async () => {
+        const cached = this.tasks.get(taskId)
+        if (!cached) return
+        const anyClaimed = cached.nodes.some(n => n.status === 'claimed' || n.status === 'done')
+        if (anyClaimed) return // peer is on it
+        if (!this.plannerFor.has(taskId)) return
+        console.log(`[Agent ${agentId}] single-agent fallback: no peer claimed in ${SINGLE_AGENT_FALLBACK_MS}ms, planner self-claiming`)
+        await this.claimFirstAvailable(taskId, true, true).catch(err =>
+          console.error(`[Agent ${agentId}] self-claim error:`, err),
+        )
+      }, SINGLE_AGENT_FALLBACK_MS)
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner FAILED:`, err)
     }
@@ -257,16 +286,17 @@ export class SwarmAgent {
     }
   }
 
-  private async claimFirstAvailable(taskId: string, bypassSkill = false): Promise<void> {
+  private async claimFirstAvailable(taskId: string, bypassSkill = false, allowSelfPlanner = false): Promise<void> {
     const task = this.tasks.get(taskId)
     if (!task) return
 
     // Role separation: the planner of this task is its keeper-validator and
     // does NOT race for its own subtasks. The settlement split (20% planner,
     // 80% workers) collapses to "planner takes everything" if the planner
-    // also fills the worker slots. Trade-off: in a single-agent swarm the
-    // DAG simply stalls until another agent comes online.
-    if (this.plannerFor.has(taskId)) return
+    // also fills the worker slots — fine in a single-agent swarm but bad
+    // when peers exist. Default: skip; only the single-agent fallback timer
+    // passes allowSelfPlanner=true after waiting for peers.
+    if (this.plannerFor.has(taskId) && !allowSelfPlanner) return
 
     for (const node of task.nodes) {
       // Already handled — either we (or a peer) marked it claimed/done locally.
@@ -294,6 +324,19 @@ export class SwarmAgent {
 
       // Gentleman's delay to avoid double claims in P2P mesh
       await new Promise(resolve => setTimeout(resolve, Math.random() * 500));
+
+      // Pre-check: if the chain already shows this node claimed, skip the
+      // tx. Saves gas and avoids polluting logs with "tx success / verify
+      // says not us" noise. The honest claim adapter still verifies after
+      // the tx for safety.
+      try {
+        if (await this.deps.chain.isSubtaskClaimed(node.id)) {
+          node.status = 'claimed'
+          continue
+        }
+      } catch {
+        // Read failure → fall through to optimistic claim.
+      }
 
       const claimed = await this.deps.chain.claimSubtask(node.id)
       if (claimed) {
@@ -405,6 +448,12 @@ export class SwarmAgent {
 
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] executeSubtask error:`, err)
+      // Hata akışında stuck busy state'e düşmemek için bu task'tan çekil.
+      // Eğer hata transient ise yeni task'lar yine de bizden açılabilsin;
+      // gerçekten kalıcı bir sorun varsa zaten bir sonraki task'da fail eder.
+      if (this.currentTaskId === taskId) {
+        this.currentTaskId = null
+      }
     }
   }
 
@@ -565,6 +614,17 @@ export class SwarmAgent {
       }))
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] challenge error:`, err)
+    } finally {
+      // Çıkış kuralı: bu task için sorumluluğumuz challenge ile bitti.
+      // Cache'i de temizle — eski subtask stake'imiz kilitli olabilir, eski
+      // tasks.get() kayıtları SUBTASK_DONE listener'ını re-entrant claim'e
+      // sürüklüyor ve "Already staked" zincirleme revert'ine sebep oluyor.
+      if (this.currentTaskId === taskId) {
+        console.log(`[Agent ${this.deps.config.agentId}] releasing task ${taskId} after challenge`)
+        this.currentTaskId = null
+        this.tasks.delete(taskId)
+        this.plannerFor.delete(taskId)
+      }
     }
   }
 
@@ -624,9 +684,17 @@ export class SwarmAgent {
   private async onTaskReopened(event: AXLEvent<any>): Promise<void> {
     const { nodeId, taskId } = event.payload
 
-    // Self-events are NOT skipped: if WE were the challenger, no peer may
-    // have the DAG cached (e.g. they were offline during DAG_READY), so we
-    // are still responsible for trying to re-claim once the slot opens up.
+    // Kendi yayınladığımız REOPEN event'inde re-claim'e gitmeyelim:
+    //   1) challengeNode sonrası bu task'tan zaten çekildik (currentTaskId temizlendi).
+    //   2) Vault `slashSubtaskPartial` sadece QUORUM sonrası subtask stake'ini
+    //      temizliyor — kimse oy vermediyse stake hâlâ bizde kilitli, yeniden
+    //      stakeForSubtask çağırırsak "Already staked" revert'ine düşeriz.
+    //   3) Adillik: kendi challenge ettiğimiz node'u kendimiz tekrar almak
+    //      ekonomik olarak garip; başka agent'lara bırak.
+    if (event.agentId === this.deps.config.agentId) {
+      return
+    }
+
     const task = this.tasks.get(taskId)
     if (!task) return
 
@@ -659,7 +727,11 @@ export class SwarmAgent {
    */
   private scheduleReopenWatchdog(nodeId: string, taskId: string): void {
     const POLL_MS = 30_000
-    const MAX_ITERATIONS = 24 // ~12 min; vault VOTING_WINDOW is 1h
+    // Aligned with SlashingVault.VOTING_WINDOW (1h) + a small grace period
+    // so we keep polling until the challenge is definitely resolved. Earlier
+    // 24-iter (~12 min) ceiling caused slots to orphan whenever a jury vote
+    // landed late — the watchdog gave up before resetNode fired.
+    const MAX_ITERATIONS = 130 // ~65 min
     const ZERO = '0x0000000000000000000000000000000000000000'
     let attempt = 0
     const agentId = this.deps.config.agentId

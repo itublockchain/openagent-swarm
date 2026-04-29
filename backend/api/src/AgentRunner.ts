@@ -15,11 +15,16 @@ const docker = process.env.DOCKER_HOST
 
 const AGENT_IMAGE = process.env.AGENT_IMAGE || 'swarm-agent:latest'
 const AGENT_NETWORK = process.env.AGENT_NETWORK || 'swarm_default'
-// Default 3.5 OG: 3 OG goes into the 0G Compute ledger sub-account on the
-// agent's first inference call (SDK minimum), the rest covers tx gas for
-// stake/claim/submitOutput across the agent's lifetime. Override per-deploy
-// with AGENT_GAS_PREFUND_OG if your API wallet is short on OG.
-const GAS_PREFUND_OG = process.env.AGENT_GAS_PREFUND_OG ?? '3.5'
+// Compute mode propagated to spawned agents. Default 'central' uses the
+// API-side shared broker, so each agent only needs gas for L2 tx (stake,
+// claim, submitOutput) — no per-agent ledger sub-account. 'local' falls
+// back to the legacy per-agent broker which costs ~3 OG ledger.
+const COMPUTE_MODE = (process.env.COMPUTE_MODE ?? 'central').toLowerCase()
+// Gas prefund: 3.5 OG was sized for 'local' mode (3 OG ledger min + 0.5
+// OG tx headroom). In 'central' mode the agent only needs L2 tx gas, so
+// 0.5 OG is plenty. Override with AGENT_GAS_PREFUND_OG if needed.
+const GAS_PREFUND_OG =
+  process.env.AGENT_GAS_PREFUND_OG ?? (COMPUTE_MODE === 'local' ? '3.5' : '0.5')
 // Default model — only qwen variants are reachable on 0G Compute testnet
 // at the time of writing.
 const DEFAULT_MODEL = process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct'
@@ -137,6 +142,7 @@ export class AgentManager {
       `USE_L2=${process.env.USE_L2 ?? 'true'}`,
       // Spawned agents must always run the real runtime — they hold real USDC.
       `USE_MOCK=false`,
+      `COMPUTE_MODE=${COMPUTE_MODE}`,
       `AXL_PEER=${process.env.AXL_PEER ?? 'tcp://axl-seed:7000'}`,
       `AXL_URL=${process.env.AXL_URL ?? 'http://localhost:9002'}`,
       `L2_USDC_ADDRESS=${this.usdcAddr}`,

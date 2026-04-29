@@ -1,5 +1,24 @@
 import { INetworkPort } from '@swarm/shared';
 import { AXLEvent, EventType } from '@swarm/shared';
+import { createHash } from 'node:crypto';
+
+// Lifetime of an event before pollMessages drops it. 5s was way too tight
+// (0G testnet RPC can lag ~30s), and we now align with the API's WebSocket
+// bridge tolerance (60s) so the two layers don't disagree about whether
+// an event is "stale". Replay risk is still bounded by seenEvents.
+const EVENT_TTL_MS = 60_000;
+
+// Stable, short fingerprint of a payload for the seenEvents key. Without it
+// two distinct payloads emitted by the same agent at the same ms (rare but
+// possible during burst broadcasts) would dedup against each other and the
+// second event would silently drop.
+function payloadFingerprint(payload: unknown): string {
+  try {
+    return createHash('sha1').update(JSON.stringify(payload ?? '')).digest('hex').slice(0, 12);
+  } catch {
+    return 'na';
+  }
+}
 
 export class AxlNetwork implements INetworkPort {
   private handlers = new Map<string, Set<(event: AXLEvent<any>) => void | Promise<void>>>();
@@ -47,12 +66,12 @@ export class AxlNetwork implements INetworkPort {
             const parsed = JSON.parse(body) as AXLEvent<any>;
             const now = Date.now();
             
-            // Ignore stale messages (older than 5s) or messages without timestamp
-            if (!parsed.timestamp || isNaN(parsed.timestamp) || (now - parsed.timestamp > 5000)) {
+            // Ignore stale messages or messages without timestamp.
+            if (!parsed.timestamp || isNaN(parsed.timestamp) || (now - parsed.timestamp > EVENT_TTL_MS)) {
               continue;
             }
 
-            const eventId = `${parsed.type}:${parsed.agentId}:${parsed.timestamp}`;
+            const eventId = `${parsed.type}:${parsed.agentId}:${parsed.timestamp}:${payloadFingerprint(parsed.payload)}`;
             
             if (this.seenEvents.has(eventId)) continue;
             this.seenEvents.add(eventId);

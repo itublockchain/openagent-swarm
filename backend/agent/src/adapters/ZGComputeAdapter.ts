@@ -249,31 +249,26 @@ export class ZGComputeAdapter implements IComputePort {
       }
     }
 
-    // Strategy 2: extract numbered lines as subtasks (fallback)
+    // No silent line-extraction fallback. Earlier we'd reconstruct a DAG by
+    // splitting the raw text on newlines, or — last resort — wrap the first
+    // 200 chars of the spec into a single "subtask". That produced trivial
+    // 1-node DAGs that rolled all the way to settlement without a real
+    // planning step ever happening. Better to throw and let runAsPlanner's
+    // catch surface the failure (planner stake never gets locked because of
+    // Fix 3 ordering).
     if (!parsed || !Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
-      console.warn('[ZGCompute] JSON parse failed, falling back to line extraction')
-      const lines = raw
-        .split('\n')
-        .map(l => l.replace(/^[\d\.\-\*\s]+/, '').trim())
-        .filter(l => l.length > 10 && !l.startsWith('{') && !l.startsWith('"'))
-        .slice(0, 3)
+      throw new Error(`[ZGCompute] buildDAG could not parse a node list from LLM output: ${raw.substring(0, 200)}`)
+    }
 
-      if (lines.length === 0) {
-        // Last resort: use the spec itself as a single subtask
-        lines.push(spec.substring(0, 200))
-      }
-
-      parsed = {
-        nodes: lines.map((subtask, i) => ({
-          id: `node-${i + 1}`,
-          subtask,
-          dependsOn: i === 0 ? null : `node-${i}`
-        }))
-      }
+    const MAX_NODES = 3
+    if (parsed.nodes.length > MAX_NODES) {
+      console.warn(
+        `[ZGCompute] buildDAG: LLM returned ${parsed.nodes.length} nodes, truncating to ${MAX_NODES}. Consider raising MAX_NODES if the demo can spare more inference rounds.`,
+      )
     }
 
     // DAGNode formatına çevir
-    const nodes: DAGNode[] = parsed.nodes.slice(0, 3).map((n: any, i: number) => ({
+    const nodes: DAGNode[] = parsed.nodes.slice(0, MAX_NODES).map((n: any, i: number) => ({
       id: n.id,
       subtask: n.subtask,
       prevHash: i === 0 ? null : `placeholder-${parsed.nodes[i - 1].id}`,

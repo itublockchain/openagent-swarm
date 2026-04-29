@@ -4,6 +4,7 @@ import cors from '@fastify/cors';
 import Dockerode from 'dockerode';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
+import { CentralComputeProxy } from './CentralComputeProxy';
 import { TaskSchema, AgentPrepareSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { ethers } from 'ethers';
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json';
@@ -24,6 +25,11 @@ export interface ServerDeps {
   storage: IStoragePort;
   network: INetworkPort;
   manager: AgentManager;
+  /**
+   * Optional shared compute proxy. Mounted only when COMPUTE_MODE=central.
+   * Agents in central mode hit /internal/compute/chat which forwards here.
+   */
+  computeProxy?: CentralComputeProxy;
 }
 
 export default async function createServer(deps: ServerDeps) {
@@ -92,6 +98,38 @@ export default async function createServer(deps: ServerDeps) {
   fastify.get('/health', async () => {
     return { status: 'ok', timestamp: Date.now() };
   });
+
+  /**
+   * POST /internal/compute/chat
+   * Shared 0G Compute relay for agents running with COMPUTE_MODE=central.
+   * Agent passes messages + maxTokens, proxy forwards to a pooled broker
+   * wallet on the API host. NOT user-facing — only agents on the
+   * swarm_default Docker network reach this; outside the network it's
+   * unreachable.
+   */
+  if (deps.computeProxy) {
+    fastify.post('/internal/compute/chat', async (request, reply) => {
+      const body = (request.body ?? {}) as {
+        messages?: Array<{ role: string; content: string }>
+        maxTokens?: number
+        temperature?: number
+      }
+      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        return reply.status(400).send({ error: 'messages[] required' })
+      }
+      try {
+        const content = await deps.computeProxy!.chat(
+          body.messages,
+          body.maxTokens ?? 1024,
+          typeof body.temperature === 'number' ? body.temperature : 0.3,
+        )
+        return { content }
+      } catch (err: any) {
+        console.error('[/internal/compute/chat] error:', err)
+        return reply.status(502).send({ error: err?.message ?? String(err) })
+      }
+    });
+  }
 
   /**
    * POST /internal/execute

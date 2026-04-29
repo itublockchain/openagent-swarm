@@ -240,10 +240,13 @@ export class L2Contract implements IChainPort {
     }
   }
 
-  async completeTask(taskId: string): Promise<boolean> {
-    // markValidated on the last node triggers settle in escrow automatically.
-    // This method signals that the agent considers the DAG complete.
-    console.log(`[L2Contract] completeTask for ${taskId} — settlement handled by markValidated chain`)
+  async completeTask(_taskId: string): Promise<boolean> {
+    // No-op on real chain. Settlement is now an explicit two-step:
+    //   1) markValidatedBatch(nodeIds) — releases stakes, emits DAGCompleted
+    //   2) requestSettle(taskId, winners, amounts) — distributes the budget
+    // Both are called directly by validateLastNodeAsPlanner. This method
+    // exists only to satisfy IChainPort; returning true keeps the legacy
+    // caller path happy without producing on-chain side effects.
     return true
   }
 

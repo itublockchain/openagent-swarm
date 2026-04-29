@@ -22,6 +22,9 @@ contract SwarmEscrow is ReentrancyGuard {
     IERC20 public immutable usdc;
     address public registry;
     address public vault;
+    /// One-shot guard for setAuthorities. Once true, registry/vault are
+    /// permanently locked to whatever was set during deployment wiring.
+    bool public initialized;
 
     mapping(bytes32 => Task) public tasks;
     mapping(bytes32 => mapping(address => uint256)) public stakes;
@@ -59,10 +62,18 @@ contract SwarmEscrow is ReentrancyGuard {
         usdc = IERC20(_usdc);
     }
 
+    /// One-shot wiring: deploy script calls this once after contract creation
+    /// to bind registry + vault. Any later attempt reverts. Cleaner than
+    /// onlyOwner for our setup since these addresses never legitimately change
+    /// after wiring — and a permanently locked binding closes the
+    /// "anyone can hijack the vault" attack surface that the previous
+    /// permissionless setter had.
     function setAuthorities(address _registry, address _vault) external {
-        // In prod, this would be onlyOwner
+        require(!initialized, "Already initialized");
+        require(_registry != address(0) && _vault != address(0), "Zero address");
         registry = _registry;
         vault = _vault;
+        initialized = true;
     }
 
     function createTask(bytes32 taskId, uint256 budget) external nonReentrant {
