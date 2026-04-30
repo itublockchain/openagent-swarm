@@ -179,6 +179,14 @@ function DashboardContent() {
           jury: box.jury
             ? { guilty: box.jury.guilty, innocent: box.jury.innocent, voters: box.jury.voters.length }
             : undefined,
+          // Reasoning + output, captured by useSwarmEvents from SUBTASK_DONE.
+          // Drives the per-node detail panel that opens beside the node.
+          result: box.result,
+          toolsUsed: box.toolsUsed,
+          transcript: box.transcript,
+          iterations: box.iterations,
+          stopReason: box.stopReason,
+          outputHash: box.outputHash,
         },
       });
 

@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { useAccount, useDisconnect, useSignMessage } from 'wagmi'
 import { SiweMessage } from 'siwe'
+import { AUTH_EXPIRED_EVENT } from '../../lib/api'
 
 interface AuthContextType {
   jwt: string | null
@@ -29,6 +30,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setMounted(true)
     const stored = localStorage.getItem('swarm_jwt')
     if (stored) setJwt(stored)
+
+    // apiRequest dispatches this when the backend rejects our token (401).
+    // Drop our in-memory JWT so isAuthenticated flips false and WalletGate
+    // reopens with a fresh sign-in prompt — no manual reload needed.
+    const onExpired = () => setJwt(null)
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired)
   }, [])
 
   const signIn = useCallback(async () => {

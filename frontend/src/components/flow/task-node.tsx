@@ -1,9 +1,11 @@
 "use client";
 
 import React, { memo } from 'react';
-import { Handle, Position, NodeProps, Node } from '@xyflow/react';
+import { Handle, Position, NodeProps, Node, NodeToolbar } from '@xyflow/react';
 import { Clock, Play, ShieldAlert, CheckCircle2, AlertOctagon, BrainCircuit, Gavel, UserMinus } from 'lucide-react';
 import { cn, shortHash } from '@/lib/utils';
+import { TranscriptStep } from '../../../../shared/types';
+import { NodeDetailPanel } from './NodeDetailPanel';
 
 export { cn };
 
@@ -15,11 +17,19 @@ export type NodeData = {
   passCount?: number;
   /** Live jury tally while a CHALLENGE is open on this node. */
   jury?: { guilty: number; innocent: number; voters: number };
+  /** Reasoning + output payload, captured from SUBTASK_DONE. Drives the
+   *  per-node detail panel that opens beside the node when it's clicked. */
+  result?: string;
+  toolsUsed?: string[];
+  transcript?: TranscriptStep[];
+  iterations?: number;
+  stopReason?: 'final' | 'max_iter' | 'deadline' | 'parse_error' | 'no_chat';
+  outputHash?: string;
 };
 
 export type TaskNodeType = Node<NodeData, 'task'>;
 
-const TaskNode = ({ data, isConnectable }: NodeProps<TaskNodeType>) => {
+const TaskNode = ({ data, isConnectable, selected }: NodeProps<TaskNodeType>) => {
   const statusStyles = {
     pending: 'border-neutral-500/50 bg-neutral-500/10 text-neutral-500 dark:text-neutral-400',
     claimed: 'border-blue-500/50 bg-blue-500/10 text-blue-600 dark:text-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.3)]',
@@ -43,8 +53,16 @@ const TaskNode = ({ data, isConnectable }: NodeProps<TaskNodeType>) => {
   return (
     <div className={cn(
       "px-4 py-3 rounded-xl border backdrop-blur-md min-w-[180px] flex flex-col gap-2 transition-all duration-300",
-      statusStyles[data.status] || statusStyles.pending
+      statusStyles[data.status] || statusStyles.pending,
+      selected && 'ring-2 ring-primary/50 ring-offset-2 ring-offset-background'
     )}>
+      {/* NodeToolbar opens to the right of the node when selected. ReactFlow
+          handles positioning + auto-close when another node is selected or
+          the canvas is clicked. */}
+      <NodeToolbar isVisible={selected} position={Position.Right} offset={16}>
+        <NodeDetailPanel data={data} />
+      </NodeToolbar>
+
       <Handle type="target" position={Position.Top} isConnectable={isConnectable} className="opacity-0" />
       
       <div className="flex items-center justify-between gap-2">

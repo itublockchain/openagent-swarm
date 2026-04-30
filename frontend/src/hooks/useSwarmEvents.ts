@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { wsClient, WSEvent } from '../lib/ws'
-import { EventType } from '../../../shared/types'
+import { EventType, TranscriptStep } from '../../../shared/types'
 
 export type SubtaskStatus = 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
 
@@ -32,6 +32,19 @@ export interface SubtaskBox {
   passes: string[]
   /** Live jury tally while a CHALLENGE is open. Updated by JUROR_VOTED. */
   jury?: JuryTally
+  /** Final answer text from the agent, captured from SUBTASK_DONE. Used
+   *  by the explorer's per-node detail panel. */
+  result?: string
+  /** Names of tools the agent invoked while solving the subtask. */
+  toolsUsed?: string[]
+  /** Step-by-step reasoning trace (tool calls + final). Tool outputs are
+   *  truncated server-side to ~2KB; the canonical untruncated trace lives
+   *  at `outputHash` in 0G Storage. */
+  transcript?: TranscriptStep[]
+  /** Loop iteration count + termination reason — surfaced in the panel's
+   *  summary row. */
+  iterations?: number
+  stopReason?: 'final' | 'max_iter' | 'deadline' | 'parse_error' | 'no_chat'
 }
 
 export interface DAGState {
@@ -131,9 +144,20 @@ export function useSwarmEvents() {
 
     // Worker submitted output → on-chain hash recorded → awaiting batch
     // validation. The userflow's "yellow / pending validation" state.
+    // Also captures the reasoning payload (result / transcript / tools)
+    // so the explorer's detail panel has it without a second round-trip.
     const handleSubtaskDone = (event: WSEvent) => {
-      const { nodeId, outputHash, taskId } = event.payload as any
-      updateBox(nodeId, taskId, b => ({ ...b, status: 'pending', outputHash }))
+      const { nodeId, outputHash, taskId, result, toolsUsed, transcript, iterations, stopReason } = event.payload as any
+      updateBox(nodeId, taskId, b => ({
+        ...b,
+        status: 'pending',
+        outputHash,
+        result,
+        toolsUsed,
+        transcript,
+        iterations,
+        stopReason,
+      }))
     }
 
     // Planner / keeper batch-validated this node on-chain. Promote to green.

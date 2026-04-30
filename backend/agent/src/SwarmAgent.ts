@@ -647,6 +647,25 @@ export class SwarmAgent {
         `[Agent ${agentId}] subtask done (${node.id}) iters=${loopResult.iterations} tools=[${loopResult.toolsUsed.join(',')}] reason=${loopResult.stopReason}`,
       )
 
+      // Broadcast a UI-friendly view of the transcript. Tool outputs can
+      // be megabytes (web search dumps, file reads) — clipping each to a
+      // few KB keeps the WS payload small while preserving the shape of
+      // the agent's reasoning for the explorer's per-node detail panel.
+      // The full untruncated transcript still lives at `outputHash` in
+      // 0G Storage, so judges + downstream agents read the canonical copy.
+      const TOOL_OUTPUT_CLIP = 2_000
+      const transcriptForBroadcast = loopResult.transcript.map(step =>
+        step.kind === 'tool_call'
+          ? {
+              ...step,
+              output:
+                step.output.length > TOOL_OUTPUT_CLIP
+                  ? step.output.slice(0, TOOL_OUTPUT_CLIP) + `\n…[+${step.output.length - TOOL_OUTPUT_CLIP} chars]`
+                  : step.output,
+            }
+          : step,
+      )
+
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_DONE, {
         nodeId: node.id,
         outputHash,
@@ -654,6 +673,12 @@ export class SwarmAgent {
         // The full structured payload is in 0G Storage at outputHash.
         result: loopResult.finalAnswer,
         toolsUsed: loopResult.toolsUsed,
+        // Reasoning trace + counters drive the explorer's "thinking
+        // process" panel — the transcript is the per-step view, the
+        // counters give the panel a quick summary.
+        transcript: transcriptForBroadcast,
+        iterations: loopResult.iterations,
+        stopReason: loopResult.stopReason,
         agentId,
         taskId,
       }))
