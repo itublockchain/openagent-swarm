@@ -4,6 +4,7 @@ import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types
 import { runAgentLoop } from './agentLoop'
 import { JsonAgentFormat } from './agentFormat'
 import { TOOLS } from './tools/definitions'
+import { REACT_SYSTEM_PROMPT } from './prompts/react'
 
 /**
  * Storage may hold either the new structured payload (post tool-aware loop)
@@ -583,11 +584,17 @@ export class SwarmAgent {
       // Tool-aware agent loop. Returns a structured record that's preserved
       // verbatim in 0G Storage, so the judge / next agent / UI can see
       // exactly which tools fired and what they returned.
+      // Fall back to REACT_SYSTEM_PROMPT when the operator didn't supply a
+      // custom prompt — keeps the UI's "System Prompt (optional)" field
+      // empty for the user while still giving the model a structured
+      // DÜŞÜN→EYLEM→GÖZLEM rhythm by default. Treat whitespace-only as
+      // unset so a stray newline in the form doesn't bypass the default.
+      const userPrompt = this.deps.config.systemPrompt?.trim()
       const loopResult = await runAgentLoop({
         compute: this.deps.compute,
         tools: TOOLS,
         format: new JsonAgentFormat(),
-        systemPrompt: this.deps.config.systemPrompt,
+        systemPrompt: userPrompt && userPrompt.length > 0 ? userPrompt : REACT_SYSTEM_PROMPT,
         subtask: node.subtask,
         context: prevText || null,
         agentId,
