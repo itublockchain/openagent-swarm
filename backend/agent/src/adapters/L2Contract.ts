@@ -8,7 +8,7 @@ import deployments from '../../../../contracts/deployments/og_testnet.json'
 
 export class L2Contract implements IChainPort {
   private provider: ethers.JsonRpcProvider
-  private signer: ethers.Wallet
+  private wallet: ethers.Wallet
   private registry: ethers.Contract
   private escrow: ethers.Contract
   private vault: ethers.Contract
@@ -16,6 +16,7 @@ export class L2Contract implements IChainPort {
   private escrowAddr: string
   private usdcDecimals: number | null = null
   private allowanceEnsured = false
+  private txMutex: Promise<void> = Promise.resolve()
 
   constructor(private agentId: string) {
     if (!process.env.OG_RPC_URL) {
@@ -24,41 +25,146 @@ export class L2Contract implements IChainPort {
     if (!process.env.PRIVATE_KEY) {
       throw new Error('[L2Contract] PRIVATE_KEY env var is required')
     }
-    this.provider = new ethers.JsonRpcProvider(process.env.OG_RPC_URL)
-    this.signer = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider)
+    // staticNetwork stops ethers from auto-firing eth_chainId before every
+    // tx (was contributing ~30-40% of our RPC volume into the shared 50 RPS
+    // testnet cap and triggering -32005 storms). Chain ID is constant per
+    // deployment, no need to keep asking.
+    this.provider = new ethers.JsonRpcProvider(
+      process.env.OG_RPC_URL,
+      undefined,
+      { staticNetwork: true },
+    )
+    this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider)
 
-    // Env vars override the bundled deployments JSON, so the same image can
-    // target multiple networks (testnet/mainnet/forks) without a rebuild.
     const dagRegistryAddr = process.env.L2_DAG_REGISTRY_ADDRESS || deployments.DAGRegistry
     this.escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow
     const vaultAddr = process.env.L2_SLASHING_VAULT_ADDRESS || deployments.SlashingVault
     const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC
 
-    this.registry = new ethers.Contract(dagRegistryAddr, DAGRegistryABI.abi, this.signer)
-    this.escrow = new ethers.Contract(this.escrowAddr, SwarmEscrowABI.abi, this.signer)
-    this.vault = new ethers.Contract(vaultAddr, SlashingVaultABI.abi, this.signer)
-    this.usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, this.signer)
+    this.registry = new ethers.Contract(dagRegistryAddr, DAGRegistryABI.abi, this.wallet)
+    this.escrow = new ethers.Contract(this.escrowAddr, SwarmEscrowABI.abi, this.wallet)
+    this.vault = new ethers.Contract(vaultAddr, SlashingVaultABI.abi, this.wallet)
+    this.usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, this.wallet)
 
     console.log(
       `[L2Contract] addresses — registry=${dagRegistryAddr} escrow=${this.escrowAddr} vault=${vaultAddr} usdc=${usdcAddr}`,
     )
   }
 
+  private async freshNonce(): Promise<number> {
+    return this.callWithRetry(() =>
+      this.provider.getTransactionCount(this.wallet.address, 'pending'),
+    )
+  }
+
+  /**
+   * Retry wrapper for read-only RPC calls. Without this, a transient -32005
+   * (rate exceeded) from the shared 0G testnet RPC propagates as an
+   * unhandled rejection and kills the agent process. tx-side retries are
+   * handled separately in sendTxWithRetry; this is the read-side twin.
+   */
+  private async callWithRetry<T>(fn: () => Promise<T>, maxAttempts = 6): Promise<T> {
+    let lastErr: any
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await fn()
+      } catch (err: any) {
+        lastErr = err
+        const msg = (err?.message || '').toLowerCase()
+        const innerCode = err?.error?.code ?? err?.info?.error?.code
+        const isRetryable =
+          msg.includes('rate exceeded') ||
+          msg.includes('too many') ||
+          msg.includes('coalesce error') ||
+          msg.includes('timeout') ||
+          msg.includes('network') ||
+          err?.code === 'UNKNOWN_ERROR' ||
+          err?.code === 'TIMEOUT' ||
+          err?.code === 'NETWORK_ERROR' ||
+          innerCode === -32005 ||
+          innerCode === -32603
+        if (!isRetryable) throw err
+        // Exponential backoff with jitter, capped at ~3.2s.
+        const wait = Math.min(200 * 2 ** attempt, 3200) + Math.random() * 200
+        await new Promise(r => setTimeout(r, wait))
+      }
+    }
+    throw lastErr
+  }
+
+  private async sendTxWithRetry(contract: ethers.Contract, method: string, args: any[], retryCount = 0): Promise<any> {
+    await this.txMutex;
+    let resolveMutex: () => void;
+    this.txMutex = new Promise((resolve) => { resolveMutex = resolve; });
+
+    try {
+      const nonce = await this.freshNonce()
+      const feeData = await this.provider.getFeeData()
+
+      const bumpPercent = retryCount > 0 ? 150n : 120n
+      const overrides: any = { nonce }
+      if (feeData.maxFeePerGas) {
+        overrides.maxFeePerGas = (feeData.maxFeePerGas * bumpPercent) / 100n
+      }
+      if (feeData.maxPriorityFeePerGas) {
+        overrides.maxPriorityFeePerGas = (feeData.maxPriorityFeePerGas * bumpPercent) / 100n
+      }
+
+      const tx = await contract[method](...args, overrides)
+      const receipt = await tx.wait()
+      resolveMutex!();
+      return receipt;
+    } catch (err: any) {
+      resolveMutex!();
+      const msg = (err?.message || '').toLowerCase()
+      const innerCode = err?.error?.code ?? err?.info?.error?.code
+      // -32005 (rate exceeded) and -32603 (internal) are nested by the
+      // testnet RPC; surface them so the retry triggers consistently.
+      const isRetryable = msg.includes('replacement underpriced') ||
+        msg.includes('nonce too low') ||
+        msg.includes('fee too low') ||
+        msg.includes('already been used') ||
+        msg.includes('rate exceeded') ||
+        msg.includes('too many') ||
+        msg.includes('coalesce error') ||
+        msg.includes('timeout') ||
+        err.code === 'REPLACEMENT_UNDERPRICED' ||
+        err.code === 'NONCE_EXPIRED' ||
+        err.code === 'UNKNOWN_ERROR' ||
+        err.code === 'TIMEOUT' ||
+        err.code === 'NETWORK_ERROR' ||
+        innerCode === -32005 ||
+        innerCode === -32603
+
+      if (isRetryable && retryCount < 10) {
+        // Exponential backoff is kinder to a hot, throttled RPC than the
+        // old fixed delay — many agents retry simultaneously and a flat
+        // 1s window pushed them straight back into the rate cap.
+        const isRate = msg.includes('rate exceeded') || msg.includes('too many') || innerCode === -32005
+        const baseline = isRate ? 800 : 1500
+        const delay = Math.min(baseline * Math.pow(1.5, retryCount), 6000) + Math.random() * 300
+        console.log(`[L2Contract] Transient error for ${method} (retry ${retryCount + 1}). Waiting ${Math.round(delay)}ms...`)
+        await new Promise(r => setTimeout(r, delay))
+        return this.sendTxWithRetry(contract, method, args, retryCount + 1)
+      }
+      throw err
+    }
+  }
+
   private async getDecimals(): Promise<number> {
     if (this.usdcDecimals !== null) return this.usdcDecimals
-    this.usdcDecimals = Number(await this.usdc.decimals())
+    this.usdcDecimals = Number(await this.callWithRetry(() => this.usdc.decimals()))
     return this.usdcDecimals
   }
 
   private async ensureEscrowAllowance(amount: bigint): Promise<void> {
-    // One-time MaxUint256 approval per session — escrow can pull funds for
-    // every subsequent stake / createTask without another approve tx.
     if (this.allowanceEnsured) return
-    const current: bigint = await this.usdc.allowance(this.signer.address, this.escrowAddr)
+    const current: bigint = await this.callWithRetry(() =>
+      this.usdc.allowance(this.wallet.address, this.escrowAddr),
+    )
     if (current < amount) {
-      console.log(`[L2Contract] Approving USDC for escrow (current allowance ${current})...`)
-      const tx = await this.usdc.approve(this.escrowAddr, ethers.MaxUint256)
-      await tx.wait()
+      console.log(`[L2Contract] Approving USDC for escrow...`)
+      await this.sendTxWithRetry(this.usdc, 'approve', [this.escrowAddr, ethers.MaxUint256])
     }
     this.allowanceEnsured = true
   }
@@ -68,66 +174,42 @@ export class L2Contract implements IChainPort {
   }
 
   private normalizeBytes32(hash: string): string {
-    // Pass through real bytes32 hex (e.g. 0G merkle roots, keccak digests).
-    if (/^0x[0-9a-fA-F]{64}$/.test(hash)) {
-      return hash
-    }
-    // Anything else (mock IDs, arbitrary strings) is hashed deterministically
-    // so submitOutput / markValidated / challenge all reference the same value.
+    if (/^0x[0-9a-fA-F]{64}$/.test(hash)) return hash
     return ethers.keccak256(ethers.toUtf8Bytes(hash))
   }
 
   async claimPlanner(taskId: string): Promise<boolean> {
     const formatted = this.formatId(taskId)
     try {
-      const tx = await this.registry.claimPlanner(formatted)
-      await tx.wait()
+      await this.sendTxWithRetry(this.registry, 'claimPlanner', [formatted])
     } catch (error) {
       console.log(`[L2Contract] claimPlanner tx failed for ${taskId}:`, error)
       return false
     }
-    // The contract returns false silently when the planner slot is already
-    // taken (no revert), so a successful tx does NOT imply a successful claim.
-    // Read the registry state and compare to our signer to know who actually won.
-    try {
-      const winner: string = await this.registry.planners(formatted)
-      return winner.toLowerCase() === this.signer.address.toLowerCase()
-    } catch (error) {
-      console.log(`[L2Contract] claimPlanner verify failed for ${taskId}:`, error)
-      return false
-    }
+    const winner: string = await this.callWithRetry(() => this.registry.planners(formatted))
+    return winner.toLowerCase() === this.wallet.address.toLowerCase()
   }
 
   async registerDAG(taskId: string, nodeIds: string[]): Promise<void> {
     const formattedTaskId = this.formatId(taskId)
     const formattedNodeIds = nodeIds.map(id => this.formatId(id))
-    const tx = await this.registry.registerDAG(formattedTaskId, formattedNodeIds)
-    await tx.wait()
-    console.log(`[L2Contract] DAG registered on-chain for task ${taskId} with ${nodeIds.length} nodes`)
+    await this.sendTxWithRetry(this.registry, 'registerDAG', [formattedTaskId, formattedNodeIds])
   }
 
   async claimSubtask(nodeId: string): Promise<boolean> {
     const formatted = this.formatId(nodeId)
     try {
-      const tx = await this.registry.claimSubtask(formatted)
-      await tx.wait()
+      await this.sendTxWithRetry(this.registry, 'claimSubtask', [formatted])
     } catch (error) {
       console.log(`[L2Contract] claimSubtask tx failed for ${nodeId}:`, error)
       return false
     }
-    // Same lying-true issue as claimPlanner: claimSubtask silently returns
-    // false when the slot is already filled. Verify via state read.
-    try {
-      const node = await this.registry.nodes(formatted)
-      return (node.claimedBy as string).toLowerCase() === this.signer.address.toLowerCase()
-    } catch (error) {
-      console.log(`[L2Contract] claimSubtask verify failed for ${nodeId}:`, error)
-      return false
-    }
+    const node = await this.callWithRetry(() => this.registry.nodes(formatted))
+    return (node.claimedBy as string).toLowerCase() === this.wallet.address.toLowerCase()
   }
 
   async isSubtaskClaimed(nodeId: string): Promise<boolean> {
-    const node = await this.registry.nodes(this.formatId(nodeId))
+    const node = await this.callWithRetry(() => this.registry.nodes(this.formatId(nodeId)))
     return node.claimedBy !== ethers.ZeroAddress
   }
 
@@ -135,128 +217,108 @@ export class L2Contract implements IChainPort {
     const decimals = await this.getDecimals()
     const stakeAmount = ethers.parseUnits(amount, decimals)
     await this.ensureEscrowAllowance(stakeAmount)
-    const tx = await this.escrow.stake(this.formatId(taskId), stakeAmount)
-    const receipt = await tx.wait()
-    return receipt!.hash
+    const receipt = await this.sendTxWithRetry(this.escrow, 'stake', [this.formatId(taskId), stakeAmount])
+    return receipt.hash
   }
 
   async stakeForSubtask(taskId: string, nodeId: string, amount: string): Promise<string> {
     const decimals = await this.getDecimals()
     const stakeAmount = ethers.parseUnits(amount, decimals)
     await this.ensureEscrowAllowance(stakeAmount)
-    const tx = await this.escrow.stakeForSubtask(
+    const receipt = await this.sendTxWithRetry(this.escrow, 'stakeForSubtask', [
       this.formatId(taskId),
       this.formatId(nodeId),
       stakeAmount,
-    )
-    const receipt = await tx.wait()
-    return receipt!.hash
+    ])
+    return receipt.hash
   }
 
   async submitOutput(nodeId: string, outputHash: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
     const formattedHash = this.normalizeBytes32(outputHash)
-    const tx = await this.registry.submitOutput(formattedNodeId, formattedHash)
-    await tx.wait()
-    console.log(`[L2Contract] Output submitted on-chain for node ${nodeId}`)
-  }
-
-  async markValidated(nodeId: string): Promise<void> {
-    const tx = await this.registry.markValidated(this.formatId(nodeId))
-    await tx.wait()
-    console.log(`[L2Contract] Node ${nodeId} marked validated on-chain`)
+    await this.sendTxWithRetry(this.registry, 'submitOutput', [formattedNodeId, formattedHash])
   }
 
   async markValidatedBatch(nodeIds: string[]): Promise<void> {
     const formatted = nodeIds.map(id => this.formatId(id))
-    const tx = await this.registry.markValidatedBatch(formatted)
-    await tx.wait()
-    console.log(`[L2Contract] ${nodeIds.length} nodes marked validated in single tx`)
+    await this.sendTxWithRetry(this.registry, 'markValidatedBatch', [formatted])
+  }
+
+  // New method: Physical payout of subtask stakes back to workers
+  async releaseSubtaskStake(taskId: string, nodeId: string): Promise<void> {
+    await this.sendTxWithRetry(this.escrow, 'releaseSubtaskStake', [this.formatId(taskId), this.formatId(nodeId)])
   }
 
   async getNodeClaimant(nodeId: string): Promise<string> {
-    const node = await this.registry.nodes(this.formatId(nodeId))
+    const node = await this.callWithRetry(() => this.registry.nodes(this.formatId(nodeId)))
     return node.claimedBy as string
   }
 
   async getTaskBudget(taskId: string): Promise<string> {
-    const task = await this.escrow.tasks(this.formatId(taskId))
+    const task = await this.callWithRetry(() => this.escrow.tasks(this.formatId(taskId)))
     return task.budget.toString()
   }
 
+  /**
+   * How many `stakeAmount`-sized stakes the agent's USDC balance can cover.
+   * Returns 0 on read failure (rate-limit retried inside callWithRetry, but
+   * a final failure must not let the caller assume infinite balance —
+   * fail-closed and let the agent skip claiming this round).
+   */
+  async getStakeCapacity(stakeAmount: string): Promise<number> {
+    try {
+      const decimals = await this.getDecimals()
+      const stakeWei = ethers.parseUnits(stakeAmount, decimals)
+      if (stakeWei === 0n) return Number.MAX_SAFE_INTEGER
+      const balance: bigint = await this.callWithRetry(() => this.usdc.balanceOf(this.wallet.address))
+      return Number(balance / stakeWei)
+    } catch (err) {
+      console.warn(`[L2Contract] getStakeCapacity failed:`, err)
+      return 0
+    }
+  }
+
   async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {
-    const tx = await this.registry.requestSettle(this.formatId(taskId), winners, amounts)
-    await tx.wait()
-    console.log(`[L2Contract] settleTask: paid ${winners.length} winners for task ${taskId}`)
+    await this.sendTxWithRetry(this.registry, 'requestSettle', [this.formatId(taskId), winners, amounts])
   }
 
   async challenge(nodeId: string, challengerNodeId?: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
-    // Get the accused agent's address from the registry (the node's claimant)
-    const node = await this.registry.nodes(formattedNodeId)
+    const node = await this.callWithRetry(() => this.registry.nodes(formattedNodeId))
     const accused = node.claimedBy
-    if (accused === ethers.ZeroAddress) {
-      throw new Error(`[L2Contract] Cannot challenge node ${nodeId}: no claimant found`)
-    }
-    const challengerSubtask = challengerNodeId
-      ? this.formatId(challengerNodeId)
-      : ethers.ZeroHash
-    const tx = await this.vault.challenge(formattedNodeId, accused, challengerSubtask)
-    await tx.wait()
-    console.log(`[L2Contract] Challenge raised for node ${nodeId} against ${accused}`)
+    if (accused === ethers.ZeroAddress) throw new Error(`[L2Contract] No claimant found for ${nodeId}`)
+
+    const challengerSubtask = challengerNodeId ? this.formatId(challengerNodeId) : ethers.ZeroHash
+    await this.sendTxWithRetry(this.vault, 'challenge', [formattedNodeId, accused, challengerSubtask])
   }
 
   async resetSubtask(nodeId: string): Promise<void> {
-    // resetNode is invoked by the vault on a successful challenge resolution
-    // (jury verdict = guilty). Agent-side this is a no-op, kept for the port
-    // contract.
-    console.log(`[L2Contract] resetSubtask for ${nodeId} — handled by vault on-chain on guilty verdict`)
+    console.log(`[L2Contract] resetSubtask for ${nodeId} — handled on-chain`)
   }
 
   async voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
     const formattedAgentId = this.formatId(agentId)
     try {
-      const tx = await this.vault.vote(formattedNodeId, formattedAgentId, accusedGuilty)
-      await tx.wait()
-      console.log(
-        `[L2Contract] Voted ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} on challenge for node ${nodeId}`,
-      )
+      await this.sendTxWithRetry(this.vault, 'vote', [formattedNodeId, formattedAgentId, accusedGuilty])
     } catch (err: any) {
-      // The vote can fail benignly if quorum was reached just before our tx
-      // landed, the window expired, or another juror's tx tied the slot.
-      // Log and swallow so the agent's main loop is not derailed.
-      console.warn(`[L2Contract] voteOnChallenge skipped for ${nodeId}: ${err?.shortMessage ?? err?.message ?? err}`)
+      console.warn(`[L2Contract] voteOnChallenge skipped: ${err?.message}`)
     }
   }
 
   async finalizeExpiredChallenge(nodeId: string): Promise<void> {
     try {
-      const tx = await this.vault.finalizeExpired(this.formatId(nodeId))
-      await tx.wait()
-      console.log(`[L2Contract] finalizeExpired closed challenge for node ${nodeId}`)
+      await this.sendTxWithRetry(this.vault, 'finalizeExpired', [this.formatId(nodeId)])
     } catch (err: any) {
-      console.warn(`[L2Contract] finalizeExpiredChallenge skipped for ${nodeId}: ${err?.shortMessage ?? err?.message ?? err}`)
+      console.warn(`[L2Contract] finalizeExpiredChallenge skipped: ${err?.message}`)
     }
   }
 
   async completeTask(_taskId: string): Promise<boolean> {
-    // No-op on real chain. Settlement is now an explicit two-step:
-    //   1) markValidatedBatch(nodeIds) — releases stakes, emits DAGCompleted
-    //   2) requestSettle(taskId, winners, amounts) — distributes the budget
-    // Both are called directly by validateLastNodeAsPlanner. This method
-    // exists only to satisfy IChainPort; returning true keeps the legacy
-    // caller path happy without producing on-chain side effects.
     return true
   }
 
-  async settle(taskId: string, winners: string[]): Promise<void> {
-    const tx = await this.escrow.settle(this.formatId(taskId), winners)
-    await tx.wait()
-  }
-
-  // Sync methods are no-ops for real chain (on-chain state is authoritative)
-  async syncPlannerClaim(_taskId: string, _agentId: string): Promise<void> {}
-  async syncSubtaskClaim(_nodeId: string, _agentId: string): Promise<void> {}
-  async syncTaskCompletion(_taskId: string, _agentId: string): Promise<void> {}
+  async syncPlannerClaim(_taskId: string, _agentId: string): Promise<void> { }
+  async syncSubtaskClaim(_nodeId: string, _agentId: string): Promise<void> { }
+  async syncTaskCompletion(_taskId: string, _agentId: string): Promise<void> { }
 }

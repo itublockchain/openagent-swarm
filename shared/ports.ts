@@ -5,6 +5,14 @@ export interface IStoragePort {
   append(data: unknown): Promise<string>
   /** hash ile okur */
   fetch(hash: string): Promise<unknown>
+  /**
+   * Optimization for hot paths: compute the deterministic rootHash
+   * locally and return it immediately, while the actual upload runs
+   * in the background. Caller uses the hash on-chain right away;
+   * peers reading via fetch() will retry until upload lands. Falls
+   * back to append() shape on adapters that don't implement it.
+   */
+  appendDeferred?(data: unknown): Promise<{ rootHash: string; uploadPromise: Promise<void> }>
 }
 
 export interface IComputePort {
@@ -50,8 +58,6 @@ export interface IChainPort {
   isSubtaskClaimed(nodeId: string): Promise<boolean>
   /** subtask çıktısını on-chain'e kaydeder */
   submitOutput(nodeId: string, outputHash: string): Promise<void>
-  /** node'u validated olarak işaretler, tüm DAG bitince settle tetiklenir */
-  markValidated(nodeId: string): Promise<void>
   /** Tüm node'ları tek tx'te validated işaretler, otomatik settle ETMEZ */
   markValidatedBatch(nodeIds: string[]): Promise<void>
   /** task'ın bittiğini kaydeder */
@@ -62,8 +68,6 @@ export interface IChainPort {
   voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void>
   /** süresi dolan challenge'ı çoğunluğa göre kapatır (kimse oy vermediyse drop) */
   finalizeExpiredChallenge(nodeId: string): Promise<void>
-  /** ödülleri dağıtır ve escrow'u kapatır */
-  settle(taskId: string, winners: string[]): Promise<void>
   /** Explicit per-agent ödül dağıtımı (planner yetkili) */
   settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void>
   /** Bir node'un on-chain claimant adresini döner */
@@ -72,6 +76,14 @@ export interface IChainPort {
   getTaskBudget(taskId: string): Promise<string>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
+  /**
+   * How many `stakeAmount`-sized stakes the agent's wallet can still afford.
+   * Used by SwarmAgent.claimFirstAvailable to cap greedy claims so a single
+   * agent doesn't grab more nodes than it can actually stake for (which
+   * otherwise reverts mid-DAG with ERC20InsufficientBalance and locks the
+   * task). Optional — adapters that lack accounting (mock) may return
+   * Number.MAX_SAFE_INTEGER. */
+  getStakeCapacity?(stakeAmount: string): Promise<number>
 
   // Sync methods
   syncPlannerClaim(taskId: string, agentId: string): Promise<void>

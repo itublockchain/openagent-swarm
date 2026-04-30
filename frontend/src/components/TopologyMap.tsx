@@ -9,12 +9,15 @@ import { useTheme } from 'next-themes'
 
 interface ThemeColors {
   bg: string
-  // Sphere body — single greyscale tone for the whole swarm so the mesh
-  // reads as one cohesive system. Per-agent status semantics live in the
-  // sidebar's pill UI, not on the 3D nodes.
+  // Spore core — the dense black body inside the membrane. Distorted in
+  // the vertex shader so it slowly oozes like something alive.
   body: string
-  // Used for the brief glow when a node is selected or just received an
-  // event — same theme-aware monochrome highlight.
+  // Outer membrane around the core. Semi-transparent, slightly lighter
+  // than the core so the silhouette reads against any background.
+  halo: string
+  haloOpacity: number
+  // Brief flare on the core's emissive when a node is selected or
+  // receives an event.
   highlight: string
   line: string
   flow: string
@@ -33,6 +36,11 @@ interface AgentNodeProps {
   baseScaleFactor: number
 }
 
+// Spore proportions. The membrane is a smooth translucent zar that just
+// breathes — no surface displacement — so it sits tight against the core.
+const CORE_RADIUS = 0.17
+const HALO_RADIUS = 0.24
+
 const AgentNode = ({
   id,
   name,
@@ -44,7 +52,10 @@ const AgentNode = ({
   baseScaleFactor,
 }: AgentNodeProps) => {
   const meshRef = useRef<THREE.Mesh>(null)
-  const matRef = useRef<THREE.MeshStandardMaterial>(null)
+  const haloRef = useRef<THREE.Mesh>(null)
+  // The core is a smooth body; we still touch its emissive on
+  // selection/event pulses, hence the ref.
+  const coreMatRef = useRef<THREE.MeshStandardMaterial>(null)
   const labelRef = useRef<THREE.Group>(null)
   const labelTextMatRef = useRef<THREE.Material & { opacity?: number } | null>(null)
   const impulse = useRef(new THREE.Vector3(0, 0, 0))
@@ -98,19 +109,26 @@ const AgentNode = ({
       if (isPulsing) {
         meshRef.current.scale.setScalar(finalBaseScale * (1.06 + Math.sin(t * 4) * 0.025))
       } else {
-        const breathing = 1 + Math.sin(t * bubblingSpeed * 0.4 + randomPhase) * 0.008
+        const breathing = 1 + Math.sin(t * bubblingSpeed * 0.4 + randomPhase) * 0.012
         meshRef.current.scale.setScalar(finalBaseScale * breathing)
       }
     }
 
-    // Material stays the same monochrome tone always; only emissive flares
-    // when the node is selected / just received an event.
-    if (matRef.current) {
-      if (isPulsing) {
-        matRef.current.emissiveIntensity = 0.35 + Math.sin(t * 4) * 0.1
-      } else {
-        matRef.current.emissiveIntensity = 0
-      }
+    // Membrane does only a simple breathe — soft scale modulation, no
+    // surface deformation. Each spore picks up a slightly different rate
+    // and phase so the swarm doesn't pulse in lockstep.
+    if (haloRef.current) {
+      const animatedScale = progress < 1 ? easeProgress : 1
+      const breath = 1 + Math.sin(t * 0.8 + randomPhase) * 0.04
+      haloRef.current.scale.setScalar(baseScaleFactor * animatedScale * breath)
+    }
+
+    // Core stays smooth — we only flash its emissive on selection/event
+    // pulses so the body lights up inside the wrinkly membrane.
+    if (coreMatRef.current) {
+      coreMatRef.current.emissiveIntensity = isPulsing
+        ? 0.55 + Math.sin(t * 4) * 0.15
+        : 0
     }
 
     // Label entrance + idle bob + pulse animation.
@@ -124,7 +142,7 @@ const AgentNode = ({
       const pulseLabelScale = isPulsing ? 1 + Math.sin(t * 6) * 0.04 : 1
       labelRef.current.scale.setScalar(baseLabelScale * pulseLabelScale)
       const bob = Math.sin(t * 1.2 + randomPhase) * 0.02
-      labelRef.current.position.y = baseScaleFactor * 1.05 + bob
+      labelRef.current.position.y = baseScaleFactor * 0.5 + bob
 
       if (labelTextMatRef.current) labelTextMatRef.current.opacity = labelEase
     }
@@ -140,17 +158,17 @@ const AgentNode = ({
     }
   }
 
-  // One green tone for the whole swarm — keeps the topology a single
-  // accent against the otherwise greyscale UI. Status semantics still
-  // live in the sidebar's pill UI.
-  const bodyColor = themeColors.body
-
   return (
     <group ref={groupRef}>
       <Float speed={0.55} rotationIntensity={0.08} floatIntensity={0.16}>
+        {/* Spore core — smooth opaque body that sits inside the membrane.
+            Drawn first so the transparent halo behind it gets correctly
+            depth-culled. The pointer events live here because the core is
+            the consistent silhouette to click — the wrinkly halo is a
+            moving target. */}
         <Sphere
           ref={meshRef}
-          args={[0.4, 64, 64]}
+          args={[CORE_RADIUS, 32, 32]}
           onClick={(e) => {
             e.stopPropagation()
             onSelect?.(id)
@@ -159,21 +177,35 @@ const AgentNode = ({
           onPointerOut={() => { document.body.style.cursor = 'auto' }}
         >
           <meshStandardMaterial
-            ref={matRef}
-            color={bodyColor}
-            roughness={0.55}
-            metalness={0.18}
+            ref={coreMatRef}
+            color={themeColors.body}
+            roughness={0.6}
+            metalness={0.1}
             emissive={themeColors.highlight}
             emissiveIntensity={0}
+          />
+        </Sphere>
+
+        {/* Outer membrane — smooth translucent zar around the core. No
+            surface deformation; the only motion is the gentle breathe
+            scale set in useFrame. depthWrite=false so the opaque core
+            (drawn first) shows through the front of the zar. */}
+        <Sphere ref={haloRef} args={[HALO_RADIUS, 32, 32]}>
+          <meshBasicMaterial
+            color={themeColors.halo}
+            transparent
+            opacity={themeColors.haloOpacity}
+            depthWrite={false}
+            toneMapped={false}
           />
         </Sphere>
       </Float>
 
       {/* Label sits above the sphere, billboarded to the camera. Outline
           + depthTest=false keep the glyphs readable on any background. */}
-      <Billboard ref={labelRef} position={[0, baseScaleFactor * 1.05, 0]} follow={true}>
+      <Billboard ref={labelRef} position={[0, baseScaleFactor * 0.5, 0]} follow={true}>
         <Text
-          fontSize={0.18}
+          fontSize={0.16}
           color={themeColors.text}
           anchorX="center"
           anchorY="middle"
@@ -272,7 +304,7 @@ const P2PConnections = ({ agents, agentRefs, themeColors, isDark }: ConnectionsP
   )
 }
 
-const ELECTRON_SIZE = 0.12
+const ELECTRON_SIZE = 0.07
 
 interface FlowProps {
   pairs: { i: number; j: number }[]
@@ -331,7 +363,19 @@ const FlowParticles = ({ pairs, agentRefs, color }: FlowProps) => {
           start.y + (end.y - start.y) * t,
           start.z + (end.z - start.z) * t,
         )
-        dummy.scale.setScalar(ELECTRON_SIZE * visibility)
+        // Orient so the local +Z axis points at the destination, so
+        // scaling Z stretches the packet along the direction of motion.
+        dummy.lookAt(end.x, end.y, end.z)
+
+        // Tear-off shape: barbell-shaped stretch — strongly elongated
+        // just after spawning (still being pulled out of the source) and
+        // again right before landing (being absorbed into the target),
+        // compact and round in between. That arc reads as a viscous
+        // strand of matter being torn off one node and merged into
+        // another, instead of a rigid pellet sliding down a wire.
+        const tearStretch = 1 + Math.pow(1 - Math.sin(t * Math.PI), 1.4) * 2.4
+        const baseScale = ELECTRON_SIZE * visibility
+        dummy.scale.set(baseScale * 0.7, baseScale * 0.7, baseScale * tearStretch)
       } else {
         dummy.scale.setScalar(0)
         dummy.position.set(0, 0, 0)
@@ -417,20 +461,33 @@ export function TopologyMap({
 
   const themeColors: ThemeColors = useMemo(
     () => ({
-      bg: isDark ? '#000000' : '#ffffff',
-      // The single accent in the otherwise greyscale UI — green, matched
-      // to the "running" pill colour the sidebar already uses. Slightly
-      // lighter on dark so it lifts off black.
-      body: isDark ? '#22c55e' : '#16a34a',
-      // Selected/active glow — bright white core that pops the picked
-      // node without introducing a second hue.
+      // Light mode bg is a soft radial gradient instead of flat white —
+      // pure white reads as glaring, while a gradient adds a subtle
+      // vignette so the spheres sit in a focal point. Dark mode stays
+      // solid black because Stars already supply the texture there.
+      // The Canvas is rendered transparent (no <color attach="background">)
+      // so this CSS shows through wherever the spheres aren't drawn.
+      bg: isDark
+        ? '#000000'
+        : 'radial-gradient(ellipse 100% 80% at 50% 30%, #f5f5f5 0%, #e7e5e4 100%)',
+      // Spore core. The dark theme inverts to bright white so the spheres
+      // pop off the black background the same way the near-black body
+      // pops off white in light mode — same silhouette on either bg.
+      body: isDark ? '#ffffff' : '#0a0a0a',
+      // Membrane tone — picked so that the rendered alpha-blend lands as
+      // a calm grey haze on either background, defining the silhouette.
+      // Sits a tone off the body (lighter than body in light, darker than
+      // body in dark) so the zar reads as a layer around the core.
+      halo: isDark ? '#e5e5e5' : '#171717',
+      haloOpacity: isDark ? 0.32 : 0.20,
+      // Selected/active flare. On dark mode the body is already white so
+      // an additive emissive flash is barely visible — we leave it neutral
+      // and rely on the existing scale + distort boosts to signal pulses.
       highlight: isDark ? '#ffffff' : '#fafafa',
-      // Mesh edges: subtle grey, additive on dark for a soft beam feel,
-      // normal blend on light so it stays calm.
-      line: isDark ? '#525252' : '#a3a3a3',
-      // Data flow electron: theme-matched monochrome — black on light
-      // (highest contrast against white bg), white on dark (otherwise it
-      // would vanish into the canvas).
+      // Mesh edges: subtle grey.
+      line: isDark ? '#404040' : '#a3a3a3',
+      // The matter being shed between nodes — high contrast against bg
+      // so the tear-off streak reads at any distance.
       flow: isDark ? '#fafafa' : '#0a0a0a',
       text: isDark ? '#fafafa' : '#0a0a0a',
       textOutline: isDark ? '#000000' : '#ffffff',
@@ -480,9 +537,12 @@ export function TopologyMap({
   }, [events])
 
   return (
-    <div className="w-full h-full rounded-xl overflow-hidden relative" style={{ backgroundColor: themeColors.bg }}>
+    <div className="w-full h-full rounded-xl overflow-hidden relative" style={{ background: themeColors.bg }}>
+      {/* Canvas is left transparent (no <color attach="background"/>) so
+          the wrapping div's gradient + dot pattern shows through wherever
+          the spheres aren't drawn. r3f enables alpha on the renderer by
+          default, so the canvas clear color is RGBA(0,0,0,0). */}
       <Canvas camera={{ position: [0, 10, 15], fov: 45 }} dpr={[1, 2]}>
-        <color attach="background" args={[themeColors.bg]} />
         <ambientLight intensity={0.55} />
         <directionalLight position={[5, 8, 6]} intensity={0.95} />
         <AmbientDrift isDark={isDark} />

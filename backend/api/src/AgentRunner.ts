@@ -24,7 +24,7 @@ const COMPUTE_MODE = (process.env.COMPUTE_MODE ?? 'central').toLowerCase()
 // OG tx headroom). In 'central' mode the agent only needs L2 tx gas, so
 // 0.5 OG is plenty. Override with AGENT_GAS_PREFUND_OG if needed.
 const GAS_PREFUND_OG =
-  process.env.AGENT_GAS_PREFUND_OG ?? (COMPUTE_MODE === 'local' ? '3.5' : '0.01')
+  process.env.AGENT_GAS_PREFUND_OG ?? (COMPUTE_MODE === 'local' ? '3.5' : '0.1')
 // Default model — only qwen variants are reachable on 0G Compute testnet
 // at the time of writing.
 const DEFAULT_MODEL = process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct'
@@ -124,6 +124,29 @@ export class AgentManager {
     if (this.cachedDecimals !== null) return this.cachedDecimals
     this.cachedDecimals = Number(await this.readUsdc.decimals())
     return this.cachedDecimals
+  }
+
+  /**
+   * Force-remove the container associated with a secret, by both id and
+   * canonical name. Idempotent — used by restore() when an agent is found
+   * to be orphaned (missing on-chain entry, or marked STOPPED/ERROR). The
+   * goal is to prevent zombie containers from sticking around in AXL gossip
+   * after their on-chain identity has been invalidated by a registry
+   * redeploy or status change.
+   */
+  private async cleanupOrphanContainer(secret: AgentSecret): Promise<void> {
+    const targets: string[] = []
+    if (secret.containerId) targets.push(secret.containerId)
+    targets.push(`swarm-${secret.agentId}`)
+    for (const t of targets) {
+      try {
+        await docker.getContainer(t).remove({ force: true })
+        console.log(`[AgentManager] removed orphan container ${t} for ${secret.agentId}`)
+        return
+      } catch {
+        // try the next target (id may be stale; name fallback handles that)
+      }
+    }
   }
 
   private buildContainerEnv(secret: AgentSecret): string[] {
@@ -246,39 +269,35 @@ export class AgentManager {
     // the background; the agent container starts a few seconds later and by
     // then the funds are almost always available.
     // Prefund must succeed before prepare() returns — otherwise we leak
-    // zombie agents (deploy() spawns the container, agent tries to claim,
-    // can't pay gas, slot gets locked, race conditions follow). Fail-loud
-    // here so the UI surfaces the error and the user can refill / retry.
+    const decimals = await this.getDecimals()
+    const stakeWei = ethers.parseUnits(input.stakeAmount, decimals).toString()
+
     if (!this.fundingSigner) {
       throw new Error('[AgentManager] PRIVATE_KEY missing — cannot prefund agent gas')
     }
+
     try {
       const tx = await this.fundingSigner.sendTransaction({
         to: wallet.address,
         value: ethers.parseEther(GAS_PREFUND_OG),
       })
       console.log(`[AgentManager] Prefund TX sent: ${tx.hash} → ${wallet.address} (${GAS_PREFUND_OG} OG)`)
-      try {
-        await tx.wait()
-        console.log(`[AgentManager] Prefund confirmed for ${wallet.address}`)
-      } catch (waitErr) {
-        // 0G RPC can lag on receipts; verify via direct balance read before
-        // giving up. If the funds arrived we still consider prefund OK.
-        const balance = await this.provider.getBalance(wallet.address)
-        const expected = ethers.parseEther(GAS_PREFUND_OG)
-        if (balance < expected) {
-          throw new Error(
-            `Prefund balance check failed for ${wallet.address}: have ${ethers.formatEther(balance)} OG, need ${GAS_PREFUND_OG}`,
-          )
-        }
-        console.log(`[AgentManager] Prefund receipt timed out but balance confirms ${ethers.formatEther(balance)} OG`)
+      await tx.wait()
+      console.log(`[AgentManager] Prefund confirmed for ${wallet.address}`)
+
+      // Also send initial USDC stake if needed
+      const stakeWeiBigInt = BigInt(stakeWei)
+      if (stakeWeiBigInt > 0n) {
+        console.log(`[AgentManager] Sending ${input.stakeAmount} USDC stake to ${wallet.address}...`)
+        // Connect the read-only USDC contract to our funding signer to make it writable
+        const writeUsdc = (this.readUsdc as any).connect(this.fundingSigner)
+        const usdcTx = await writeUsdc.transfer(wallet.address, stakeWeiBigInt)
+        await usdcTx.wait()
+        console.log(`[AgentManager] USDC stake sent to ${wallet.address}`)
       }
     } catch (err) {
-      throw new Error(`[AgentManager] Gas prefund failed for ${wallet.address}: ${(err as Error).message}`)
+      throw new Error(`[AgentManager] Funding failed for ${wallet.address}: ${(err as Error).message}`)
     }
-
-    const decimals = await this.getDecimals()
-    const stakeWei = ethers.parseUnits(input.stakeAmount, decimals).toString()
 
     return {
       agentId,
@@ -517,17 +536,22 @@ export class AgentManager {
       }
 
       if (!onChainExists) {
-        console.log(`[AgentManager] No on-chain entry for ${secret.agentId}; retrying register in background`)
-        this.registerOnChainAsync(secret).catch(err => {
-          console.error(`[AgentManager] retry register failed for ${secret.agentId}:`, err)
-        })
-        // Fall through to container reconciliation — the agent is functional
-        // locally even without an on-chain entry yet.
+        // Orphan: the on-chain registry has no record of this agent. The
+        // most common cause is a registry redeploy that wiped state but
+        // left our encrypted secret store + container running. We used to
+        // optimistically retry register here; that produced "zombie" agents
+        // visible in AXL gossip but absent from the public pool. Now we
+        // tear them down so the cluster reflects on-chain truth.
+        console.warn(`[AgentManager] orphan secret ${secret.agentId} (no on-chain entry); removing container + secret`)
+        await this.cleanupOrphanContainer(secret)
+        this.secrets.delete(secret.agentId)
+        continue
       } else {
         const agent = await this.registry.getAgent(onChainId)
         const status = Number(agent.status)
         if (status === STATUS_STOPPED || status === STATUS_ERROR) {
-          console.log(`[AgentManager] Cleaning up local secret for inactive ${secret.agentId} (status=${status})`)
+          console.log(`[AgentManager] Cleaning up inactive ${secret.agentId} (status=${status})`)
+          await this.cleanupOrphanContainer(secret)
           this.secrets.delete(secret.agentId)
           continue
         }
@@ -569,6 +593,11 @@ export class AgentManager {
             console.error(`[AgentManager] Failed to mark ${secret.agentId} ERROR:`, chainErr)
           }
         }
+        // Whether the on-chain mark succeeded or not, the local container
+        // is in an unrecoverable state (failed to start) — clear it out
+        // so subsequent restore() runs don't loop on the same broken entry.
+        await this.cleanupOrphanContainer(secret)
+        this.secrets.delete(secret.agentId)
       }
     }
 

@@ -33,9 +33,9 @@ export interface ServerDeps {
 }
 
 export default async function createServer(deps: ServerDeps) {
-  const fastify = Fastify({ 
+  const fastify = Fastify({
     logger: true,
-    ignoreTrailingSlash: true 
+    ignoreTrailingSlash: true
   });
 
   // Global request logger
@@ -144,9 +144,9 @@ export default async function createServer(deps: ServerDeps) {
    */
   const execDocker = process.env.DOCKER_HOST
     ? new Dockerode({
-        host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
-        port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
-      })
+      host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
+      port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
+    })
     : new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
 
   const EXEC_IMAGES: Record<'python' | 'javascript', string> = {
@@ -155,6 +155,33 @@ export default async function createServer(deps: ServerDeps) {
   };
   const EXEC_TIMEOUT_MS = 30_000;
   const EXEC_OUTPUT_LIMIT = 8_000; // chars
+
+  // Pre-pull sandbox images at boot so the first execute_code call doesn't
+  // 404 with "no such image". Non-blocking — server can serve other routes
+  // while pulls run in the background. Most LLM-driven tasks reach
+  // execute_code only after planning + claim + chain tx (~30s) which is
+  // plenty of head-start for a ~10MB alpine pull.
+  void (async () => {
+    for (const ref of Object.values(EXEC_IMAGES)) {
+      try {
+        await execDocker.getImage(ref).inspect()
+        console.log(`[Docker] sandbox image ready: ${ref}`)
+      } catch {
+        console.log(`[Docker] pulling sandbox image: ${ref}...`)
+        try {
+          await new Promise<void>((resolve, reject) => {
+            execDocker.pull(ref, (err: any, stream: any) => {
+              if (err) return reject(err)
+              execDocker.modem.followProgress(stream, (e: any) => (e ? reject(e) : resolve()))
+            })
+          })
+          console.log(`[Docker] sandbox image pulled: ${ref}`)
+        } catch (err) {
+          console.warn(`[Docker] failed to pull ${ref} (execute_code calls for that runtime will 404 until a manual pull):`, err)
+        }
+      }
+    }
+  })()
 
   // Concurrency caps for sandbox container spawns. Each running container
   // reserves 256 MiB; without these limits an LLM in a tight loop could
@@ -227,7 +254,7 @@ export default async function createServer(deps: ServerDeps) {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        container?.kill().catch(() => {});
+        container?.kill().catch(() => { });
       }, EXEC_TIMEOUT_MS);
 
       const wait = await container.wait();
@@ -242,7 +269,7 @@ export default async function createServer(deps: ServerDeps) {
       return reply.status(500).send({ error: err?.message ?? String(err) });
     } finally {
       if (container) {
-        try { await container.remove({ force: true }); } catch {}
+        try { await container.remove({ force: true }); } catch { }
       }
       const next = (inflightExec.get(aid) ?? 1) - 1;
       if (next <= 0) inflightExec.delete(aid);
@@ -264,7 +291,7 @@ export default async function createServer(deps: ServerDeps) {
 
     try {
       const siwe = new SiweMessage(message)
-      
+
       // Nonce kontrolü
       const expiry = nonces.get(siwe.nonce)
       if (!expiry || expiry < Date.now()) {
@@ -380,6 +407,15 @@ export default async function createServer(deps: ServerDeps) {
           taskIdBytes32,
         });
       }
+    } else if (taskOnChain.owner.toLowerCase() !== user.address.toLowerCase()) {
+      // Task exists on-chain but was created by someone other than the
+      // authenticated caller. Without this check, anyone with a JWT could
+      // re-broadcast another user's task to the AXL mesh by guessing
+      // (or observing) their taskIdBytes32.
+      return reply.status(403).send({
+        error: 'Task owner mismatch — only the on-chain creator can broadcast it.',
+        onChainOwner: taskOnChain.owner,
+      });
     }
 
     const event = {
@@ -525,7 +561,7 @@ export default async function createServer(deps: ServerDeps) {
       const handler = (event: any) => {
         const now = Date.now();
         const diff = Math.abs(now - (event.timestamp || 0));
-        
+
         if (diff < 60000) { // 60 seconds tolerance
           console.log(`[WS] OK: Transmitting ${event.type} to dashboard (diff: ${diff}ms)`);
           send(event);

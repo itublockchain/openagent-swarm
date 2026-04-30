@@ -75,7 +75,7 @@ DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
             { role: 'system', content: systemPrompt },
             { role: 'user', content: `Task: ${spec}` },
           ],
-          2048,
+          512,
           0.3,
         )
         break

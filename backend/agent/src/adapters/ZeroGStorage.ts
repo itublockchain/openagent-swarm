@@ -68,6 +68,40 @@ export class ZeroGStorage implements IStoragePort {
     })
   }
 
+  /**
+   * Hash-now, upload-later. The merkle root is fully deterministic from the
+   * payload bytes, so we can hand it to the caller immediately (for on-chain
+   * submitOutput) while the actual upload runs in the background. Peers that
+   * try to fetch this hash before the upload lands see a transient miss and
+   * fall through to the existing fetch retry-with-backoff (3 attempts, 2s
+   * spacing) — by the time the second worker's judge() needs the bytes,
+   * upload is virtually always complete.
+   */
+  async appendDeferred(data: unknown): Promise<{ rootHash: string; uploadPromise: Promise<void> }> {
+    const serialized = JSON.stringify(data)
+    const buffer = Buffer.from(serialized, 'utf-8')
+    const file = new MemData(buffer)
+
+    const [tree, treeErr] = await file.merkleTree()
+    if (treeErr || !tree) throw new Error(`Tree error: ${treeErr}`)
+    const rootHash = tree.rootHash()!
+    console.log(`[ZeroGStorage] deferred upload starting, root: ${rootHash}`)
+
+    const uploadPromise = (async () => {
+      try {
+        const [result, uploadErr] = await this.indexer.upload(file, this.rpc, this.signer)
+        if (uploadErr || !result) throw uploadErr ?? new Error('upload returned no result')
+        const txHash = 'txHash' in result ? result.txHash : result.txHashes[0]
+        console.log(`[ZeroGStorage] deferred upload landed: ${rootHash}, tx: ${txHash}`)
+      } catch (err) {
+        console.error(`[ZeroGStorage] deferred upload FAILED for ${rootHash}:`, err)
+        throw err
+      }
+    })()
+
+    return { rootHash, uploadPromise }
+  }
+
   async fetch(hash: string): Promise<unknown> {
     return this.withRetry('fetch', async () => {
       console.log(`[ZeroGStorage] fetching: ${hash}`)

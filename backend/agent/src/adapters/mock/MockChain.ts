@@ -64,11 +64,6 @@ export class MockChain implements IChainPort {
     console.log(`[MockChain] Output submitted for node ${nodeId}: ${outputHash}`);
   }
 
-  async markValidated(nodeId: string): Promise<void> {
-    MockChain.validated.add(nodeId);
-    console.log(`[MockChain] Node ${nodeId} marked validated`);
-  }
-
   async markValidatedBatch(nodeIds: string[]): Promise<void> {
     for (const nid of nodeIds) MockChain.validated.add(nid);
     console.log(`[MockChain] ${nodeIds.length} nodes marked validated (batch)`);
@@ -112,15 +107,16 @@ export class MockChain implements IChainPort {
     console.log(`[MockChain] finalizeExpired for ${nodeId} (no-op in mock)`);
   }
 
-  async settle(taskId: string, winners: string[]): Promise<void> {
-    console.log(`[MockChain] Settlement for task ${taskId}. Winners:`, winners);
-  }
-
   async resetSubtask(nodeId: string): Promise<void> {
     MockChain.subtaskClaims.delete(nodeId);
     MockChain.outputs.delete(nodeId);
     MockChain.validated.delete(nodeId);
     console.log(`[MockChain] subtask reset: ${nodeId}`);
+  }
+
+  async getStakeCapacity(_stakeAmount: string): Promise<number> {
+    // Mock has no escrow accounting; agents in tests have unbounded stake.
+    return Number.MAX_SAFE_INTEGER;
   }
 }
 

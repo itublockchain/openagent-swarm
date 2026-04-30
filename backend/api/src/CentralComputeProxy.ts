@@ -30,10 +30,41 @@ const DEFAULT_MODEL = process.env.ZG_COMPUTE_MODEL ?? 'qwen/qwen-2.5-7b-instruct
 const RPC_URL = process.env.ZG_COMPUTE_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'
 const INITIAL_FUND_OG = Number(process.env.ZG_COMPUTE_INITIAL_FUND ?? '3')
 
+// Provider rate-limit handling. 0G TEE providers throttle aggressively;
+// without coordination across agents, all 4-5 agents fire chat() at once
+// when DAG_READY broadcasts and we eat several rounds of 429 in a row.
+const MAX_CONCURRENT = 2
+const BACKOFF_BASE_MS = 2_000   // 2s, 4s, 8s, 16s, 32s
+const BACKOFF_CAP_MS = 60_000
+
 export class CentralComputeProxy {
   private pool: PoolWallet[] = []
   private next = 0
   private setupPromise: Promise<void> | null = null
+
+  // In-process semaphore. We don't need a heavy queue lib — Promise resolvers
+  // chained behind a counter are enough for the small fan-out here.
+  private inflight = 0
+  private waitQueue: Array<() => void> = []
+
+  private async acquireSlot(): Promise<void> {
+    if (this.inflight < MAX_CONCURRENT) {
+      this.inflight++
+      return
+    }
+    return new Promise<void>((resolve) => {
+      this.waitQueue.push(() => {
+        this.inflight++
+        resolve()
+      })
+    })
+  }
+
+  private releaseSlot(): void {
+    this.inflight = Math.max(0, this.inflight - 1)
+    const next = this.waitQueue.shift()
+    if (next) next()
+  }
 
   constructor(privateKeys: string[]) {
     if (!privateKeys.length) {
@@ -139,23 +170,38 @@ export class CentralComputeProxy {
    */
   async chat(messages: Array<{ role: string; content: string }>, maxTokens = 1024, temperature = 0.3): Promise<string> {
     await this.ensureReady()
-    const w = this.pick()
+    await this.acquireSlot()
+    try {
+      return await this.chatInner(messages, maxTokens, temperature)
+    } finally {
+      this.releaseSlot()
+    }
+  }
 
+  private async chatInner(
+    messages: Array<{ role: string; content: string }>,
+    maxTokens: number,
+    temperature: number,
+  ): Promise<string> {
+    const w = this.pick()
     const content = messages.map((m) => m.content).join('\n')
     const { endpoint, model } = await w.broker.inference.getServiceMetadata(w.providerAddress)
-    const headers = await w.broker.inference.getRequestHeaders(w.providerAddress, content)
 
     const MAX_RETRIES = 5
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      const headers = await w.broker.inference.getRequestHeaders(w.providerAddress, content)
+
       const res = await fetch(`${endpoint}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }),
       })
+
       if (res.status === 429) {
-        const wait = attempt * 12
-        console.warn(`[CentralComputeProxy] 429 rate-limited, wait ${wait}s`)
-        await new Promise((r) => setTimeout(r, wait * 1000))
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s (capped at 60s).
+        const delay = Math.min(BACKOFF_BASE_MS * 2 ** attempt, BACKOFF_CAP_MS)
+        console.warn(`[CentralComputeProxy] 429 rate-limited, backing off ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`)
+        await new Promise((r) => setTimeout(r, delay))
         continue
       }
       if (!res.ok) throw new Error(`0G Compute ${res.status}: ${await res.text()}`)

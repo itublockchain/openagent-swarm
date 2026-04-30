@@ -3,8 +3,13 @@ import { Tool } from './tools/Tool'
 import { getTool } from './tools/definitions'
 import { AgentFormat, ChatMessage, TranscriptStep } from './agentFormat'
 
+// 2-iter / 30s was too tight for tool-heavy flows (web_search → fetch_url →
+// execute_code → final easily exceeds 2 turns), forcing the loop into a
+// 'max_iter' degrade where the raw partial response — not the final answer —
+// gets persisted and judged. 5 iterations covers realistic tool chains;
+// 60s deadline absorbs one 0G Compute rate-limit retry plus one tool round.
 const MAX_ITERATIONS = 5
-const OVERALL_DEADLINE_MS = 90_000
+const OVERALL_DEADLINE_MS = 60_000
 
 export interface AgentLoopResult {
   /** Plain-text answer for downstream agents to use as context. */
@@ -72,7 +77,7 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
 
     let raw: string
     try {
-      raw = await compute.chat!(messages, 1024)
+      raw = await compute.chat!(messages, 512)
     } catch (err) {
       console.error(`[agentLoop ${agentId}] chat error iter ${iter}:`, err)
       return finalize(transcript, toolsUsed, iter - 1, lastRaw || `chat error: ${(err as Error).message}`, 'deadline')

@@ -41,6 +41,12 @@ export interface DAGNode {
   claimedBy: string | null
   /** subtask bittiğinde oluşan output hash */
   outputHash?: string
+  /** Set when this node's output has been peer-validated by a downstream
+   *  worker (its judge() returned true and it consumed the output as
+   *  context). Lets the next worker skip a redundant judge() call —
+   *  ~5-10s saving per node. The planner's batch markValidated at DAG
+   *  end is still the authoritative finality. */
+  peerValidated?: boolean
 }
 
 export interface AXLEvent<T = unknown> {

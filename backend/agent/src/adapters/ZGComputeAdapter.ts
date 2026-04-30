@@ -234,7 +234,7 @@ DO NOT ADD ANY MARKDOWN FORMATTING OR EXTRA TEXT. JUST RETURN VALID JSON:
         raw = await this.chat([
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
-        ], 0.3, 5, 2048)
+        ], 0.3, 5, 512)
         break
       } catch (err) {
         if (attempt === 3) throw err
