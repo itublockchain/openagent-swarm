@@ -62,7 +62,12 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
   const transcript: TranscriptStep[] = []
   const toolsUsed: string[] = []
   const startedAt = Date.now()
-  let parseErrors = 0
+  // Track CONSECUTIVE parse failures, not total. A single stray malformed
+  // response after several good tool calls used to bail the whole loop —
+  // observed in production logs where iter 1 parse_error + iters 2-4 good
+  // tool calls + iter 5 parse_error → "giving up after 2 parse errors" and
+  // reason=parse_error, even though the agent was making progress.
+  let consecutiveParseErrors = 0
   let lastRaw = ''
 
   for (let iter = 1; iter <= MAX_ITERATIONS; iter++) {
@@ -88,9 +93,9 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
     console.log(`[agentLoop ${agentId}] iter ${iter} parsed:`, parsed.kind)
 
     if (parsed.kind === 'parse_error') {
-      parseErrors++
-      if (parseErrors >= 2) {
-        console.warn(`[agentLoop ${agentId}] giving up after ${parseErrors} parse errors`)
+      consecutiveParseErrors++
+      if (consecutiveParseErrors >= 2) {
+        console.warn(`[agentLoop ${agentId}] giving up after ${consecutiveParseErrors} consecutive parse errors`)
         return finalize(transcript, toolsUsed, iter, raw, 'parse_error')
       }
       // Inject a corrective hint and retry.
@@ -103,6 +108,9 @@ export async function runAgentLoop(args: RunAgentLoopArgs): Promise<AgentLoopRes
       })
       continue
     }
+
+    // Successful parse — reset the streak.
+    consecutiveParseErrors = 0
 
     if (parsed.kind === 'final') {
       transcript.push({ kind: 'final', text: parsed.text })
@@ -157,7 +165,19 @@ function finalize(
   lastRaw: string,
   stopReason: AgentLoopResult['stopReason'],
 ): AgentLoopResult {
-  const fallback = lastRaw.trim() || `(agent stopped: ${stopReason})`
-  transcript.push({ kind: 'final', text: fallback })
-  return { finalAnswer: fallback, transcript, toolsUsed, iterations, stopReason }
+  // If the loop terminated without a final answer and the last LLM response
+  // was an unexecuted tool-call directive, surfacing it verbatim as the
+  // finalAnswer poisons downstream consumers: the next worker would read
+  // {"action":"tool",...} as if it were the deliverable, judge() would not
+  // recognize it as broken (passes the default-valid filter), and the DAG
+  // settles with garbage at that node. Replace with an explicit marker the
+  // judge prompt is taught to reject so the next worker can challenge.
+  let cleaned = lastRaw.trim()
+  const looksLikeUnexecutedToolCall =
+    /^\{[\s\S]*"action"\s*:\s*"tool"/i.test(cleaned)
+  if (!cleaned || looksLikeUnexecutedToolCall) {
+    cleaned = `[AGENT_NO_FINAL reason=${stopReason}] Loop terminated without producing a final answer.`
+  }
+  transcript.push({ kind: 'final', text: cleaned })
+  return { finalAnswer: cleaned, transcript, toolsUsed, iterations, stopReason }
 }

@@ -1,4 +1,4 @@
-import { Wallet } from 'ethers'
+import { Wallet, randomBytes, hexlify, solidityPackedKeccak256, id as keccakId } from 'ethers'
 import { IStoragePort, IComputePort, INetworkPort, IChainPort } from '../../../shared/ports'
 import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types'
 import { runAgentLoop } from './agentLoop'
@@ -42,6 +42,15 @@ export class SwarmAgent {
   // re-stakes a node that's already mid-flight and the contract reverts
   // with "Already staked". Cleared in the finally block.
   private inflightSubtasks = new Set<string>()
+  // Commit-reveal jury state. Holds the salt + verdict between the commit
+  // tx and the scheduled reveal tx (~30 min later). In-memory only — a
+  // process restart between phases forfeits this juror's vote.
+  private pendingReveals = new Map<string, {
+    taskId: string
+    accusedGuilty: boolean
+    salt: string
+    revealAt: number
+  }>()
 
   constructor(private deps: AgentDeps) { }
 
@@ -834,13 +843,20 @@ export class SwarmAgent {
   }
 
   /**
-   * LLM-Judge jury vote. When another agent raises a CHALLENGE on AXL, every
-   * other agent in the swarm runs its own judge over the disputed output and
-   * casts a verdict. The on-chain SlashingVault auto-resolves the slash once
-   * QUORUM votes land — there is no admin path. Self-events (we are the
-   * challenger), missing local cache, or ineligibility (we are the accused
-   * worker, not RUNNING in AgentRegistry, already voted) are silently skipped:
-   * the contract is the authoritative gate, the agent only proposes a verdict.
+   * LLM-Judge jury vote — commit-reveal flow. When another agent raises a
+   * CHALLENGE, every eligible peer runs its own judge() and produces a
+   * verdict, then submits a SEALED commit hash on-chain. Votes stay hidden
+   * until the reveal phase opens (~30 min later), at which point a scheduled
+   * timer here calls revealVoteOnChallenge with the stored salt. Sealing the
+   * vote closes the "tail-the-majority" attack the previous direct-vote
+   * design exposed.
+   *
+   * Self-events (we are the challenger), missing local cache, or ineligibility
+   * (we are the accused worker, not RUNNING in AgentRegistry, already
+   * committed) are silently skipped — the contract is the authoritative gate.
+   *
+   * KNOWN LIMITATION: pendingReveals is in-memory. A process restart between
+   * commit and reveal forfeits this juror's vote. For demo only.
    */
   private async onChallengeRaised(event: AXLEvent<any>): Promise<void> {
     const { nodeId, taskId } = event.payload
@@ -856,9 +872,11 @@ export class SwarmAgent {
       return
     }
 
-    // Don't vote on a node we ourselves produced — the contract would reject
-    // the tx anyway, but skipping early saves an RPC round-trip.
     if (node.claimedBy === myAgentId) return
+    if (this.pendingReveals.has(nodeId)) {
+      console.log(`[Agent ${myAgentId}] CHALLENGE: already committed for ${nodeId}, skipping`)
+      return
+    }
 
     let output: unknown
     try {
@@ -871,18 +889,94 @@ export class SwarmAgent {
     const isValid = await this.deps.compute.judge(extractFinal(output))
     const accusedGuilty = !isValid
     console.log(
-      `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'}`,
+      `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} (sealing commit)`,
     )
+
+    // Need the agent's wallet address to bind the commit hash to msg.sender.
+    // Without it the contract's reveal-time hash check will never match.
+    const myAddr = this.deps.config.agentAddress
+    if (!myAddr) {
+      console.warn(`[Agent ${myAgentId}] cannot commit — agentAddress missing in config`)
+      return
+    }
+
+    // Build the commit hash. Format must match SlashingVault.revealVote:
+    //   keccak256(abi.encodePacked(bytes32 nodeId, bool guilty, bytes32 salt, address juror))
+    // nodeId here is the off-chain string; keccakId mirrors L2Contract.formatId.
+    const salt = hexlify(randomBytes(32))
+    const nodeIdBytes32 = keccakId(nodeId)
+    const commitHash = solidityPackedKeccak256(
+      ['bytes32', 'bool', 'bytes32', 'address'],
+      [nodeIdBytes32, accusedGuilty, salt, myAddr],
+    )
+
     try {
-      await this.deps.chain.voteOnChallenge(nodeId, myAgentId, accusedGuilty)
-      // Surface to the dashboard. We rely on the chain tx succeeding to
-      // emit, so a duplicate or ineligible vote (e.g. the contract rejected
-      // it because we already voted) doesn't leak into the UI.
-      this.deps.network.emit(this.buildEvent(EventType.JUROR_VOTED, {
-        nodeId, taskId, agentId: myAgentId, accusedGuilty,
+      await this.deps.chain.commitVoteOnChallenge(nodeId, myAgentId, commitHash)
+      this.deps.network.emit(this.buildEvent(EventType.JUROR_COMMITTED, {
+        nodeId, taskId, agentId: myAgentId,
       })).catch(() => { })
     } catch (err) {
-      console.warn(`[Agent ${myAgentId}] juror vote failed for ${nodeId}:`, err)
+      console.warn(`[Agent ${myAgentId}] juror commit failed for ${nodeId}:`, err)
+      return
+    }
+
+    // Demo timing — must match SlashingVault's COMMIT_WINDOW / REVEAL_WINDOW
+    // (currently 20s each) so the full challenge resolves inside ~1 minute.
+    // Reveal scheduled at commitDeadline + 3s grace so block.timestamp lands
+    // safely past on-chain commitDeadline; finalize scheduled at the end of
+    // reveal window + 3s. Multiple jurors may schedule finalize — first one
+    // wins, the rest revert silently with "Already resolved", harmless.
+    const COMMIT_WINDOW_MS = 20_000
+    const REVEAL_WINDOW_MS = 20_000
+    const REVEAL_GRACE_MS = 3_000
+    const FINALIZE_GRACE_MS = 3_000
+    const revealDelay = COMMIT_WINDOW_MS + REVEAL_GRACE_MS
+    const finalizeDelay = COMMIT_WINDOW_MS + REVEAL_WINDOW_MS + FINALIZE_GRACE_MS
+
+    this.pendingReveals.set(nodeId, {
+      taskId,
+      accusedGuilty,
+      salt,
+      revealAt: Date.now() + revealDelay,
+    })
+
+    setTimeout(() => {
+      this.tryReveal(nodeId).catch(err =>
+        console.error(`[Agent ${myAgentId}] reveal scheduler error for ${nodeId}:`, err),
+      )
+    }, revealDelay)
+
+    setTimeout(() => {
+      this.deps.chain.finalizeChallenge(nodeId).catch(err =>
+        console.log(`[Agent ${myAgentId}] finalize attempt for ${nodeId} skipped: ${err?.message ?? err}`),
+      )
+    }, finalizeDelay)
+  }
+
+  /**
+   * Send the second half of the commit-reveal pair. Called by the timer set
+   * up in onChallengeRaised. Idempotent at the contract layer (revealVote
+   * reverts if we already revealed), so retries from a manual nudge are safe.
+   */
+  private async tryReveal(nodeId: string): Promise<void> {
+    const pending = this.pendingReveals.get(nodeId)
+    if (!pending) return
+    const myAgentId = this.deps.config.agentId
+    try {
+      await this.deps.chain.revealVoteOnChallenge(nodeId, pending.accusedGuilty, pending.salt)
+      console.log(
+        `[Agent ${myAgentId}] revealed vote for ${nodeId}: ${pending.accusedGuilty ? 'GUILTY' : 'INNOCENT'}`,
+      )
+      this.deps.network.emit(this.buildEvent(EventType.JUROR_VOTED, {
+        nodeId,
+        taskId: pending.taskId,
+        agentId: myAgentId,
+        accusedGuilty: pending.accusedGuilty,
+      })).catch(() => { })
+    } catch (err) {
+      console.warn(`[Agent ${myAgentId}] reveal failed for ${nodeId}:`, err)
+    } finally {
+      this.pendingReveals.delete(nodeId)
     }
   }
 
@@ -922,21 +1016,21 @@ export class SwarmAgent {
   }
 
   /**
-   * After a CHALLENGE, the vault only calls registry.resetNode once enough
-   * jurors have voted GUILTY (QUORUM = 3) or finalizeExpired closes a
-   * majority-guilty window. Until that happens, claimSubtask returns false
-   * because claimedBy is still the slashed worker. Poll the registry
-   * periodically and re-attempt the claim once the slot is empty. Also nudges
-   * finalizeExpiredChallenge every few iterations so a stale window with one
-   * or two guilty votes can resolve without a manual operator step.
+   * After a CHALLENGE, the vault only calls registry.resetNode once the
+   * commit-reveal flow finalizes with a majority-guilty verdict. Until that
+   * happens, claimSubtask returns false because claimedBy is still the
+   * slashed worker. Poll the registry periodically and re-attempt the claim
+   * once the slot is empty. Also nudges finalize() every few iterations so
+   * a fully-revealed window resolves without a manual operator step.
    */
   private scheduleReopenWatchdog(nodeId: string, taskId: string): void {
-    const POLL_MS = 30_000
-    // Aligned with SlashingVault.VOTING_WINDOW (1h) + a small grace period
-    // so we keep polling until the challenge is definitely resolved. Earlier
-    // 24-iter (~12 min) ceiling caused slots to orphan whenever a jury vote
-    // landed late — the watchdog gave up before resetNode fired.
-    const MAX_ITERATIONS = 130 // ~65 min
+    // Tight polling to match the demo-tuned commit+reveal total of ~50s.
+    // Each commit-side juror also schedules a one-shot finalize, so this
+    // watchdog is mostly a safety net for the re-claim path after resetNode.
+    const POLL_MS = 5_000
+    // ~5 minutes of total runway — well past the ~1-min resolution window,
+    // covers retries when 0G testnet RPC throttles individual finalize calls.
+    const MAX_ITERATIONS = 60
     const ZERO = '0x0000000000000000000000000000000000000000'
     let attempt = 0
     const agentId = this.deps.config.agentId
@@ -952,12 +1046,13 @@ export class SwarmAgent {
         return
       }
 
-      // Best-effort kick to close a stale challenge. Reverts with
-      // "Still voting" before the deadline; harmless to attempt.
+      // Best-effort kick to close the challenge once the reveal window has
+      // elapsed. Reverts with "Reveal still open" before the deadline;
+      // harmless to attempt.
       if (attempt % 4 === 0) {
         try {
-          await this.deps.chain.finalizeExpiredChallenge(nodeId)
-        } catch { /* expected before deadline */ }
+          await this.deps.chain.finalizeChallenge(nodeId)
+        } catch { /* expected before reveal deadline */ }
       }
 
       try {

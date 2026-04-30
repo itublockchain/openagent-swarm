@@ -19,8 +19,13 @@ export enum EventType {
   /** Self-selection: agent's assess() returned NO for this node. UI shows a
    *  small "passed" badge so viewers see the skill filter at work. */
   AGENT_PASSED      = 'AGENT_PASSED',
-  /** Cast jury vote on a challenge (voteOnChallenge tx succeeded). UI
-   *  surfaces a vote counter on the disputed node. */
+  /** Juror submitted a sealed commit (commit-reveal phase 1). UI shows a
+   *  "committed" counter on the disputed node — vote content stays hidden
+   *  until reveal. */
+  JUROR_COMMITTED   = 'JUROR_COMMITTED',
+  /** Juror revealed their vote (commit-reveal phase 2). Existing UI listener
+   *  treats this the same as the old single-phase vote: bumps the
+   *  guilty/innocent counter on the disputed node. */
   JUROR_VOTED       = 'JUROR_VOTED',
   CHALLENGE         = 'CHALLENGE',
   SLASH_EXECUTED    = 'SLASH_EXECUTED',

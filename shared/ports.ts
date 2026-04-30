@@ -64,10 +64,21 @@ export interface IChainPort {
   completeTask(taskId: string): Promise<boolean>
   /** hatalı node'a itiraz açar; challengerNodeId challenger'ın kendi subtask'ı (planner ise '0x0') */
   challenge(nodeId: string, challengerNodeId?: string): Promise<void>
-  /** açık bir challenge'a jüri oyu kullanır. agentId çağıranın kendi AgentRegistry id'si */
-  voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void>
-  /** süresi dolan challenge'ı çoğunluğa göre kapatır (kimse oy vermediyse drop) */
-  finalizeExpiredChallenge(nodeId: string): Promise<void>
+  /**
+   * Commit-reveal phase 1 — juror sends sealed hash of their vote.
+   * commitHash = keccak256(abi.encodePacked(nodeId, accusedGuilty, salt, msg.sender)).
+   * agentId is the juror's own bytes32 AgentRegistry id (used by the contract
+   * to verify msg.sender owns it and is RUNNING).
+   */
+  commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void>
+  /**
+   * Commit-reveal phase 2 — juror reveals their vote and salt; the contract
+   * recomputes the hash and matches against the stored commit. Only callable
+   * after commitDeadline and before revealDeadline.
+   */
+  revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void>
+  /** Reveal penceresi dolduktan sonra çağrılır; revealed votes'a göre çözer */
+  finalizeChallenge(nodeId: string): Promise<void>
   /** Explicit per-agent ödül dağıtımı (planner yetkili) */
   settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void>
   /** Bir node'un on-chain claimant adresini döner */

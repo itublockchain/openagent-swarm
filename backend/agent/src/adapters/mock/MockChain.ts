@@ -99,12 +99,16 @@ export class MockChain implements IChainPort {
     console.warn(`[MockChain] Challenge initiated for node: ${nodeId} (challenger node: ${challengerNodeId ?? 'planner'})`);
   }
 
-  async voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void> {
-    console.log(`[MockChain] Vote on challenge ${nodeId} by ${agentId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'}`);
+  async commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void> {
+    console.log(`[MockChain] commitVote on ${nodeId} by ${agentId}: hash=${commitHash.slice(0, 18)}...`);
   }
 
-  async finalizeExpiredChallenge(nodeId: string): Promise<void> {
-    console.log(`[MockChain] finalizeExpired for ${nodeId} (no-op in mock)`);
+  async revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void> {
+    console.log(`[MockChain] revealVote on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} (salt=${salt.slice(0, 10)}...)`);
+  }
+
+  async finalizeChallenge(nodeId: string): Promise<void> {
+    console.log(`[MockChain] finalize for ${nodeId} (no-op in mock)`);
   }
 
   async resetSubtask(nodeId: string): Promise<void> {

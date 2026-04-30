@@ -309,6 +309,11 @@ Reject only if the output contains:
 3. Total schema break: only random control characters, an empty refusal, or
    unreadable garbage. Coherent natural-language text or a working code block
    IS well-formed and should pass.
+4. Unexecuted agent scaffolding — the output is a JSON object whose "action"
+   field equals "tool" (a tool-call directive the loop never executed), or
+   begins with the literal token "[AGENT_NO_FINAL" (explicit failure marker
+   from the agent loop). These mean the agent never produced a deliverable;
+   reject so the next worker challenges and the node is re-run.
 
 Return ONLY a single JSON object, no markdown, no commentary:
 { "valid": <boolean>, "schemaValid": <boolean>, "reason": "<short string>" }

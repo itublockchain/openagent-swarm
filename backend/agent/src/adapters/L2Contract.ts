@@ -296,21 +296,30 @@ export class L2Contract implements IChainPort {
     console.log(`[L2Contract] resetSubtask for ${nodeId} — handled on-chain`)
   }
 
-  async voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void> {
+  async commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
     const formattedAgentId = this.formatId(agentId)
     try {
-      await this.sendTxWithRetry(this.vault, 'vote', [formattedNodeId, formattedAgentId, accusedGuilty])
+      await this.sendTxWithRetry(this.vault, 'commitVote', [formattedNodeId, formattedAgentId, commitHash])
     } catch (err: any) {
-      console.warn(`[L2Contract] voteOnChallenge skipped: ${err?.message}`)
+      console.warn(`[L2Contract] commitVoteOnChallenge skipped: ${err?.message}`)
     }
   }
 
-  async finalizeExpiredChallenge(nodeId: string): Promise<void> {
+  async revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void> {
+    const formattedNodeId = this.formatId(nodeId)
     try {
-      await this.sendTxWithRetry(this.vault, 'finalizeExpired', [this.formatId(nodeId)])
+      await this.sendTxWithRetry(this.vault, 'revealVote', [formattedNodeId, accusedGuilty, salt])
     } catch (err: any) {
-      console.warn(`[L2Contract] finalizeExpiredChallenge skipped: ${err?.message}`)
+      console.warn(`[L2Contract] revealVoteOnChallenge skipped: ${err?.message}`)
+    }
+  }
+
+  async finalizeChallenge(nodeId: string): Promise<void> {
+    try {
+      await this.sendTxWithRetry(this.vault, 'finalize', [this.formatId(nodeId)])
+    } catch (err: any) {
+      console.warn(`[L2Contract] finalizeChallenge skipped: ${err?.message}`)
     }
   }
 
