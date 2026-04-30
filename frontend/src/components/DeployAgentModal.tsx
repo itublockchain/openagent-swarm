@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt, readContract } from '@wagmi/core'
@@ -22,7 +22,23 @@ const AVAILABLE_MODELS = [
   { value: 'qwen/qwen-2.5-7b-instruct', label: 'Qwen 2.5 7B Instruct (0G Compute)' },
 ] as const
 
-type Step = 'idle' | 'switching-chain' | 'preparing' | 'transferring' | 'deploying' | 'done' | 'error'
+type Step =
+  | 'idle'
+  | 'switching-chain'
+  | 'preparing'
+  | 'transferring'
+  | 'deploying'
+  | 'waiting-active'
+  | 'done'
+  | 'error'
+
+// /agent/pool runs on a 5s server cadence; poll a bit faster client-side so
+// the modal flips to done shortly after the container reports 'running'.
+const POOL_POLL_MS = 3_000
+// 90s ceiling. After this we surface a soft error and let the user check
+// the pool manually — the agent often comes up later, so we do NOT mark
+// it failed.
+const POOL_POLL_TIMEOUT_MS = 90_000
 
 export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const [stage, setStage] = useState(1)
@@ -38,6 +54,14 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const { switchChainAsync } = useSwitchChain()
   const { writeContractAsync } = useWriteContract()
 
+  // Aborts the waiting-active poll when the modal unmounts mid-deploy.
+  const pollAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => {
+    return () => {
+      pollAbortRef.current?.abort()
+    }
+  }, [])
+
   if (!isOpen) return null
 
   const reset = () => {
@@ -46,9 +70,43 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   }
 
   const closeAndReset = () => {
+    pollAbortRef.current?.abort()
+    pollAbortRef.current = null
     reset()
     setStage(1)
+    setAgentName('')
+    setSelectedModel(AVAILABLE_MODELS[0].value)
+    setSystemPrompt('')
+    setStakeAmount('10')
     onClose()
+  }
+
+  // Polls /agent/pool until the freshly-deployed agent reports running, or
+  // we hit POOL_POLL_TIMEOUT_MS. Throws on timeout so handleDeploy lands
+  // in the error branch with a meaningful message.
+  const waitForAgentActive = async (agentId: string): Promise<void> => {
+    const controller = new AbortController()
+    pollAbortRef.current = controller
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+    const deadline = Date.now() + POOL_POLL_TIMEOUT_MS
+
+    while (Date.now() < deadline) {
+      if (controller.signal.aborted) throw new Error('aborted')
+      try {
+        const res = await fetch(`${apiUrl}/agent/pool`, { signal: controller.signal })
+        if (res.ok) {
+          const pool = (await res.json()) as Array<{ agentId: string; status: string }>
+          const me = pool.find(a => a.agentId === agentId)
+          if (me?.status === 'running') return
+          if (me?.status === 'error') throw new Error('Agent reported error during boot — check container logs')
+        }
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.name === 'AbortError') throw new Error('aborted')
+        // Transient fetch failure — keep polling until the deadline.
+      }
+      await new Promise(r => setTimeout(r, POOL_POLL_MS))
+    }
+    throw new Error('Agent is taking longer than usual to come online — check the pool')
   }
 
   const handleDeploy = async () => {
@@ -156,23 +214,36 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       }
       const { containerId } = await deployRes.json()
 
+      // 5. Container is up; wait until /agent/pool reports running before
+      // we let the user click Deploy again — otherwise the next click can
+      // race a half-booted agent into the mesh.
+      setStep('waiting-active')
+      await waitForAgentActive(prep.agentId)
+
       setStep('done')
       onSuccess(containerId)
       setTimeout(closeAndReset, 800)
     } catch (err: any) {
+      if (err?.message === 'aborted') return // user closed the modal — no-op
       console.error('[DeployModal] error:', err)
       setStep('error')
       setErrorMsg(err?.shortMessage || err?.message || String(err))
     }
   }
 
-  const isBusy = step === 'switching-chain' || step === 'preparing' || step === 'transferring' || step === 'deploying'
+  const isBusy =
+    step === 'switching-chain' ||
+    step === 'preparing' ||
+    step === 'transferring' ||
+    step === 'deploying' ||
+    step === 'waiting-active'
   const stepLabel: Record<Step, string> = {
     idle: '',
     'switching-chain': 'Switch to 0G Galileo (chainId 16602) in your wallet…',
     preparing: 'Generating agent wallet…',
     transferring: 'Sign the USDC transfer in your wallet (check MetaMask popup)…',
     deploying: 'Spawning Docker container…',
+    'waiting-active': 'Waiting for swarm activation… (agent joining mesh)',
     done: '✓ Agent live in pool',
     error: errorMsg || 'Error',
   }
