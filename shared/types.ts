@@ -8,6 +8,25 @@ export enum EventType {
   DAG_READY         = 'DAG_READY',
   SUBTASK_CLAIMED   = 'SUBTASK_CLAIMED',
   SUBTASK_DONE      = 'SUBTASK_DONE',
+  /** Output passed validation on-chain (planner/keeper batch-validated this
+   *  node). UI promotes the box from 'pending' (yellow) to 'done' (green). */
+  SUBTASK_VALIDATED = 'SUBTASK_VALIDATED',
+  /** The next worker's local LLM-Judge accepted this node's output and is
+   *  using it as context. Optimistic UI signal — flips the box green ahead
+   *  of the planner's on-chain markValidatedBatch (which still fires at
+   *  DAG end and is the authoritative finality). */
+  SUBTASK_PEER_VALIDATED = 'SUBTASK_PEER_VALIDATED',
+  /** Self-selection: agent's assess() returned NO for this node. UI shows a
+   *  small "passed" badge so viewers see the skill filter at work. */
+  AGENT_PASSED      = 'AGENT_PASSED',
+  /** Juror submitted a sealed commit (commit-reveal phase 1). UI shows a
+   *  "committed" counter on the disputed node — vote content stays hidden
+   *  until reveal. */
+  JUROR_COMMITTED   = 'JUROR_COMMITTED',
+  /** Juror revealed their vote (commit-reveal phase 2). Existing UI listener
+   *  treats this the same as the old single-phase vote: bumps the
+   *  guilty/innocent counter on the disputed node. */
+  JUROR_VOTED       = 'JUROR_VOTED',
   CHALLENGE         = 'CHALLENGE',
   SLASH_EXECUTED    = 'SLASH_EXECUTED',
   TASK_REOPENED     = 'TASK_REOPENED',
@@ -27,6 +46,12 @@ export interface DAGNode {
   claimedBy: string | null
   /** subtask bittiğinde oluşan output hash */
   outputHash?: string
+  /** Set when this node's output has been peer-validated by a downstream
+   *  worker (its judge() returned true and it consumed the output as
+   *  context). Lets the next worker skip a redundant judge() call —
+   *  ~5-10s saving per node. The planner's batch markValidated at DAG
+   *  end is still the authoritative finality. */
+  peerValidated?: boolean
 }
 
 export interface AXLEvent<T = unknown> {
@@ -45,4 +70,8 @@ export interface AgentConfig {
   /** Agent's on-chain wallet address. Required for explicit settlement
    *  (planner reward) and partial slashing logic. */
   agentAddress?: string
+  /** User-supplied prompt that defines the agent's specialization. Read
+   *  by SwarmAgent.assess() to skip subtasks outside the agent's skill
+   *  before racing to claim. Empty / undefined → claim everything. */
+  systemPrompt?: string
 }

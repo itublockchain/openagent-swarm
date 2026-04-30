@@ -1,8 +1,10 @@
 import Fastify from 'fastify';
 import websocket from '@fastify/websocket';
 import cors from '@fastify/cors';
+import Dockerode from 'dockerode';
 import { IStoragePort, INetworkPort } from '../../../shared/ports';
 import { AgentManager } from './AgentRunner';
+import { CentralComputeProxy } from './CentralComputeProxy';
 import { TaskSchema, AgentPrepareSchema, AgentDeploySchema, AgentIdParamsSchema } from './schemas';
 import { ethers } from 'ethers';
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json';
@@ -23,12 +25,17 @@ export interface ServerDeps {
   storage: IStoragePort;
   network: INetworkPort;
   manager: AgentManager;
+  /**
+   * Optional shared compute proxy. Mounted only when COMPUTE_MODE=central.
+   * Agents in central mode hit /internal/compute/chat which forwards here.
+   */
+  computeProxy?: CentralComputeProxy;
 }
 
 export default async function createServer(deps: ServerDeps) {
-  const fastify = Fastify({ 
+  const fastify = Fastify({
     logger: true,
-    ignoreTrailingSlash: true 
+    ignoreTrailingSlash: true
   });
 
   // Global request logger
@@ -92,6 +99,185 @@ export default async function createServer(deps: ServerDeps) {
     return { status: 'ok', timestamp: Date.now() };
   });
 
+  /**
+   * POST /internal/compute/chat
+   * Shared 0G Compute relay for agents running with COMPUTE_MODE=central.
+   * Agent passes messages + maxTokens, proxy forwards to a pooled broker
+   * wallet on the API host. NOT user-facing — only agents on the
+   * swarm_default Docker network reach this; outside the network it's
+   * unreachable.
+   */
+  if (deps.computeProxy) {
+    fastify.post('/internal/compute/chat', async (request, reply) => {
+      const body = (request.body ?? {}) as {
+        messages?: Array<{ role: string; content: string }>
+        maxTokens?: number
+        temperature?: number
+      }
+      if (!Array.isArray(body.messages) || body.messages.length === 0) {
+        return reply.status(400).send({ error: 'messages[] required' })
+      }
+      try {
+        const content = await deps.computeProxy!.chat(
+          body.messages,
+          body.maxTokens ?? 1024,
+          typeof body.temperature === 'number' ? body.temperature : 0.3,
+        )
+        return { content }
+      } catch (err: any) {
+        console.error('[/internal/compute/chat] error:', err)
+        return reply.status(502).send({ error: err?.message ?? String(err) })
+      }
+    });
+  }
+
+  /**
+   * POST /internal/execute
+   * Sandbox runtime for the CodeExecutor agent tool. Spawns an ephemeral
+   * container with `NetworkMode: none` so even an LLM-generated exfiltration
+   * attempt has nowhere to send data. 30s wall timeout. Output capped.
+   *
+   * NOT user-facing — only reachable from inside the swarm_default Docker
+   * network (i.e. agent containers). The agent's own network does not have
+   * docker-proxy access; that's why this endpoint exists rather than letting
+   * the agent spawn containers directly.
+   */
+  const execDocker = process.env.DOCKER_HOST
+    ? new Dockerode({
+      host: process.env.DOCKER_HOST.replace('tcp://', '').split(':')[0],
+      port: Number(process.env.DOCKER_HOST.split(':').pop()) || 2375,
+    })
+    : new Dockerode({ socketPath: process.env.DOCKER_SOCKET || '/var/run/docker.sock' });
+
+  const EXEC_IMAGES: Record<'python' | 'javascript', string> = {
+    python: 'python:3.11-alpine',
+    javascript: 'node:22-alpine',
+  };
+  const EXEC_TIMEOUT_MS = 30_000;
+  const EXEC_OUTPUT_LIMIT = 8_000; // chars
+
+  // Pre-pull sandbox images at boot so the first execute_code call doesn't
+  // 404 with "no such image". Non-blocking — server can serve other routes
+  // while pulls run in the background. Most LLM-driven tasks reach
+  // execute_code only after planning + claim + chain tx (~30s) which is
+  // plenty of head-start for a ~10MB alpine pull.
+  void (async () => {
+    for (const ref of Object.values(EXEC_IMAGES)) {
+      try {
+        await execDocker.getImage(ref).inspect()
+        console.log(`[Docker] sandbox image ready: ${ref}`)
+      } catch {
+        console.log(`[Docker] pulling sandbox image: ${ref}...`)
+        try {
+          await new Promise<void>((resolve, reject) => {
+            execDocker.pull(ref, (err: any, stream: any) => {
+              if (err) return reject(err)
+              execDocker.modem.followProgress(stream, (e: any) => (e ? reject(e) : resolve()))
+            })
+          })
+          console.log(`[Docker] sandbox image pulled: ${ref}`)
+        } catch (err) {
+          console.warn(`[Docker] failed to pull ${ref} (execute_code calls for that runtime will 404 until a manual pull):`, err)
+        }
+      }
+    }
+  })()
+
+  // Concurrency caps for sandbox container spawns. Each running container
+  // reserves 256 MiB; without these limits an LLM in a tight loop could
+  // exhaust the host. Per-agent cap protects against a single misbehaving
+  // agent; the global cap protects against a fleet collectively saturating
+  // the daemon.
+  const EXEC_MAX_PER_AGENT = 2;
+  const EXEC_MAX_TOTAL = 8;
+  const inflightExec = new Map<string, number>();
+  let totalInflight = 0;
+
+  fastify.post('/internal/execute', async (request, reply) => {
+    const { code, language, agentId } = (request.body ?? {}) as {
+      code?: string;
+      language?: string;
+      agentId?: string;
+    };
+    if (!code || (language !== 'python' && language !== 'javascript')) {
+      return reply.status(400).send({ error: 'code + language (python|javascript) required' });
+    }
+    const aid = agentId?.trim() || 'unknown';
+
+    if (totalInflight >= EXEC_MAX_TOTAL) {
+      reply.header('Retry-After', '5');
+      return reply.status(429).send({ error: `Sandbox saturated (${totalInflight}/${EXEC_MAX_TOTAL}), retry later` });
+    }
+    const cur = inflightExec.get(aid) ?? 0;
+    if (cur >= EXEC_MAX_PER_AGENT) {
+      reply.header('Retry-After', '5');
+      return reply.status(429).send({ error: `Agent ${aid}: too many concurrent executions (${cur}/${EXEC_MAX_PER_AGENT})` });
+    }
+    inflightExec.set(aid, cur + 1);
+    totalInflight++;
+
+    const image = EXEC_IMAGES[language as 'python' | 'javascript'];
+    const cmd =
+      language === 'python'
+        ? ['python', '-c', code as string]
+        : ['node', '-e', code as string];
+
+    let container: Dockerode.Container | null = null;
+    let timedOut = false;
+    try {
+      container = await execDocker.createContainer({
+        Image: image,
+        Cmd: cmd,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        HostConfig: {
+          NetworkMode: 'none',
+          AutoRemove: false,
+          Memory: 256 * 1024 * 1024, // 256 MiB
+          PidsLimit: 64,
+        },
+      });
+
+      // Stream output before start so we don't miss the first bytes.
+      const stream = await container.attach({ stream: true, stdout: true, stderr: true });
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      // Demux Docker's multiplexed stream manually (no Tty).
+      execDocker.modem.demuxStream(
+        stream,
+        { write: (b: Buffer) => { stdoutChunks.push(Buffer.from(b)) } } as any,
+        { write: (b: Buffer) => { stderrChunks.push(Buffer.from(b)) } } as any,
+      );
+
+      await container.start();
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        container?.kill().catch(() => { });
+      }, EXEC_TIMEOUT_MS);
+
+      const wait = await container.wait();
+      clearTimeout(timer);
+
+      const stdout = Buffer.concat(stdoutChunks).toString('utf8').slice(0, EXEC_OUTPUT_LIMIT);
+      const stderr = Buffer.concat(stderrChunks).toString('utf8').slice(0, EXEC_OUTPUT_LIMIT);
+
+      return { stdout, stderr, exitCode: wait.StatusCode ?? -1, timedOut };
+    } catch (err: any) {
+      console.error('[/internal/execute] error:', err);
+      return reply.status(500).send({ error: err?.message ?? String(err) });
+    } finally {
+      if (container) {
+        try { await container.remove({ force: true }); } catch { }
+      }
+      const next = (inflightExec.get(aid) ?? 1) - 1;
+      if (next <= 0) inflightExec.delete(aid);
+      else inflightExec.set(aid, next);
+      totalInflight = Math.max(0, totalInflight - 1);
+    }
+  });
+
   // GET /auth/nonce
   fastify.get('/auth/nonce', async () => {
     const nonce = generateNonce()
@@ -105,7 +291,7 @@ export default async function createServer(deps: ServerDeps) {
 
     try {
       const siwe = new SiweMessage(message)
-      
+
       // Nonce kontrolü
       const expiry = nonces.get(siwe.nonce)
       if (!expiry || expiry < Date.now()) {
@@ -170,7 +356,8 @@ export default async function createServer(deps: ServerDeps) {
       console.error('[L2] Failed to read USDC decimals:', err);
       return reply.status(502).send({ error: 'L2 RPC unreachable' });
     }
-    const budgetWei = ethers.parseUnits(body.budget || '0.01', decimals).toString();
+    // TaskSchema.refine already guarantees a positive numeric string here.
+    const budgetWei = ethers.parseUnits(body.budget, decimals).toString();
 
     return {
       specHash,
@@ -210,8 +397,9 @@ export default async function createServer(deps: ServerDeps) {
     if (taskOnChain.owner === ethers.ZeroAddress) {
       if (process.env.ALLOW_API_CREATE_TASK === 'true') {
         // Legacy / dev path: fall back to API-funded createTask. Useful for
-        // server-to-server testing without a connected wallet.
-        const r = await apiFundedCreateTask(taskIdBytes32, body.budget || '0.01');
+        // server-to-server testing without a connected wallet. Schema has
+        // already validated body.budget is a positive numeric string.
+        const r = await apiFundedCreateTask(taskIdBytes32, body.budget);
         if (!r.ok) return reply.status(500).send(r.payload);
       } else {
         return reply.status(402).send({
@@ -219,6 +407,15 @@ export default async function createServer(deps: ServerDeps) {
           taskIdBytes32,
         });
       }
+    } else if (taskOnChain.owner.toLowerCase() !== user.address.toLowerCase()) {
+      // Task exists on-chain but was created by someone other than the
+      // authenticated caller. Without this check, anyone with a JWT could
+      // re-broadcast another user's task to the AXL mesh by guessing
+      // (or observing) their taskIdBytes32.
+      return reply.status(403).send({
+        error: 'Task owner mismatch — only the on-chain creator can broadcast it.',
+        onChainOwner: taskOnChain.owner,
+      });
     }
 
     const event = {
@@ -364,7 +561,7 @@ export default async function createServer(deps: ServerDeps) {
       const handler = (event: any) => {
         const now = Date.now();
         const diff = Math.abs(now - (event.timestamp || 0));
-        
+
         if (diff < 60000) { // 60 seconds tolerance
           console.log(`[WS] OK: Transmitting ${event.type} to dashboard (diff: ${diff}ms)`);
           send(event);

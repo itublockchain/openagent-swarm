@@ -2,7 +2,15 @@ import { z } from 'zod';
 
 export const TaskSchema = z.object({
   spec: z.string().min(1),
-  budget: z.string().optional(),
+  // Budget is the USDC the submitter is willing to pay out across the DAG
+  // (planner gets 20%, workers split 80%). It must be set explicitly by the
+  // task creator — silent fallbacks made it possible to dispatch tasks with
+  // a budget so small that workers earned nothing after stake, masking the
+  // failure mode as "task completed but no rewards".
+  budget: z.string().refine(s => {
+    const n = Number(s)
+    return Number.isFinite(n) && n > 0
+  }, 'budget must be a positive USDC amount'),
   // Client-supplied nonce so otherwise-identical specs produce distinct
   // taskIds. Required because storage hashes are content-addressed; without
   // it, resubmitting the same prompt collides with the previous task.

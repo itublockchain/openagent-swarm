@@ -17,8 +17,12 @@ services:
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
       - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
       - L2_SLASHING_VAULT_ADDRESS=${L2_SLASHING_VAULT_ADDRESS}
+      - L2_AGENT_REGISTRY_ADDRESS=${L2_AGENT_REGISTRY_ADDRESS}
+      - MASTER_KEY=${MASTER_KEY}
+      - AGENT_SECRETS_PATH=/data/agent-secrets.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - agents-data:/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
@@ -43,9 +47,10 @@ services:
       dockerfile: backend/agent/Dockerfile
     env_file: .env
     environment:
-      - AGENT_ID=${AGENT_ID:-agent-1}
+      - AGENT_ID=${AGENT_ID:-swarm-genesis}
       - USE_MOCK=${USE_MOCK:-false}
       - COMPUTE_PROVIDER=0g
+      - COMPUTE_MODE=${COMPUTE_MODE:-central}
       - ZG_COMPUTE_RPC_URL=${ZG_COMPUTE_RPC_URL:-https://evmrpc-testnet.0g.ai}
       - ZG_COMPUTE_MODEL=${ZG_COMPUTE_MODEL:-qwen/qwen-2.5-7b-instruct}
       - AGENT_PRIVATE_KEY=${AGENT_PRIVATE_KEY}
@@ -59,6 +64,11 @@ services:
       - L2_ESCROW_ADDRESS=${L2_ESCROW_ADDRESS}
       - L2_DAG_REGISTRY_ADDRESS=${L2_DAG_REGISTRY_ADDRESS}
       - L2_SLASHING_VAULT_ADDRESS=${L2_SLASHING_VAULT_ADDRESS}
+      # Agent tooling — TAVILY_API_KEY / BRAVE_API_KEY enable real web search;
+      # API_INTERNAL_URL is where the CodeExecutor tool POSTs sandbox requests.
+      - TAVILY_API_KEY=${TAVILY_API_KEY}
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+      - API_INTERNAL_URL=${API_INTERNAL_URL:-http://api:3001}
     restart: on-failure
     depends_on:
       api:
@@ -101,6 +111,8 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:3001}
     ports:
       - "3000:3000"
     environment:
@@ -117,3 +129,11 @@ services:
 networks:
   swarm_default:
     name: swarm_default
+
+volumes:
+  # Persists API-side agent secrets (encrypted private keys, container ids)
+  # across `docker compose down/up` so the pool can be reconstructed on the
+  # next boot. Loss of this volume = loss of agent control (on-chain entries
+  # would be marked ERROR by the orphan sweep on next start).
+  agents-data:
+    name: swarm_agents_data

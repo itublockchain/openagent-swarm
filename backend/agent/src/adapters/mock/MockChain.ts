@@ -64,11 +64,6 @@ export class MockChain implements IChainPort {
     console.log(`[MockChain] Output submitted for node ${nodeId}: ${outputHash}`);
   }
 
-  async markValidated(nodeId: string): Promise<void> {
-    MockChain.validated.add(nodeId);
-    console.log(`[MockChain] Node ${nodeId} marked validated`);
-  }
-
   async markValidatedBatch(nodeIds: string[]): Promise<void> {
     for (const nid of nodeIds) MockChain.validated.add(nid);
     console.log(`[MockChain] ${nodeIds.length} nodes marked validated (batch)`);
@@ -104,8 +99,16 @@ export class MockChain implements IChainPort {
     console.warn(`[MockChain] Challenge initiated for node: ${nodeId} (challenger node: ${challengerNodeId ?? 'planner'})`);
   }
 
-  async settle(taskId: string, winners: string[]): Promise<void> {
-    console.log(`[MockChain] Settlement for task ${taskId}. Winners:`, winners);
+  async commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void> {
+    console.log(`[MockChain] commitVote on ${nodeId} by ${agentId}: hash=${commitHash.slice(0, 18)}...`);
+  }
+
+  async revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void> {
+    console.log(`[MockChain] revealVote on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} (salt=${salt.slice(0, 10)}...)`);
+  }
+
+  async finalizeChallenge(nodeId: string): Promise<void> {
+    console.log(`[MockChain] finalize for ${nodeId} (no-op in mock)`);
   }
 
   async resetSubtask(nodeId: string): Promise<void> {
@@ -113,6 +116,11 @@ export class MockChain implements IChainPort {
     MockChain.outputs.delete(nodeId);
     MockChain.validated.delete(nodeId);
     console.log(`[MockChain] subtask reset: ${nodeId}`);
+  }
+
+  async getStakeCapacity(_stakeAmount: string): Promise<number> {
+    // Mock has no escrow accounting; agents in tests have unbounded stake.
+    return Number.MAX_SAFE_INTEGER;
   }
 }
 

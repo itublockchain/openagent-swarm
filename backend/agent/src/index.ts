@@ -1,15 +1,23 @@
 import * as dotenv from 'dotenv';
 import { ethers } from 'ethers';
 import { SwarmAgent, AgentDeps } from './SwarmAgent';
-import { MockStorage } from './adapters/mock/MockStorage';
-import { MockCompute } from './adapters/mock/MockCompute';
-import { MockChain } from './adapters/mock/MockChain';
-import { EventBus } from './core/EventBus';
-import { EventType } from '../../../shared/types';
 import { createAdapters } from './adapters';
 
 // Load environment variables from root
 dotenv.config({ path: '../../.env' });
+
+// Keep the agent alive through transient RPC failures (rate-limit, coalesce
+// errors, broker socket hiccups). Without these handlers a single -32005
+// from 0G testnet's shared 50 RPS cap kills the process and Docker enters a
+// restart loop that never makes forward progress.
+process.on('unhandledRejection', (reason: any) => {
+  const msg = String(reason?.message ?? reason)
+  console.error('[CRITICAL] Unhandled rejection (suppressed):', msg)
+})
+process.on('uncaughtException', (err: any) => {
+  const msg = String(err?.message ?? err)
+  console.error('[CRITICAL] Uncaught exception (suppressed):', msg)
+})
 
 const agentId = process.env.AGENT_ID || 'swarm-agent-001';
 const stakeAmount = process.env.STAKE_AMOUNT || '100';
@@ -27,6 +35,7 @@ async function bootstrap() {
       agentId,
       stakeAmount,
       agentAddress,
+      systemPrompt: process.env.AGENT_SYSTEM_PROMPT,
     }
   };
 

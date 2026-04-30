@@ -117,3 +117,37 @@
     @apply font-sans;
   }
 }
+
+/* React Flow controls — default styles assume a light bg. Override so the
+   zoom +/- and fit-view buttons stay legible against the dark canvas.
+   Unlayered to win cascade against the @xyflow/react/dist/style.css import. */
+.dark .react-flow__controls {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.5) !important;
+}
+.dark .react-flow__controls-button {
+  background: var(--card) !important;
+  border-bottom: 1px solid var(--border) !important;
+  color: var(--foreground) !important;
+}
+.dark .react-flow__controls-button:hover {
+  background: var(--muted) !important;
+}
+.dark .react-flow__controls-button svg,
+.dark .react-flow__controls-button svg path,
+.dark .react-flow__controls-button svg * {
+  fill: var(--foreground) !important;
+}
+
+/* Bottom-right "React Flow" attribution badge — same theme treatment. */
+.dark .react-flow__attribution {
+  background: var(--card) !important;
+  color: var(--muted-foreground) !important;
+}
+.dark .react-flow__attribution a {
+  color: var(--muted-foreground) !important;
+}
+.dark .react-flow__attribution a:hover {
+  color: var(--foreground) !important;
+}

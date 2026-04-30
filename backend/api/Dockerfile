@@ -24,6 +24,7 @@ RUN pnpm install --no-frozen-lockfile --shamefully-hoist
 
 COPY . .
 
+RUN pnpm --filter @swarm/contracts exec hardhat compile
 RUN node_modules/.bin/tsc -p backend/shared-infra/tsconfig.json
 RUN node_modules/.bin/tsc -p backend/api/tsconfig.json
 

@@ -2,18 +2,19 @@
 
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps, Node } from '@xyflow/react';
-import { Clock, Play, ShieldAlert, CheckCircle2, AlertOctagon, BrainCircuit } from 'lucide-react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
+import { Clock, Play, ShieldAlert, CheckCircle2, AlertOctagon, BrainCircuit, Gavel, UserMinus } from 'lucide-react';
+import { cn, shortHash } from '@/lib/utils';
 
-export function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
+export { cn };
 
 export type NodeData = {
   label: string;
   agent?: string;
   status: 'pending' | 'claimed' | 'validating' | 'slashed' | 'completed' | 'planner' | 'keeper';
+  /** Number of agents that self-selected out of this node (skill mismatch). */
+  passCount?: number;
+  /** Live jury tally while a CHALLENGE is open on this node. */
+  jury?: { guilty: number; innocent: number; voters: number };
 };
 
 export type TaskNodeType = Node<NodeData, 'task'>;
@@ -52,11 +53,36 @@ const TaskNode = ({ data, isConnectable }: NodeProps<TaskNodeType>) => {
       </div>
       
       {data.agent && (
-        <div className="text-[10px] font-mono opacity-80 mt-1 bg-background/50 px-2 py-1 rounded-md w-fit">
-          Agent: {data.agent}
+        <div
+          className="text-[10px] font-mono opacity-80 mt-1 bg-background/50 px-2 py-1 rounded-md max-w-[180px] truncate"
+          title={data.agent}
+        >
+          Agent: {data.agent.length > 16 ? shortHash(data.agent, 6, 4) : data.agent}
         </div>
       )}
-      
+
+      {(data.passCount ?? 0) > 0 && (
+        <div
+          className="text-[10px] font-mono opacity-90 bg-background/40 px-2 py-1 rounded-md w-fit flex items-center gap-1.5"
+          title="Agents that self-selected out of this node (skill mismatch)"
+        >
+          <UserMinus className="w-3 h-3" />
+          <span>{data.passCount} passed</span>
+        </div>
+      )}
+
+      {data.jury && data.jury.voters > 0 && (
+        <div
+          className="text-[10px] font-mono bg-background/40 px-2 py-1 rounded-md w-fit flex items-center gap-1.5 border border-current/20"
+          title="Live LLM-Judge jury vote tally"
+        >
+          <Gavel className="w-3 h-3" />
+          <span className="text-red-500">{data.jury.guilty}G</span>
+          <span className="opacity-50">·</span>
+          <span className="text-green-500">{data.jury.innocent}I</span>
+        </div>
+      )}
+
       <Handle type="source" position={Position.Bottom} isConnectable={isConnectable} className="opacity-0" />
     </div>
   );
