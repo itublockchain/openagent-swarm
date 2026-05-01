@@ -3,6 +3,8 @@ import { z } from 'zod'
 import type { ColonyStore } from './colonyStore'
 import type { TaskIndex } from './tasksIndex'
 import type { AgentManager } from '../AgentRunner'
+import type { INetworkPort } from '../../../../shared/ports'
+import { EventType } from '../../../../shared/types'
 
 /**
  * Auth resolver — returns the authenticated EOA or null. The same route
@@ -29,6 +31,11 @@ interface RegisterOpts {
   /** Resolves the calling user's EOA from request auth. Returning null is
    *  the resolver's contract for "rejected — already wrote 401". */
   resolveUser: AuthResolver
+  /** AXL gossip bus. addMember/removeMember broadcast a
+   *  COLONY_MEMBERSHIP_CHANGED event so SwarmAgent can refresh its local
+   *  myColonies set without waiting for the 30s poll — closes the demo
+   *  race where a freshly-added member abstained from a colony task. */
+  network: INetworkPort
 }
 
 const CreateColonyBody = z.object({
@@ -44,7 +51,23 @@ const PatchColonyBody = z.object({
 })
 
 export async function registerColoniesRoutes(app: FastifyInstance, opts: RegisterOpts) {
-  const { prefix, store, manager, taskIndex, resolveUser } = opts
+  const { prefix, store, manager, taskIndex, resolveUser, network } = opts
+
+  const broadcastMembershipChange = (
+    colonyId: string,
+    agentId: string,
+    change: 'added' | 'removed',
+  ) => {
+    network.emit({
+      type: EventType.COLONY_MEMBERSHIP_CHANGED,
+      payload: { colonyId, agentId, change },
+      timestamp: Date.now(),
+      agentId: 'api-server',
+    }).catch(err => {
+      // Non-fatal: agent will pick up the change on its next 30s poll.
+      console.warn('[colonies] membership broadcast failed:', err)
+    })
+  }
 
   // ─── List my colonies ─────────────────────────────────────────────
   app.get(`${prefix}`, async (req, reply) => {
@@ -199,6 +222,7 @@ export async function registerColoniesRoutes(app: FastifyInstance, opts: Registe
       return
     }
     const added = store.addMember(check.colony.id, parse.data.agent_id)
+    if (added) broadcastMembershipChange(check.colony.id, parse.data.agent_id, 'added')
     reply.send({ ok: true, added })
   })
 
@@ -215,6 +239,7 @@ export async function registerColoniesRoutes(app: FastifyInstance, opts: Registe
         return
       }
       const removed = store.removeMember(check.colony.id, req.params.agentId)
+      if (removed) broadcastMembershipChange(check.colony.id, req.params.agentId, 'removed')
       reply.send({ ok: true, removed })
     },
   )

@@ -57,6 +57,11 @@ export interface DAGState {
   taskId: string
   plannerId?: string
   finalResult?: string
+  /** True after DAG_VALIDATING fires (last subtask submitted on-chain,
+   *  keeper still has to judge + markValidatedBatch + settle). Cleared
+   *  when DAG_COMPLETED arrives. UI uses this to show "waiting keeper
+   *  approval" instead of "done" during the in-between window. */
+  validating?: boolean
   boxes: SubtaskBox[]
 }
 
@@ -95,6 +100,14 @@ export function useSporeEvents() {
                 agentId: n.agentId,
                 outputHash: n.outputHash,
                 passes: [],
+                // Reasoning payload from the API's persisted SUBTASK_DONE row.
+                // Lets the per-node detail panel repaint after refresh
+                // instead of waiting for a (never-coming) live event.
+                result: n.result,
+                toolsUsed: n.toolsUsed,
+                transcript: n.transcript,
+                iterations: n.iterations,
+                stopReason: n.stopReason,
               }))
             })
           }
@@ -148,11 +161,19 @@ export function useSporeEvents() {
       }
     }
 
+    // Last subtask submitted on-chain but keeper hasn't validated/settled
+    // yet. Flip the dag into "validating" so the UI shows "waiting keeper
+    // approval" until DAG_COMPLETED arrives.
+    const handleDAGValidating = (event: WSEvent) => {
+      const { taskId } = event.payload as any
+      if (!matchesActiveTask(taskId)) return
+      setDag(prev => prev ? { ...prev, validating: true } : null)
+    }
+
     const handleDAGCompleted = (event: WSEvent) => {
-      const { taskId, result, settled } = event.payload as any
-      if (settled && matchesActiveTask(taskId)) {
-        setDag(prev => prev ? { ...prev, finalResult: result } : null)
-      }
+      const { taskId, result } = event.payload as any
+      if (!matchesActiveTask(taskId)) return
+      setDag(prev => prev ? { ...prev, validating: false, finalResult: result } : null)
     }
 
     const handleSubtaskClaimed = (event: WSEvent) => {
@@ -264,6 +285,7 @@ export function useSporeEvents() {
 
     wsClient.on('*', handleAll)
     wsClient.on(EventType.DAG_READY, handleDAGReady)
+    wsClient.on(EventType.DAG_VALIDATING, handleDAGValidating)
     wsClient.on(EventType.DAG_COMPLETED, handleDAGCompleted)
     wsClient.on(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
     wsClient.on(EventType.SUBTASK_DONE, handleSubtaskDone)
@@ -278,6 +300,7 @@ export function useSporeEvents() {
     return () => {
       wsClient.off('*', handleAll)
       wsClient.off(EventType.DAG_READY, handleDAGReady)
+      wsClient.off(EventType.DAG_VALIDATING, handleDAGValidating)
       wsClient.off(EventType.DAG_COMPLETED, handleDAGCompleted)
       wsClient.off(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
       wsClient.off(EventType.SUBTASK_DONE, handleSubtaskDone)

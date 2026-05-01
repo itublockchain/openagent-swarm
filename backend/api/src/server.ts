@@ -651,12 +651,25 @@ export default async function createServer(deps: ServerDeps) {
     }
 
     // Primary: SQLite-backed DAG snapshot. Survives API restarts.
+    // Surface the full reasoning payload (result + transcript + counters)
+    // so a deep-link reload repaints the explorer's per-node detail panel
+    // without a separate fetch. JSON columns are parsed defensively —
+    // bad rows fall back to undefined rather than 500-ing the whole task.
+    const safeJsonParse = <T>(raw: string | null): T | undefined => {
+      if (!raw) return undefined
+      try { return JSON.parse(raw) as T } catch { return undefined }
+    }
     let dagNodes = taskState.getDag(taskId).map(n => ({
       id: n.nodeId,
       subtask: n.subtask ?? '',
       status: n.status,
       agentId: n.agentId ?? undefined,
       outputHash: n.outputHash ?? undefined,
+      result: n.result ?? undefined,
+      transcript: safeJsonParse<unknown[]>(n.transcriptJson),
+      toolsUsed: safeJsonParse<string[]>(n.toolsUsedJson),
+      iterations: n.iterations ?? undefined,
+      stopReason: n.stopReason ?? undefined,
     }))
 
     // Chain-fallback rebuild. If the DB has no rows (typical for tasks
@@ -679,12 +692,20 @@ export default async function createServer(deps: ServerDeps) {
             })
           }
           if (rebuilt.plannerAgentId) plannerByTask.set(taskId, rebuilt.plannerAgentId)
+          // Chain rebuild can't recover the reasoning payload (transcript /
+          // tools / counters live only in 0G Storage at outputHash); leave
+          // those undefined so the primary-path shape still matches.
           dagNodes = rebuilt.nodes.map(n => ({
             id: n.id,
             subtask: n.subtask,
             status: n.status,
             agentId: n.agentId,
             outputHash: n.outputHash,
+            result: undefined,
+            transcript: undefined,
+            toolsUsed: undefined,
+            iterations: undefined,
+            stopReason: undefined,
           }))
         }
       } catch (err) {
@@ -978,6 +999,7 @@ export default async function createServer(deps: ServerDeps) {
     store: colonyStore,
     manager: deps.manager,
     taskIndex,
+    network: deps.network,
     resolveUser: async (req, reply) => {
       const user = requireAuth(req, reply)
       return user ? { address: user.address } : null
@@ -993,6 +1015,7 @@ export default async function createServer(deps: ServerDeps) {
     store: colonyStore,
     manager: deps.manager,
     taskIndex,
+    network: deps.network,
     resolveUser: async (req, reply) => {
       const header = req.headers.authorization
       if (!header || !header.startsWith('Bearer ')) {

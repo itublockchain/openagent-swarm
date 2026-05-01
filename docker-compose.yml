@@ -13,7 +13,13 @@ services:
     # win over Dockerfile ENV at runtime.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - agents-data:/data
+      # Host bind-mount instead of a named volume so `docker compose down -v`
+      # and `docker volume prune` can't wipe the encrypted agent secrets +
+      # api.db. Files live in ./data on the host, survive any compose teardown,
+      # are visible in the file explorer, and can be copied across machines.
+      # If you need to migrate from the legacy `swarm_agents_data` volume:
+      #   docker run --rm -v swarm_agents_data:/src -v "$PWD/data:/dst" alpine cp -a /src/. /dst/
+      - ./data:/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
