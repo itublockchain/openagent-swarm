@@ -130,7 +130,26 @@ Rules:
           return { kind: 'tool', tool: obj.tool, args: obj.args && typeof obj.args === 'object' ? obj.args : {} }
         }
         if (obj?.action === 'final' && typeof obj.answer === 'string') {
-          return { kind: 'final', text: obj.answer }
+          // Defensive unwrap: smaller models sometimes nest the entire
+          // {"action":"final","answer":"..."} envelope INSIDE the answer
+          // field, leaving us with double-JSON-encoded text. Peel up to
+          // 3 levels of self-similar wrapping until we hit plain text.
+          let answer = obj.answer
+          for (let depth = 0; depth < 3; depth++) {
+            const innerTrim = answer.trim()
+            if (!innerTrim.startsWith('{') || !innerTrim.endsWith('}')) break
+            try {
+              const inner = JSON.parse(innerTrim)
+              if (inner?.action === 'final' && typeof inner.answer === 'string') {
+                answer = inner.answer
+                continue
+              }
+            } catch {
+              // not JSON — stop unwrapping
+            }
+            break
+          }
+          return { kind: 'final', text: answer }
         }
       } catch {
         // try next candidate

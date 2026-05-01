@@ -19,8 +19,13 @@ export enum EventType {
   /** Self-selection: agent's assess() returned NO for this node. UI shows a
    *  small "passed" badge so viewers see the skill filter at work. */
   AGENT_PASSED      = 'AGENT_PASSED',
-  /** Cast jury vote on a challenge (voteOnChallenge tx succeeded). UI
-   *  surfaces a vote counter on the disputed node. */
+  /** Juror submitted a sealed commit (commit-reveal phase 1). UI shows a
+   *  "committed" counter on the disputed node — vote content stays hidden
+   *  until reveal. */
+  JUROR_COMMITTED   = 'JUROR_COMMITTED',
+  /** Juror revealed their vote (commit-reveal phase 2). Existing UI listener
+   *  treats this the same as the old single-phase vote: bumps the
+   *  guilty/innocent counter on the disputed node. */
   JUROR_VOTED       = 'JUROR_VOTED',
   CHALLENGE         = 'CHALLENGE',
   SLASH_EXECUTED    = 'SLASH_EXECUTED',
@@ -41,7 +46,23 @@ export interface DAGNode {
   claimedBy: string | null
   /** subtask bittiğinde oluşan output hash */
   outputHash?: string
+  /** Set when this node's output has been peer-validated by a downstream
+   *  worker (its judge() returned true and it consumed the output as
+   *  context). Lets the next worker skip a redundant judge() call —
+   *  ~5-10s saving per node. The planner's batch markValidated at DAG
+   *  end is still the authoritative finality. */
+  peerValidated?: boolean
 }
+
+/**
+ * One step in an agent's transcript — either a tool round-trip or the
+ * final answer. Mirrors backend/agent/src/agentFormat.ts so the frontend
+ * can render the trace from the SUBTASK_DONE broadcast without depending
+ * on the agent package.
+ */
+export type TranscriptStep =
+  | { kind: 'tool_call'; tool: string; args: Record<string, unknown>; output: string; ok: boolean }
+  | { kind: 'final'; text: string }
 
 export interface AXLEvent<T = unknown> {
   type: EventType
@@ -63,4 +84,9 @@ export interface AgentConfig {
    *  by SwarmAgent.assess() to skip subtasks outside the agent's skill
    *  before racing to claim. Empty / undefined → claim everything. */
   systemPrompt?: string
+  /** EOA of the user that deployed this agent. When set, the surplus
+   *  watchdog periodically forwards USDC above stakeAmount back to this
+   *  address (rewards from completed tasks flow back to the owner without
+   *  manual withdraw). Empty → sweep disabled. */
+  ownerAddress?: string
 }

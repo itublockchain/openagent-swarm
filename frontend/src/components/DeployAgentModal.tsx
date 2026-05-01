@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt, readContract } from '@wagmi/core'
@@ -12,7 +12,10 @@ import { cn } from '@/lib/utils'
 interface Props {
   isOpen: boolean
   onClose: () => void
-  onSuccess: (containerId: string) => void
+  /** Fired after the agent is registered + active. Receives both the
+   *  containerId (for log lookup) and the agentId (for downstream owner-
+   *  scoped flows like "auto-add to colony"). */
+  onSuccess: (info: { containerId: string; agentId: string }) => void
 }
 
 // 0G Compute testnet currently exposes only a small set of qwen models. We
@@ -27,18 +30,15 @@ type Step =
   | 'switching-chain'
   | 'preparing'
   | 'transferring'
+  // Backend returned containerId. Container is up but the on-chain
+  // registry tx (register + setStatus(RUNNING)) may still be pending.
   | 'deploying'
-  | 'waiting-active'
+  // Polling /agent/pool until the new agent surfaces with status='running'.
+  // Keeps the deploy button disabled so a user can't fire a second deploy
+  // while the first one is still wiring itself into the swarm.
+  | 'awaiting-active'
   | 'done'
   | 'error'
-
-// /agent/pool runs on a 5s server cadence; poll a bit faster client-side so
-// the modal flips to done shortly after the container reports 'running'.
-const POOL_POLL_MS = 3_000
-// 90s ceiling. After this we surface a soft error and let the user check
-// the pool manually — the agent often comes up later, so we do NOT mark
-// it failed.
-const POOL_POLL_TIMEOUT_MS = 90_000
 
 export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const [stage, setStage] = useState(1)
@@ -61,6 +61,21 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       pollAbortRef.current?.abort()
     }
   }, [])
+  // Reset every form field whenever the modal transitions from closed to open.
+  // Without this, values entered in a previous deploy session persist (the
+  // component keeps state because the parent only flips isOpen, never unmounts)
+  // and the user lands on a pre-filled form they didn't author.
+  useEffect(() => {
+    if (isOpen) {
+      setStage(1)
+      setAgentName('')
+      setSelectedModel(AVAILABLE_MODELS[0].value)
+      setSystemPrompt('')
+      setStakeAmount('10')
+      setStep('idle')
+      setErrorMsg('')
+    }
+  }, [isOpen])
 
   if (!isOpen) return null
 
@@ -214,14 +229,50 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       }
       const { containerId } = await deployRes.json()
 
-      // 5. Container is up; wait until /agent/pool reports running before
-      // we let the user click Deploy again — otherwise the next click can
-      // race a half-booted agent into the mesh.
-      setStep('waiting-active')
-      await waitForAgentActive(prep.agentId)
+      // 5. Wait for the agent to actually surface as running in the pool.
+      // The /agent/deploy response means the container booted, but the
+      // background registerOnChainAsync (register + setStatus RUNNING) can
+      // still be in flight on slow RPCs. Polling here keeps the deploy
+      // button disabled until the agent is genuinely active in the swarm,
+      // so users can't double-fire a deploy while wiring is mid-flight.
+      setStep('awaiting-active')
+      const POLL_INTERVAL_MS = 4_000
+      const ACTIVATION_TIMEOUT_MS = 3 * 60_000
+      const startedAt = Date.now()
+      let activated = false
+      while (Date.now() - startedAt < ACTIVATION_TIMEOUT_MS) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+        try {
+          const poolRes = await apiRequest('/agent/pool')
+          if (!poolRes.ok) continue
+          const pool = (await poolRes.json()) as Array<{ agentId: string; containerId?: string; status: string }>
+          const ours = pool.find(p => p.agentId === prep.agentId || (p.containerId && p.containerId === containerId))
+          if (!ours) continue
+          if (ours.status === 'running') {
+            activated = true
+            break
+          }
+          if (ours.status === 'error' || ours.status === 'stopped') {
+            // Hard fail — agent died during boot. Don't keep polling.
+            throw new Error(`Agent failed to come online (pool status: ${ours.status})`)
+          }
+          // status === 'pending' → keep waiting.
+        } catch (err) {
+          // Re-throw the explicit "agent failed" sentinel so the outer
+          // catch surfaces it; swallow anything else as a transient
+          // poll/network blip and try again next tick.
+          const msg = err instanceof Error ? err.message : String(err)
+          if (msg.startsWith('Agent failed')) throw err
+        }
+      }
+      if (!activated) {
+        throw new Error(
+          'Agent took too long to activate (>3 min). On-chain registration may still complete; check the pool view.',
+        )
+      }
 
       setStep('done')
-      onSuccess(containerId)
+      onSuccess({ containerId, agentId: prep.agentId })
       setTimeout(closeAndReset, 800)
     } catch (err: any) {
       if (err?.message === 'aborted') return // user closed the modal — no-op
@@ -236,14 +287,14 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
     step === 'preparing' ||
     step === 'transferring' ||
     step === 'deploying' ||
-    step === 'waiting-active'
+    step === 'awaiting-active'
   const stepLabel: Record<Step, string> = {
     idle: '',
     'switching-chain': 'Switch to 0G Galileo (chainId 16602) in your wallet…',
     preparing: 'Generating agent wallet…',
     transferring: 'Sign the USDC transfer in your wallet (check MetaMask popup)…',
     deploying: 'Spawning Docker container…',
-    'waiting-active': 'Waiting for swarm activation… (agent joining mesh)',
+    'awaiting-active': 'Registering on-chain — waiting for agent to go live in the swarm…',
     done: '✓ Agent live in pool',
     error: errorMsg || 'Error',
   }
@@ -371,7 +422,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
                 className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Rocket className={cn('w-4 h-4', isBusy && 'animate-pulse')} />
-                {isBusy ? 'Deploying…' : 'Deploy Agent'}
+                {step === 'awaiting-active' ? 'Activating…' : isBusy ? 'Deploying…' : 'Deploy Agent'}
               </button>
 
               {step !== 'idle' && (

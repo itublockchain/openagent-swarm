@@ -30,8 +30,10 @@ services:
       timeout: 5s
       retries: 3
     depends_on:
-      - docker-proxy
-      - axl-seed
+      docker-proxy:
+        condition: service_started
+      axl-seed:
+        condition: service_healthy
     networks:
       swarm_default:
         aliases:
@@ -74,7 +76,7 @@ services:
       api:
         condition: service_healthy
       axl-seed:
-        condition: service_started
+        condition: service_healthy
     networks:
       swarm_default:
         aliases:
@@ -87,6 +89,16 @@ services:
     ports:
       - "7100:7000"
       - "9002:9002"
+    # Bridge readiness probe. Without this, api/agent boot before AXL's
+    # HTTP bridge accepts requests and AxlNetwork.connect() throws on the
+    # first /topology fetch — leaving processes inert until manual restart.
+    # /topology is the cheapest "alive" endpoint the bridge exposes.
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O- http://127.0.0.1:9002/topology > /dev/null 2>&1 || exit 1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
     networks:
       swarm_default:
         aliases:

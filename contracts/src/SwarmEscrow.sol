@@ -26,6 +26,13 @@ contract SwarmEscrow is ReentrancyGuard {
     /// permanently locked to whatever was set during deployment wiring.
     bool public initialized;
 
+    /// SwarmTreasury contract authorized to call `createTaskFor` on behalf
+    /// of users with pre-funded balances. Set once via `setTreasury` and
+    /// permanently locked. Optional — leaving unset disables the SDK
+    /// flow but does not affect direct wallet-signed `createTask`.
+    address public treasury;
+    bool public treasuryInitialized;
+
     mapping(bytes32 => Task) public tasks;
     mapping(bytes32 => mapping(address => uint256)) public stakes;
 
@@ -40,6 +47,7 @@ contract SwarmEscrow is ReentrancyGuard {
     event TaskCreated(bytes32 indexed taskId, address indexed owner, uint256 budget);
     event SubtaskStaked(bytes32 indexed taskId, bytes32 indexed nodeId, address indexed agent, uint256 amount);
     event SubtaskStakeReleased(bytes32 indexed taskId, bytes32 indexed nodeId, address indexed agent, uint256 amount);
+    event TreasurySet(address indexed treasury);
 
     modifier onlyRegistry() {
         require(registry != address(0) && msg.sender == registry, "Caller is not the registry");
@@ -90,6 +98,43 @@ contract SwarmEscrow is ReentrancyGuard {
         });
 
         emit TaskCreated(taskId, msg.sender, budget);
+    }
+
+    /// One-shot wiring for the SDK Treasury. Once set, `createTaskFor` only
+    /// accepts calls from `treasury`. Permanent — same posture as
+    /// `setAuthorities` to close the "anyone can hijack the treasury hook"
+    /// surface.
+    function setTreasury(address _treasury) external {
+        require(!treasuryInitialized, "Treasury already set");
+        require(_treasury != address(0), "Zero address");
+        treasury = _treasury;
+        treasuryInitialized = true;
+        emit TreasurySet(_treasury);
+    }
+
+    /// Treasury-only entry point. Pulls `budget` USDC from the Treasury
+    /// (which must have approved this contract) and credits the task to
+    /// `taskOwner` so existing settlement / refund logic sees the SDK
+    /// caller as the on-chain owner — not the Treasury contract itself.
+    function createTaskFor(bytes32 taskId, uint256 budget, address taskOwner)
+        external
+        nonReentrant
+    {
+        require(treasury != address(0) && msg.sender == treasury, "Only treasury");
+        require(taskOwner != address(0), "Zero owner");
+        require(tasks[taskId].owner == address(0), "Task already exists");
+        require(budget > 0, "Budget must be greater than zero");
+
+        usdc.safeTransferFrom(msg.sender, address(this), budget);
+
+        tasks[taskId] = Task({
+            owner: taskOwner,
+            budget: budget,
+            stakedTotal: 0,
+            finalized: false
+        });
+
+        emit TaskCreated(taskId, taskOwner, budget);
     }
 
     function stake(bytes32 taskId, uint256 amount) external nonReentrant notFinalized(taskId) {

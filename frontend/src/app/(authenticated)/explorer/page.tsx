@@ -17,6 +17,7 @@ import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
+import { ENV } from '../../../../lib/env';
 import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi';
 import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts';
 import { cn } from '@/lib/utils';
@@ -35,6 +36,12 @@ function DashboardContent() {
   const [inputText, setInputText] = useState("");
   const [model, setModel] = useState<ModelId>('gpt-4o');
   const [budget, setBudget] = useState<number>(10);
+  // Colony scope for the next dispatch. null = public, any agent claims;
+  // a colony id restricts to that colony's members. Populated by the
+  // /v1/me/colonies fetch below; if the user has no colonies the dropdown
+  // hides and this stays null forever.
+  const [selectedColony, setSelectedColony] = useState<string | null>(null);
+  const [colonies, setColonies] = useState<Array<{ id: string; name: string }>>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   const [submitStep, setSubmitStep] = useState<SubmitStep>('idle');
@@ -138,6 +145,55 @@ function DashboardContent() {
   const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
 
+  // Fetch the user's own colonies + all public colonies so the explorer
+  // dropdown surfaces both: own (any visibility) and public (others'
+  // colonies the user can dispatch into). Backend rejects private + non-
+  // owner submissions with 403, so the visible options here mirror what
+  // the user can actually use. Refresh on 30s interval.
+  useEffect(() => {
+    const load = async () => {
+      try {
+        // Two parallel reads. /v1/me/colonies needs JWT (silently fails
+        // without a wallet); /v1/colonies/public is open. Merge dedupe
+        // by id so own-public colonies don't appear twice.
+        const tasks: Array<Promise<Array<{ id: string; name: string }>>> = []
+        if (walletAddress) {
+          tasks.push(
+            apiRequest('/v1/me/colonies')
+              .then(r => r.ok ? r.json() : { colonies: [] })
+              .then((d: { colonies: Array<{ id: string; name: string }> }) =>
+                d.colonies.map(c => ({ id: c.id, name: c.name })),
+              )
+              .catch(() => []),
+          )
+        }
+        tasks.push(
+          fetch(`${ENV.API_URL}/v1/colonies/public`)
+            .then(r => r.ok ? r.json() : { colonies: [] })
+            .then((d: { colonies: Array<{ id: string; name: string }> }) =>
+              d.colonies.map(c => ({ id: c.id, name: `${c.name} (public)` })),
+            )
+            .catch(() => []),
+        )
+        const results = await Promise.all(tasks)
+        const merged = new Map<string, { id: string; name: string }>()
+        for (const list of results) {
+          for (const c of list) {
+            // Own listing wins over public if a colony appears in both
+            // (i.e., user-owned public). Iteration order is own → public.
+            if (!merged.has(c.id)) merged.set(c.id, c)
+          }
+        }
+        setColonies(Array.from(merged.values()))
+      } catch (err) {
+        console.warn('[explorer] colonies fetch failed:', err)
+      }
+    }
+    load()
+    const t = setInterval(load, 30_000)
+    return () => clearInterval(t)
+  }, [walletAddress])
+
   // Sync DAG state from hook to React Flow
   useEffect(() => {
     if (!dag) return;
@@ -177,8 +233,21 @@ function DashboardContent() {
           agent: box.agentId,
           passCount: box.passes?.length ?? 0,
           jury: box.jury
-            ? { guilty: box.jury.guilty, innocent: box.jury.innocent, voters: box.jury.voters.length }
+            ? {
+                guilty: box.jury.guilty,
+                innocent: box.jury.innocent,
+                voters: box.jury.voters.length,
+                committed: box.jury.committed.length,
+              }
             : undefined,
+          // Reasoning + output, captured by useSwarmEvents from SUBTASK_DONE.
+          // Drives the per-node detail panel that opens beside the node.
+          result: box.result,
+          toolsUsed: box.toolsUsed,
+          transcript: box.transcript,
+          iterations: box.iterations,
+          stopReason: box.stopReason,
+          outputHash: box.outputHash,
         },
       });
 
@@ -229,7 +298,7 @@ function DashboardContent() {
       // 1. Prepare
       const prepRes = await apiRequest('/task/prepare', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce }),
+        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce, colonyId: selectedColony ?? undefined }),
       });
       if (!prepRes.ok) throw new Error(`prepare failed: ${prepRes.status}`);
       const prep = await prepRes.json() as {
@@ -323,7 +392,7 @@ function DashboardContent() {
       setSubmitStep('submitting');
       const submitRes = await apiRequest('/task', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce }),
+        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce, colonyId: selectedColony ?? undefined }),
       });
       if (!submitRes.ok) {
         const detail = await submitRes.json().catch(() => ({}));
@@ -446,7 +515,26 @@ function DashboardContent() {
               <Background color="#888" gap={20} />
               <Controls className="fill-foreground" />
             </ReactFlow>
-            {nodes.length === 0 && <CanvasEmptyState />}
+            {nodes.length === 0 && (
+              <CanvasEmptyState
+                // Keep the spinner alive through 'done' too — the API call
+                // returning 'done' just means TASK_SUBMITTED was broadcast;
+                // the planner still has to build the DAG (~5-30s) before
+                // nodes appear. The outer `nodes.length === 0` guard already
+                // hides the whole pill the moment DAG_READY lands and the
+                // first node renders, so dropping 'done' from this condition
+                // bridges the visual gap without overstaying.
+                isSubmitting={submitStep !== 'idle' && submitStep !== 'error'}
+                label={
+                  submitStep === 'preparing' ? 'Preparing intent…' :
+                  submitStep === 'approving' ? 'Approving USDC…' :
+                  submitStep === 'creating' ? 'Creating task on-chain…' :
+                  submitStep === 'submitting' ? 'Dispatching to swarm…' :
+                  submitStep === 'done' ? 'Awaiting DAG from planner…' :
+                  undefined
+                }
+              />
+            )}
 
             {/* Status legend */}
             {nodes.length > 0 && (
@@ -605,9 +693,18 @@ function DashboardContent() {
                     </button>
                   )}
                 </div>
-              </div>
-            );
-          })()}
+              )}
+            </div>
+            <PromptConfigRow
+              model={model}
+              budget={budget}
+              colonyId={selectedColony}
+              colonies={colonies}
+              onModelChange={setModel}
+              onBudgetChange={setBudget}
+              onColonyChange={setSelectedColony}
+            />
+          </div>
         </div>
       </div>
 

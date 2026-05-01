@@ -5,6 +5,14 @@ export interface IStoragePort {
   append(data: unknown): Promise<string>
   /** hash ile okur */
   fetch(hash: string): Promise<unknown>
+  /**
+   * Optimization for hot paths: compute the deterministic rootHash
+   * locally and return it immediately, while the actual upload runs
+   * in the background. Caller uses the hash on-chain right away;
+   * peers reading via fetch() will retry until upload lands. Falls
+   * back to append() shape on adapters that don't implement it.
+   */
+  appendDeferred?(data: unknown): Promise<{ rootHash: string; uploadPromise: Promise<void> }>
 }
 
 export interface IComputePort {
@@ -50,20 +58,34 @@ export interface IChainPort {
   isSubtaskClaimed(nodeId: string): Promise<boolean>
   /** subtask çıktısını on-chain'e kaydeder */
   submitOutput(nodeId: string, outputHash: string): Promise<void>
-  /** node'u validated olarak işaretler, tüm DAG bitince settle tetiklenir */
-  markValidated(nodeId: string): Promise<void>
   /** Tüm node'ları tek tx'te validated işaretler, otomatik settle ETMEZ */
   markValidatedBatch(nodeIds: string[]): Promise<void>
   /** task'ın bittiğini kaydeder */
   completeTask(taskId: string): Promise<boolean>
   /** hatalı node'a itiraz açar; challengerNodeId challenger'ın kendi subtask'ı (planner ise '0x0') */
   challenge(nodeId: string, challengerNodeId?: string): Promise<void>
-  /** açık bir challenge'a jüri oyu kullanır. agentId çağıranın kendi AgentRegistry id'si */
-  voteOnChallenge(nodeId: string, agentId: string, accusedGuilty: boolean): Promise<void>
-  /** süresi dolan challenge'ı çoğunluğa göre kapatır (kimse oy vermediyse drop) */
-  finalizeExpiredChallenge(nodeId: string): Promise<void>
-  /** ödülleri dağıtır ve escrow'u kapatır */
-  settle(taskId: string, winners: string[]): Promise<void>
+  /**
+   * Commit-reveal phase 1 — juror sends sealed hash of their vote.
+   * commitHash = keccak256(abi.encodePacked(nodeId, accusedGuilty, salt, msg.sender)).
+   * Caller must already be in the on-chain eligibility list (random jury
+   * picked at challenge() time); use isJuryEligible() before calling.
+   */
+  commitVoteOnChallenge(nodeId: string, commitHash: string): Promise<void>
+  /**
+   * Commit-reveal phase 2 — juror reveals their vote and salt; the contract
+   * recomputes the hash and matches against the stored commit. Only callable
+   * after commitDeadline and before revealDeadline.
+   */
+  revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void>
+  /**
+   * Returns true iff `address` was randomly selected as a juror for `nodeId`.
+   * Off-chain agents call this right after the AXL CHALLENGE event and skip
+   * the judge() round entirely if they aren't on the list — saves ~80% of
+   * jury-side work in a 25-agent swarm with JURY_SIZE=5.
+   */
+  isJuryEligible(nodeId: string, address: string): Promise<boolean>
+  /** Reveal penceresi dolduktan sonra çağrılır; revealed votes'a göre çözer */
+  finalizeChallenge(nodeId: string): Promise<void>
   /** Explicit per-agent ödül dağıtımı (planner yetkili) */
   settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void>
   /** Bir node'un on-chain claimant adresini döner */
@@ -72,6 +94,22 @@ export interface IChainPort {
   getTaskBudget(taskId: string): Promise<string>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
+  /**
+   * How many `stakeAmount`-sized stakes the agent's wallet can still afford.
+   * Used by SwarmAgent.claimFirstAvailable to cap greedy claims so a single
+   * agent doesn't grab more nodes than it can actually stake for (which
+   * otherwise reverts mid-DAG with ERC20InsufficientBalance and locks the
+   * task). Optional — adapters that lack accounting (mock) may return
+   * Number.MAX_SAFE_INTEGER. */
+  getStakeCapacity?(stakeAmount: string): Promise<number>
+  /** Returns this wallet's USDC balance in wei (smallest unit). Used by the
+   *  surplus watchdog to detect rewards above stakeAmount and forward them
+   *  back to the owner. Optional — Mock has no accounting. */
+  getOwnUsdcBalance?(): Promise<string>
+  /** Send USDC from this agent's wallet to `to`. amountWei is the smallest
+   *  unit (e.g. 1 USDC at 18 decimals = "1000000000000000000"). Returns the
+   *  tx hash. Optional — Mock no-ops. */
+  transferUsdc?(to: string, amountWei: string): Promise<string>
 
   // Sync methods
   syncPlannerClaim(taskId: string, agentId: string): Promise<void>

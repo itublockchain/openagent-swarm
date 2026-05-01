@@ -60,6 +60,19 @@ async function main() {
   const setEscrowTx = await escrow.setAuthorities(registryAddress, vaultAddress)
   await setEscrowTx.wait()
 
+  // 5.5 SwarmTreasury — SDK API-key flow target. The deployer is the
+  // initial operator (rotate to a multisig/dedicated EOA before mainnet).
+  // Wire Escrow.setTreasury here so `createTaskFor` accepts Treasury calls.
+  console.log('Deploying SwarmTreasury...')
+  const SwarmTreasury = await ethers.getContractFactory('SwarmTreasury')
+  const treasury = await SwarmTreasury.deploy(usdcAddress, escrowAddress, deployer.address)
+  await treasury.waitForDeployment()
+  const treasuryAddress = await treasury.getAddress()
+  console.log('SwarmTreasury:', treasuryAddress, '(operator:', deployer.address, ')')
+  const setTreasuryTx = await escrow.setTreasury(treasuryAddress)
+  await setTreasuryTx.wait()
+  console.log('Wired Escrow.setTreasury → Treasury')
+
   // 6. Approve Escrow
   console.log('Approving SwarmEscrow to spend USDC...')
   const approveTx = await usdc.approve(escrowAddress, ethers.MaxUint256)
@@ -73,6 +86,7 @@ async function main() {
     DAGRegistry: registryAddress,
     SlashingVault: vaultAddress,
     AgentRegistry: agentRegistryAddress,
+    SwarmTreasury: treasuryAddress,
     network: 'og_testnet',
     deployedAt: new Date().toISOString(),
   }
