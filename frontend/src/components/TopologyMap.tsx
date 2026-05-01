@@ -4,7 +4,7 @@ import React, { useMemo, useRef, useState, useEffect } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, Float, Sphere, Text, Billboard, Stars } from '@react-three/drei'
 import * as THREE from 'three'
-import { useSwarmEvents } from '@/hooks/useSwarmEvents'
+import { useSporeEvents } from '@/hooks/useSporeEvents'
 import { useTheme } from 'next-themes'
 
 interface ThemeColors {
@@ -63,7 +63,7 @@ const AgentNode = ({
   const spawnTime = useRef<number | null>(null)
 
   // Per-instance random offsets give every node its own breathing rhythm
-  // so the swarm doesn't move in lockstep.
+  // so SPORE doesn't move in lockstep.
   const randomPhase = useMemo(() => Math.random() * Math.PI * 2, [])
   const bubblingSpeed = useMemo(() => 0.5 + Math.random() * 1.5, [])
 
@@ -97,7 +97,7 @@ const AgentNode = ({
         groupRef.current.position.z += (tz - groupRef.current.position.z) * 0.05
       }
 
-      // Tiny drift so the swarm feels alive even on idle.
+      // Tiny drift so SPORE feels alive even on idle.
       groupRef.current.position.x += Math.sin(t * 2 + randomPhase) * 0.003
       groupRef.current.position.y += Math.cos(t * 1.5 + randomPhase) * 0.003
     }
@@ -116,7 +116,7 @@ const AgentNode = ({
 
     // Membrane does only a simple breathe — soft scale modulation, no
     // surface deformation. Each spore picks up a slightly different rate
-    // and phase so the swarm doesn't pulse in lockstep.
+    // and phase so SPORE doesn't pulse in lockstep.
     if (haloRef.current) {
       const animatedScale = progress < 1 ? easeProgress : 1
       const breath = 1 + Math.sin(t * 0.8 + randomPhase) * 0.04
@@ -468,7 +468,7 @@ export function TopologyMap({
   onSelect?: (id: string) => void
   selectedAgentId?: string | null
 }) {
-  const { events } = useSwarmEvents()
+  const { events } = useSporeEvents()
   const { resolvedTheme } = useTheme()
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null)
   const [isTabVisible, setIsTabVisible] = useState(true)

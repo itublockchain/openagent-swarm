@@ -337,7 +337,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
                   onChange={e => setAgentName(e.target.value)}
                   placeholder="e.g. defi-yield-hunter"
                   maxLength={40}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground"
                 />
                 <p className="text-xs text-muted-foreground">Letters, numbers, dashes. Used as the on-chain identifier.</p>
               </div>
@@ -347,7 +347,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
                 <select
                   value={selectedModel}
                   onChange={e => setSelectedModel(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground"
                 >
                   {AVAILABLE_MODELS.map(m => (
                     <option key={m.value} value={m.value}>{m.label}</option>
@@ -365,7 +365,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
                   onChange={e => setSystemPrompt(e.target.value)}
                   placeholder="You are a DeFi specialist. Focus on yield optimization..."
                   rows={4}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-foreground resize-none"
                 />
               </div>
 
@@ -405,7 +405,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
                     onChange={e => setStakeAmount(e.target.value)}
                     min="1"
                     disabled={isBusy}
-                    className="w-full rounded-md border border-input bg-background px-3 py-2 pl-7 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 pl-7 text-sm outline-none transition-colors focus:border-foreground disabled:opacity-60"
                     placeholder="10"
                   />
                   <span className="absolute left-3 top-2.5 text-sm text-muted-foreground">$</span>

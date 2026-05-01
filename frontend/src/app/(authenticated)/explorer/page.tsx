@@ -13,13 +13,13 @@ import { LogsPanel } from '@/components/flow/LogsPanel';
 import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
 import { Send, Loader2, Plus } from 'lucide-react';
 import { CopyableId } from '@/components/ui/copyable-id';
-import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
+import { useSporeEvents, SubtaskStatus } from '@/hooks/useSporeEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
 import { ENV } from '../../../../lib/env';
 import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi';
-import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts';
+import { ERC20_ABI, SPORE_ESCROW_ABI } from '@/lib/contracts';
 import { cn } from '@/lib/utils';
 
 const nodeTypes = {
@@ -50,7 +50,7 @@ function DashboardContent() {
     "Ready to generate and deploy DAG."
   ]);
 
-  const { dag, events, taskIdFromUrl } = useSwarmEvents();
+  const { dag, events, taskIdFromUrl } = useSporeEvents();
 
   // Resizable right panel: min = 380px (initial size), max = 50vw.
   // Inline width is only applied at md+ — below that the panel stacks full-width.
@@ -240,14 +240,6 @@ function DashboardContent() {
                 committed: box.jury.committed.length,
               }
             : undefined,
-          // Reasoning + output, captured by useSwarmEvents from SUBTASK_DONE.
-          // Drives the per-node detail panel that opens beside the node.
-          result: box.result,
-          toolsUsed: box.toolsUsed,
-          transcript: box.transcript,
-          iterations: box.iterations,
-          stopReason: box.stopReason,
-          outputHash: box.outputHash,
         },
       });
 
@@ -266,7 +258,7 @@ function DashboardContent() {
   // User-signed task submission flow:
   //   1. /task/prepare → backend uploads spec to storage, returns taskIdBytes32 + budgetWei
   //   2. wagmi: USDC.approve(escrow, budget) — skipped if existing allowance is sufficient
-  //   3. wagmi: SwarmEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
+  //   3. wagmi: SporeEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
   //   4. /task → backend verifies on-chain task exists, broadcasts to AXL mesh
   const submitRealDAG = async (intent: string) => {
     if (!walletAddress) {
@@ -349,7 +341,7 @@ function DashboardContent() {
       setSubmitStep('creating');
       const existing = (await readContract(wagmiConfig, {
         address: prep.escrowAddress,
-        abi: SWARM_ESCROW_ABI,
+        abi: SPORE_ESCROW_ABI,
         functionName: 'tasks',
         args: [prep.taskIdBytes32],
       })) as readonly [`0x${string}`, bigint, bigint, boolean];
@@ -361,7 +353,7 @@ function DashboardContent() {
         setLogs(prev => [...prev, `[L2] Creating task on-chain...`]);
         const createHash = await writeContractAsync({
           address: prep.escrowAddress,
-          abi: SWARM_ESCROW_ABI,
+          abi: SPORE_ESCROW_ABI,
           functionName: 'createTask',
           args: [prep.taskIdBytes32, budgetWei],
           chainId: ogTestnet.id,
@@ -374,7 +366,7 @@ function DashboardContent() {
           // landed. Verify on-chain state directly before giving up.
           const verify = (await readContract(wagmiConfig, {
             address: prep.escrowAddress,
-            abi: SWARM_ESCROW_ABI,
+            abi: SPORE_ESCROW_ABI,
             functionName: 'tasks',
             args: [prep.taskIdBytes32],
           })) as readonly [`0x${string}`, bigint, bigint, boolean];
@@ -441,7 +433,7 @@ function DashboardContent() {
       {/* Main Content Split */}
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
         
-        {/* Left: Swarm Intelligence Flow (React Flow) */}
+        {/* Left: SPORE Intelligence Flow (React Flow) */}
         <div className="flex-1 flex flex-col border-r border-border bg-muted/5 min-w-0">
           <div className="h-9 px-4 border-b border-border bg-background/85 backdrop-blur flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-muted-foreground shrink-0">
             <div className="flex items-center gap-1.5">
@@ -515,26 +507,7 @@ function DashboardContent() {
               <Background color="#888" gap={20} />
               <Controls className="fill-foreground" />
             </ReactFlow>
-            {nodes.length === 0 && (
-              <CanvasEmptyState
-                // Keep the spinner alive through 'done' too — the API call
-                // returning 'done' just means TASK_SUBMITTED was broadcast;
-                // the planner still has to build the DAG (~5-30s) before
-                // nodes appear. The outer `nodes.length === 0` guard already
-                // hides the whole pill the moment DAG_READY lands and the
-                // first node renders, so dropping 'done' from this condition
-                // bridges the visual gap without overstaying.
-                isSubmitting={submitStep !== 'idle' && submitStep !== 'error'}
-                label={
-                  submitStep === 'preparing' ? 'Preparing intent…' :
-                  submitStep === 'approving' ? 'Approving USDC…' :
-                  submitStep === 'creating' ? 'Creating task on-chain…' :
-                  submitStep === 'submitting' ? 'Dispatching to swarm…' :
-                  submitStep === 'done' ? 'Awaiting DAG from planner…' :
-                  undefined
-                }
-              />
-            )}
+            <CanvasEmptyState visible={nodes.length === 0 && submitStep === 'idle' && !taskIdFromUrl} />
 
             {/* Status legend */}
             {nodes.length > 0 && (
@@ -574,7 +547,7 @@ function DashboardContent() {
               <div className="min-w-0">
                 <div className="font-bold text-yellow-600 dark:text-yellow-400 uppercase tracking-wider text-[10px] mb-0.5">Intent queued</div>
                 <p className="text-muted-foreground leading-snug">
-                  Connect your wallet to dispatch <span className="text-foreground italic">&ldquo;{intentParam.length > 60 ? intentParam.slice(0, 60) + '…' : intentParam}&rdquo;</span> to the swarm.
+                  Connect your wallet to dispatch <span className="text-foreground italic">&ldquo;{intentParam.length > 60 ? intentParam.slice(0, 60) + '…' : intentParam}&rdquo;</span> to SPORE.
                 </p>
               </div>
             </div>
@@ -613,7 +586,7 @@ function DashboardContent() {
                         ref={textareaRef}
                         value={inputText}
                         onChange={(e) => setInputText(e.target.value)}
-                        placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
+                        placeholder="Enter SPORE intent (e.g. Research AI trends on X)..."
                         className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24"
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
@@ -648,7 +621,7 @@ function DashboardContent() {
               submitStep === 'preparing' ? 'Preparing spec…'
               : submitStep === 'approving' ? 'Approving USDC…'
               : submitStep === 'creating' ? 'Creating task on-chain…'
-              : submitStep === 'submitting' ? 'Broadcasting to swarm…'
+              : submitStep === 'submitting' ? 'Broadcasting to SPORE…'
               : dag ? 'DAG live — awaiting subtasks'
               : 'Awaiting DAG from planner…';
 
@@ -671,7 +644,7 @@ function DashboardContent() {
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="text-[10px] font-bold uppercase tracking-widest text-primary mb-0.5">
-                      Swarm working
+                      SPORE working
                     </div>
                     <div className="text-xs text-foreground/85 truncate">{dispatchLabel}</div>
                   </div>
@@ -713,7 +686,7 @@ function DashboardContent() {
 
 export default function ExplorerPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading Swarm Explorer...</div>}>
+    <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading SPORE Explorer...</div>}>
       <DashboardContent />
     </Suspense>
   );

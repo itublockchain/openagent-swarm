@@ -13,7 +13,7 @@ const tracks = [
     name: 'Gensyn AXL',
     role: 'P2P Mesh',
     body:
-      'Every signal — DAG ready, claim, output hash, challenge — propagates to the swarm over AXL. No central broker, no API.',
+      'Every signal — DAG ready, claim, output hash, challenge — propagates across SPORE over AXL. No central broker, no API.',
   },
   {
     icon: Lock,
@@ -33,11 +33,11 @@ export function Stack() {
             The stack
           </span>
           <h2 className="text-3xl md:text-4xl font-extrabold tracking-tighter">
-            Three primitives. One execution layer.
+            Three primitives. One orchestration runtime.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            Swarm composes decentralized storage, compute, transport, and settlement into a single
-            stake-secured pipeline.
+            SPORE composes decentralized storage, compute, transport, and settlement into a single
+            permissionless, stake-secured pipeline.
           </p>
         </div>
 

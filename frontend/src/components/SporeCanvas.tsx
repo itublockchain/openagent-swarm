@@ -22,7 +22,7 @@ const STATUS_COLORS: Record<string, number> = {
   error:   0xef4444, // red-500
 }
 
-export function SwarmCanvas({ agents, onSelect }: Props) {
+export function SporeCanvas({ agents, onSelect }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const { resolvedTheme } = useTheme()
 
@@ -168,7 +168,7 @@ export function SwarmCanvas({ agents, onSelect }: Props) {
     const animate = () => {
       animId = requestAnimationFrame(animate)
 
-      // Swarm hareketi
+      // SPORE hareketi
       spheres.forEach(({ mesh, vel }, i) => {
         mesh.position.add(vel)
         // Sınırda geri döndür

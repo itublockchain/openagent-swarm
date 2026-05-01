@@ -6,7 +6,7 @@ import { readContract } from '@wagmi/core'
 import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi'
 import { apiRequest } from '../../lib/api'
 import { waitTxOrVerify } from '../../lib/tx'
-import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts'
+import { ERC20_ABI, SPORE_ESCROW_ABI } from '@/lib/contracts'
 
 export type TaskSubmitStep =
   | 'idle'
@@ -125,7 +125,7 @@ export function useTaskSubmit(onLog?: (line: string) => void) {
       setStep('creating')
       const existing = (await readContract(wagmiConfig, {
         address: prep.escrowAddress,
-        abi: SWARM_ESCROW_ABI,
+        abi: SPORE_ESCROW_ABI,
         functionName: 'tasks',
         args: [prep.taskIdBytes32],
       })) as readonly [`0x${string}`, bigint, bigint, boolean]
@@ -134,7 +134,7 @@ export function useTaskSubmit(onLog?: (line: string) => void) {
         log('Creating task on-chain…')
         const createHash = await writeContractAsync({
           address: prep.escrowAddress,
-          abi: SWARM_ESCROW_ABI,
+          abi: SPORE_ESCROW_ABI,
           functionName: 'createTask',
           args: [prep.taskIdBytes32, budgetWei],
           chainId: ogTestnet.id,
@@ -142,7 +142,7 @@ export function useTaskSubmit(onLog?: (line: string) => void) {
         await waitTxOrVerify(createHash, async () => {
           const t = (await readContract(wagmiConfig, {
             address: prep.escrowAddress,
-            abi: SWARM_ESCROW_ABI,
+            abi: SPORE_ESCROW_ABI,
             functionName: 'tasks',
             args: [prep.taskIdBytes32],
           })) as readonly [`0x${string}`, bigint, bigint, boolean]

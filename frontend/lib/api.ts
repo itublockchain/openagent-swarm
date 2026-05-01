@@ -11,7 +11,7 @@ export async function apiRequest(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const jwt = typeof window !== 'undefined' ? localStorage.getItem('swarm_jwt') : null
+  const jwt = typeof window !== 'undefined' ? localStorage.getItem('spore_jwt') : null
 
   // Only stamp Content-Type when there's actually a body. Fastify's default
   // JSON content-type-parser throws a 400 (FST_ERR_CTP_EMPTY_JSON_BODY) on

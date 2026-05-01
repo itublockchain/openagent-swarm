@@ -58,7 +58,7 @@ export interface DAGState {
   boxes: SubtaskBox[]
 }
 
-export function useSwarmEvents() {
+export function useSporeEvents() {
   const searchParams = useSearchParams()
   const router = useRouter()
 
@@ -96,7 +96,7 @@ export function useSwarmEvents() {
             })
           }
         } catch (err) {
-          console.error('[useSwarmEvents] Failed to fetch task state:', err)
+          console.error('[useSporeEvents] Failed to fetch task state:', err)
         }
       }
       fetchState()
@@ -108,7 +108,7 @@ export function useSwarmEvents() {
     wsClient.connect(apiUrl)
 
     const handleAll = (event: WSEvent) => {
-      console.log('[useSwarmEvents] Incoming event:', event.type, event.payload);
+      console.log('[useSporeEvents] Incoming event:', event.type, event.payload);
       setEvents(prev => [event, ...prev].slice(0, 50))
     }
 
@@ -127,7 +127,7 @@ export function useSwarmEvents() {
 
     const handleDAGReady = (event: WSEvent) => {
       const { nodes, taskId } = event.payload as any
-      console.log('[useSwarmEvents] DAG_READY received for task:', taskId);
+      console.log('[useSporeEvents] DAG_READY received for task:', taskId);
 
       if (!taskIdFromUrl || matchesActiveTask(taskId)) {
         setDag({

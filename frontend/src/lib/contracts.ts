@@ -1,7 +1,7 @@
 /**
  * Minimal ABI fragments for the on-chain pieces the user-side flow touches:
  *   - MockERC20: approve, allowance, decimals, balanceOf
- *   - SwarmEscrow: createTask, tasks (read-only)
+ *   - SporeEscrow: createTask, tasks (read-only)
  *
  * Addresses come from NEXT_PUBLIC_* env vars; they default to nothing so a
  * misconfigured frontend fails loudly rather than silently writing to a
@@ -55,7 +55,7 @@ export const ERC20_ABI = [
   },
 ] as const
 
-export const SWARM_ESCROW_ABI = [
+export const SPORE_ESCROW_ABI = [
   {
     type: 'function',
     name: 'createTask',
