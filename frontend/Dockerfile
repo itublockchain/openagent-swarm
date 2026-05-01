@@ -28,13 +28,20 @@ RUN test -d node_modules && test -n "$(ls -A node_modules 2>/dev/null)" \
 
 COPY . .
 
-# NEXT_PUBLIC_* values are inlined at build time. We deliberately do NOT
-# `ENV NEXT_PUBLIC_API_URL=...` here — that would bake `localhost:3001`
-# into the bundle even when the deploy targets sporeprotocol.xyz / ngrok.
-# Instead, frontend/next.config.ts loads the monorepo root .env via
-# @next/env, so whatever is in /app/.env at this point is what lands in
-# the bundle. To override at build time, write a fresh .env into the
-# build context (compose `build.context: .`) before running `up --build`.
+# ════════════════════════════════════════════════════════════════
+# BAKED-IN PUBLIC CONFIG — fresh-checkout works without a local .env.
+# These get statically inlined into the client bundle at `next build`,
+# so the values are PUBLIC by design (anyone with the served JS can read
+# them). Override at deploy time by passing `--build-arg` or by setting
+# them on the compose `frontend.environment:` block (compose env wins
+# over Dockerfile ENV during build).
+# ════════════════════════════════════════════════════════════════
+ENV NEXT_PUBLIC_API_URL=http://localhost:3001 \
+    NEXT_PUBLIC_WS_URL=ws://localhost:3001/ws \
+    NEXT_PUBLIC_REOWN_PROJECT_ID=400c6d7d206f4776802e3b3a6d967b5f \
+    NEXT_PUBLIC_USDC_ADDRESS=0xcbF0cC20e36daf2689EA61632dA68B7fe9C22342 \
+    NEXT_PUBLIC_ESCROW_ADDRESS=0x94fb6508EcfDa3FE6D2A8ed6c8d01fb81a237d48 \
+    NEXT_PUBLIC_TREASURY_ADDRESS=0xcAa459ec1dF4004CeBA5712A6A01F013d9B00a74
 
 RUN pnpm --filter frontend build
 

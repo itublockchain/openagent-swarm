@@ -2,6 +2,7 @@
 
 echo "[Start] Starting API Core"
 
+
 # 1. Create local AXL config
 # API connects to axl-seed as well
 PEERS_JSON="[]"
@@ -9,8 +10,20 @@ if [ -n "$AXL_PEER" ]; then
   PEERS_JSON="[\"$AXL_PEER\"]"
 fi
 
+# Stable AXL peer identity comes from AXL_PRIVATE_KEY (baked into the
+# image). When unset (e.g. dev runs without env), the field is omitted
+# and AXL falls back to its own GenerateConfig() which mints a fresh
+# random key on every boot — fine for one-off runs but wrecks routing
+# tables across restarts.
+if [ -n "$AXL_PRIVATE_KEY" ]; then
+  PRIVATE_KEY_LINE="\"PrivateKey\": \"$AXL_PRIVATE_KEY\","
+else
+  PRIVATE_KEY_LINE=""
+fi
+
 cat <<EOF > node-config.json
 {
+  $PRIVATE_KEY_LINE
   "Peers": $PEERS_JSON,
   "Listen": ["tcp://0.0.0.0:7000"],
   "bridge_addr": "0.0.0.0"

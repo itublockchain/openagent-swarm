@@ -1,13 +1,20 @@
 'use client'
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt, readContract } from '@wagmi/core'
 import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi'
 import { ERC20_ABI } from '@/lib/contracts'
 import { apiRequest } from '../../lib/api'
+import { ENV } from '../../lib/env'
 import { cn } from '@/lib/utils'
+
+// Pool poll cadence + activation deadline. /agent/pool itself runs on a
+// 5s server cadence; we poll a touch faster client-side so the modal
+// flips to done shortly after the container surfaces as 'running'.
+const POOL_POLL_MS = 3_000
+const POOL_POLL_TIMEOUT_MS = 90_000
 
 interface Props {
   isOpen: boolean
@@ -102,7 +109,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const waitForAgentActive = async (agentId: string): Promise<void> => {
     const controller = new AbortController()
     pollAbortRef.current = controller
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+    const apiUrl = ENV.API_URL
     const deadline = Date.now() + POOL_POLL_TIMEOUT_MS
 
     while (Date.now() < deadline) {

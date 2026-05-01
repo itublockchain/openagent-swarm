@@ -5,13 +5,14 @@
  * we then ship through ngrok / Vercel / sporeprotocol.xyz. By the time we
  * notice in the browser network tab the build is already out the door.
  *
- * Values come from the monorepo root `.env`, loaded by `frontend/next.config.ts`
- * via `@next/env`. NEXT_PUBLIC_* are inlined at compile time — `required()`
- * runs while the bundle is being built, so a missing key fails the BUILD
- * (not the user's first click). That's the loud failure we want.
+ * IMPORTANT — turbopack/webpack only replace LITERAL property access
+ * (`process.env.NEXT_PUBLIC_FOO`) at build time. Dynamic lookup like
+ * `process.env[name]` stays as a runtime call that, at SSR/prerender
+ * time, finds nothing and throws — even though the values were present
+ * during the build. Each key below MUST be referenced as a literal
+ * property; the helper just decides what to do with the resolved string.
  */
-function required(name: string): string {
-  const value = process.env[name]
+function required(name: string, value: string | undefined): string {
   if (!value) {
     throw new Error(
       `[env] Missing ${name}. Add it to the monorepo root .env (loaded by next.config.ts via @next/env).`,
@@ -20,25 +21,21 @@ function required(name: string): string {
   return value
 }
 
-/** Treat optional addresses leniently — the Developer / Profile tabs render
- *  a "Contracts not configured" screen when these are missing rather than
- *  crashing the whole app. */
-function optional(name: string): string | undefined {
-  const v = process.env[name]
-  return v && v.length > 0 ? v : undefined
+function optional(value: string | undefined): string | undefined {
+  return value && value.length > 0 ? value : undefined
 }
 
 export const ENV = {
   /** Backend HTTP base URL — every fetch goes through here. */
-  API_URL: required('NEXT_PUBLIC_API_URL'),
+  API_URL: required('NEXT_PUBLIC_API_URL', process.env.NEXT_PUBLIC_API_URL),
   /** Backend WebSocket URL for the AXL event bus. */
-  WS_URL: required('NEXT_PUBLIC_WS_URL'),
+  WS_URL: required('NEXT_PUBLIC_WS_URL', process.env.NEXT_PUBLIC_WS_URL),
   /** Reown / WalletConnect project id — optional today; the module that
    *  needs it will fail loudly at use time. Required-by-default would
    *  break the whole app if root .env loses this single line. */
-  REOWN_PROJECT_ID: optional('NEXT_PUBLIC_REOWN_PROJECT_ID'),
+  REOWN_PROJECT_ID: optional(process.env.NEXT_PUBLIC_REOWN_PROJECT_ID),
   /** Optional contract addresses — read by Developer + Profile tabs. */
-  USDC_ADDRESS: optional('NEXT_PUBLIC_USDC_ADDRESS') as `0x${string}` | undefined,
-  ESCROW_ADDRESS: optional('NEXT_PUBLIC_ESCROW_ADDRESS') as `0x${string}` | undefined,
-  TREASURY_ADDRESS: optional('NEXT_PUBLIC_TREASURY_ADDRESS') as `0x${string}` | undefined,
+  USDC_ADDRESS: optional(process.env.NEXT_PUBLIC_USDC_ADDRESS) as `0x${string}` | undefined,
+  ESCROW_ADDRESS: optional(process.env.NEXT_PUBLIC_ESCROW_ADDRESS) as `0x${string}` | undefined,
+  TREASURY_ADDRESS: optional(process.env.NEXT_PUBLIC_TREASURY_ADDRESS) as `0x${string}` | undefined,
 } as const

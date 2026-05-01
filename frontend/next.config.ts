@@ -1,14 +1,17 @@
 import type { NextConfig } from "next";
-import path from "node:path";
-import { loadEnvConfig } from "@next/env";
 
-// Single source of truth for env: monorepo root `.env`. We don't keep a
-// `frontend/.env` — calling Next's own loader on the parent directory
-// populates `process.env` with all NEXT_PUBLIC_* values BEFORE Next's
-// build pipeline scans for them, so the build inlines them into the
-// client bundle exactly as if they had been local. Runs once when this
-// config is evaluated (`next dev` / `next build`).
-loadEnvConfig(path.resolve(__dirname, ".."));
+// Env strategy: the root `.env` is the single source of truth. The
+// `_sync-env` npm script copies it to `frontend/.env.local` BEFORE
+// `next dev` / `next build` runs, so Next's native env loader (which
+// turbopack's workers respect by design) picks the values up the same
+// way it would a hand-written `frontend/.env`. We tried calling
+// `@next/env`'s `loadEnvConfig` from inside this config in turbopack
+// builds; the workers spawned for prerender don't see env mutations made
+// here, so values came back undefined at SSR-evaluation time. Copying
+// the file beats the timing problem at the package-manager layer.
+//
+// `.env.local` is gitignored (`.env.*` line in repo .gitignore), so the
+// copy is transient build state, not committed config.
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@reown/appkit', '@reown/appkit-adapter-wagmi', 'wagmi', '@wagmi/core', '@wagmi/connectors'],

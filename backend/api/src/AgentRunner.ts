@@ -1,5 +1,6 @@
 import Dockerode from 'dockerode'
 import { ethers } from 'ethers'
+import { generateKeyPairSync } from 'node:crypto'
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json'
 import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json'
 import AgentRegistryABI from '../../../contracts/artifacts/src/AgentRegistry.sol/AgentRegistry.json'
@@ -150,12 +151,24 @@ export class AgentManager {
   }
 
   private buildContainerEnv(secret: AgentSecret): string[] {
+    // Fresh AXL ed25519 identity per spawned container. Without overriding
+    // the baked AXL_PRIVATE_KEY from the agent image, every spawned agent
+    // would land on the mesh with the same yggdrasil pubkey and the seed
+    // would refuse the duplicate peer. Format: 64-byte hex = seed (32) +
+    // derived pubkey (32), which is what yggdrasil's config parser expects.
+    const kp = generateKeyPairSync('ed25519')
+    const privDer = kp.privateKey.export({ format: 'der', type: 'pkcs8' })
+    const pubDer = kp.publicKey.export({ format: 'der', type: 'spki' })
+    const axlKey =
+      Buffer.concat([privDer.subarray(-32), pubDer.subarray(-32)]).toString('hex')
+
     const env = [
       `AGENT_ID=${secret.agentId}`,
       `STAKE_AMOUNT=${secret.stakeAmount}`,
       `AGENT_PRIVATE_KEY=${secret.privateKey}`,
       // L2Contract reads PRIVATE_KEY for the signer — same as the agent's wallet.
       `PRIVATE_KEY=${secret.privateKey}`,
+      `AXL_PRIVATE_KEY=${axlKey}`,
       `ZG_COMPUTE_MODEL=${secret.model}`,
       `ZG_COMPUTE_RPC_URL=${process.env.ZG_COMPUTE_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'}`,
       `OG_RPC_URL=${process.env.OG_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'}`,

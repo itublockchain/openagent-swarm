@@ -15,8 +15,19 @@ if [ -n "$AXL_PEER" ]; then
   PEERS_JSON="[\"$AXL_PEER\", \"tcp://api:7000\"]"
 fi
 
+# Stable AXL peer identity for the baseline agent. Spawned agents (the
+# ones AgentRunner creates per-deploy) get their own AXL_PRIVATE_KEY
+# from AgentRunner so each container has a unique mesh identity — if
+# all agents shared one key, yggdrasil would refuse to peer them.
+if [ -n "$AXL_PRIVATE_KEY" ]; then
+  PRIVATE_KEY_LINE="\"PrivateKey\": \"$AXL_PRIVATE_KEY\","
+else
+  PRIVATE_KEY_LINE=""
+fi
+
 cat <<EOF > node-config.json
 {
+  $PRIVATE_KEY_LINE
   "Peers": $PEERS_JSON,
   "Listen": ["tcp://0.0.0.0:7000"],
   "bridge_addr": "0.0.0.0"

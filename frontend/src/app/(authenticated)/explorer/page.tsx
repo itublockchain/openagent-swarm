@@ -639,12 +639,6 @@ function DashboardContent() {
                         </div>
                       )}
                     </div>
-                    <PromptConfigRow
-                      model={model}
-                      budget={budget}
-                      onModelChange={setModel}
-                      onBudgetChange={setBudget}
-                    />
                   </div>
                 </>
               );
@@ -693,8 +687,9 @@ function DashboardContent() {
                     </button>
                   )}
                 </div>
-              )}
-            </div>
+              </div>
+            )
+          })()}
             <PromptConfigRow
               model={model}
               budget={budget}
@@ -706,9 +701,8 @@ function DashboardContent() {
             />
           </div>
         </div>
-      </div>
 
-      <DeployAgentModal 
+      <DeployAgentModal
         isOpen={isDeployOpen} 
         onClose={() => setIsDeployOpen(false)}
         onSuccess={() => {}}
