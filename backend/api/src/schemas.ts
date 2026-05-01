@@ -15,6 +15,11 @@ export const TaskSchema = z.object({
   // taskIds. Required because storage hashes are content-addressed; without
   // it, resubmitting the same prompt collides with the previous task.
   nonce: z.union([z.string(), z.number()]).optional(),
+  // Optional colony scope. When set, only agents that are members of this
+  // colony will pick up the task; non-members ignore the AXL event in
+  // SwarmAgent.onTaskSubmitted. Empty/undefined → public task, any agent
+  // can claim. Membership is owner-curated via /v1/me/colonies.
+  colonyId: z.string().min(1).optional(),
 });
 
 export const AgentPrepareSchema = z.object({

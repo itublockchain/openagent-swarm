@@ -6,6 +6,14 @@ import { JsonAgentFormat } from './agentFormat'
 import { TOOLS } from './tools/definitions'
 import { REACT_SYSTEM_PROMPT } from './prompts/react'
 
+/** Cheap shallow equality for the colony membership refresh — Set compare
+ *  by content so we only log "memberships updated" on real changes. */
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const v of a) if (!b.has(v)) return false
+  return true
+}
+
 /**
  * Storage may hold either the new structured payload (post tool-aware loop)
  * or a legacy plain-string output. Coerce to a single readable string for
@@ -188,6 +196,51 @@ export class SwarmAgent {
     console.log(`[Agent ${this.deps.config.agentId}] started and listening for ALL events`)
 
     this.startSurplusWatchdog()
+    this.startColonyMembershipRefresh()
+  }
+
+  // Colony memberships this agent currently belongs to. Refreshed every
+  // COLONY_REFRESH_MS by hitting the API's /internal/agents/:id/colonies
+  // endpoint. Tasks tagged with a colonyId are filtered against this set
+  // in onTaskSubmitted; tasks without a colonyId remain public.
+  private myColonies = new Set<string>()
+  private colonyMembershipFetched = false
+
+  private startColonyMembershipRefresh(): void {
+    const apiUrl = process.env.API_INTERNAL_URL ?? 'http://api:3001'
+    const url = `${apiUrl}/internal/agents/${this.deps.config.agentId}/colonies`
+    const id = this.deps.config.agentId
+
+    const tick = async () => {
+      try {
+        const res = await fetch(url)
+        if (!res.ok) {
+          // 404 / 5xx → keep stale set; better than wiping memberships
+          // because the API hiccupped. The legitimate "no memberships"
+          // case is a 200 with an empty colony_ids array.
+          return
+        }
+        const data = await res.json() as { colony_ids?: string[] }
+        const next = new Set(data.colony_ids ?? [])
+        if (!setsEqual(next, this.myColonies)) {
+          console.log(`[Agent ${id}] colony memberships updated: [${[...next].join(', ') || '(none)'}]`)
+          this.myColonies = next
+        }
+        this.colonyMembershipFetched = true
+      } catch (err) {
+        // Network failure → keep stale set, log and try again next tick.
+        console.warn(`[Agent ${id}] colony refresh failed:`, err)
+      }
+    }
+    // Kick once immediately so the first task we see is filtered with
+    // current state, then poll. Fire-and-forget — failures are logged
+    // inside tick().
+    tick().catch(() => {})
+
+    const COLONY_REFRESH_MS = 30_000
+    const timer = setInterval(tick, COLONY_REFRESH_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    console.log(`[Agent ${id}] colony membership refresh running every ${COLONY_REFRESH_MS / 1000}s`)
   }
 
   /**
@@ -271,6 +324,15 @@ export class SwarmAgent {
   private async onTaskSubmitted(event: AXLEvent<any>): Promise<void> {
     try {
       const taskId = event.payload.taskId
+
+      // Colony scope. Tasks broadcast with a colonyId only run on member
+      // agents — non-members ignore them outright (no PLANNER_SELECTED
+      // emit, no claim race). Public tasks (no colonyId) bypass this gate.
+      const colonyId = event.payload?.colonyId
+      if (colonyId && !this.myColonies.has(colonyId)) {
+        console.log(`[Agent ${this.deps.config.agentId}] task ${taskId} scoped to colony ${colonyId} — not a member, abstain`)
+        return
+      }
 
       if (this.isBusyWithTimeout(taskId)) {
         console.log(`[Agent ${this.deps.config.agentId}] busy with ${this.currentTaskId}, ignoring ${taskId}`)

@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 import { useAccount, useDisconnect, useSignMessage } from 'wagmi'
 import { SiweMessage } from 'siwe'
 import { AUTH_EXPIRED_EVENT } from '../../lib/api'
+import { ENV } from '../../lib/env'
 
 interface AuthContextType {
   jwt: string | null
@@ -52,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // 1. Get Nonce
       console.log('Fetching nonce...')
       const nonceRes = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/nonce?t=${Date.now()}`,
+        `${ENV.API_URL}/auth/nonce?t=${Date.now()}`,
         { method: 'GET', cache: 'no-store' }
       )
       const { nonce } = await nonceRes.json()
@@ -77,9 +78,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('Signature received:', signature)
 
       // 4. Verify
-      console.log('Verifying on backend:', `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/verify`)
+      console.log('Verifying on backend:', `${ENV.API_URL}/auth/verify`)
       const verifyRes = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/verify`,
+        `${ENV.API_URL}/auth/verify`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

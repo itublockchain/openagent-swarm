@@ -12,7 +12,10 @@ import { cn } from '@/lib/utils'
 interface Props {
   isOpen: boolean
   onClose: () => void
-  onSuccess: (containerId: string) => void
+  /** Fired after the agent is registered + active. Receives both the
+   *  containerId (for log lookup) and the agentId (for downstream owner-
+   *  scoped flows like "auto-add to colony"). */
+  onSuccess: (info: { containerId: string; agentId: string }) => void
 }
 
 // 0G Compute testnet currently exposes only a small set of qwen models. We
@@ -228,7 +231,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       }
 
       setStep('done')
-      onSuccess(containerId)
+      onSuccess({ containerId, agentId: prep.agentId })
       setTimeout(closeAndReset, 800)
     } catch (err: any) {
       console.error('[DeployModal] error:', err)

@@ -16,6 +16,9 @@ import { generateNonce, SiweMessage } from 'siwe'
 import jwt from 'jsonwebtoken'
 import { KeyStore } from './v1/keystore'
 import { TaskIndex } from './v1/tasksIndex'
+import { TaskStateStore } from './v1/taskStateStore'
+import { ColonyStore } from './v1/colonyStore'
+import { registerColoniesRoutes } from './v1/coloniesRoutes'
 import { registerKeysRoutes } from './v1/keysRoutes'
 import { registerTasksRoutes } from './v1/tasksRoutes'
 import { registerBalanceRoutes } from './v1/balanceRoutes'
@@ -51,64 +54,51 @@ export default async function createServer(deps: ServerDeps) {
     console.log(`[BACKEND] Incoming request: ${request.method} ${request.url}`);
   });
 
-  // In-memory results store: taskId → { nodes: [{nodeId, result}] }
-  const taskResults = new Map<string, { nodes: Array<{ nodeId: string; result: string }> }>()
+  // SQLite-backed mirror of every per-task / per-node lifecycle event.
+  // Replaces two ex-in-memory Maps (`taskResults` + `dagCache`) so a server
+  // crash / redeploy doesn't lose:
+  //   - per-node final answers + reasoning trace + tool list
+  //   - DAG ordering and per-node status (idle/claimed/pending/done/failed)
+  // KeyStore + TaskIndex open the same SQLite file later — WAL mode lets
+  // all three connections coexist without locking.
+  const dbPath = process.env.API_DB_PATH ?? '/data/api.db'
+  const taskState = new TaskStateStore({ dbPath })
 
-  // In-memory DAG snapshot: taskId → { nodes: [{id, subtask, status, agentId, outputHash}] }.
-  // Populated from DAG_READY (planner publishes the node list) and incrementally
-  // updated by SUBTASK_CLAIMED / SUBTASK_DONE / SUBTASK_VALIDATED so the GET
-  // /task/:taskId endpoint can hand a complete DAG to a frontend that lands
-  // on a deep link (?taskId=...) AFTER the live events have already fired.
-  // Without this, useSwarmEvents.fetchState reads the storage payload (just
-  // {spec, budget, nonce}) which has no DAG nodes, the page renders empty,
-  // and the user sees the "Submit an intent to begin" pill on a task that
-  // already exists.
-  interface CachedDagNode {
-    id: string
-    subtask: string
-    status: 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
-    agentId?: string
-    outputHash?: string
+  // Per-task plannerAgentId — small enough to keep in-memory (handful of
+  // bytes per active task, reset on restart is fine because the next
+  // PLANNER_SELECTED rebuilds it).
+  const plannerByTask = new Map<string, string | undefined>()
+
+  // Read shim so legacy code paths that expect `{ nodes: [{nodeId, result}] }`
+  // get a fresh slice from SQLite without holding a stale in-memory copy.
+  const taskResultsView = (taskId: string) => {
+    const nodes = taskState.listResults(taskId)
+    return nodes.length > 0 ? { nodes } : null
   }
-  const dagCache = new Map<string, { nodes: CachedDagNode[]; plannerAgentId?: string }>()
 
   deps.network.on(EventType.DAG_READY, (event: any) => {
     const { taskId, nodes, plannerAgentId } = event.payload ?? {}
     if (!taskId || !Array.isArray(nodes)) return
-    const cached: CachedDagNode[] = nodes.map((n: any) => ({
-      id: n.id,
-      subtask: n.subtask,
-      status: 'idle',
-    }))
-    dagCache.set(taskId, { nodes: cached, plannerAgentId })
+    taskState.seedDag(
+      taskId,
+      nodes.map((n: any) => ({ id: n.id, subtask: n.subtask })),
+    )
+    if (plannerAgentId) plannerByTask.set(taskId, plannerAgentId)
   })
-
-  const updateDagNode = (taskId: string, nodeId: string, patch: Partial<CachedDagNode>) => {
-    const cached = dagCache.get(taskId)
-    if (!cached) return
-    const node = cached.nodes.find(n => n.id === nodeId)
-    if (!node) return
-    Object.assign(node, patch)
-  }
 
   deps.network.on(EventType.SUBTASK_CLAIMED, (event: any) => {
     const { taskId, nodeId, agentId } = event.payload ?? {}
-    if (taskId && nodeId) updateDagNode(taskId, nodeId, { status: 'claimed', agentId })
-  })
-
-  deps.network.on(EventType.SUBTASK_DONE, (event: any) => {
-    const { taskId, nodeId, outputHash } = event.payload ?? {}
-    if (taskId && nodeId) updateDagNode(taskId, nodeId, { status: 'pending', outputHash })
+    if (taskId && nodeId) taskState.setStatus(taskId, nodeId, { status: 'claimed', agentId })
   })
 
   deps.network.on(EventType.SUBTASK_VALIDATED, (event: any) => {
     const { taskId, nodeId } = event.payload ?? {}
-    if (taskId && nodeId) updateDagNode(taskId, nodeId, { status: 'done' })
+    if (taskId && nodeId) taskState.setStatus(taskId, nodeId, { status: 'done' })
   })
 
   deps.network.on(EventType.SUBTASK_PEER_VALIDATED, (event: any) => {
     const { taskId, nodeId } = event.payload ?? {}
-    if (taskId && nodeId) updateDagNode(taskId, nodeId, { status: 'done' })
+    if (taskId && nodeId) taskState.setStatus(taskId, nodeId, { status: 'done' })
   })
 
   // Persist task completion to SQLite as soon as the planner-keeper emits
@@ -128,23 +118,30 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
-  // Per-owner task index — populated by both the legacy /task handler
-  // (web flow) and /v1/tasks (SDK). Declared up here so the legacy
-  // handler defined below can reach it without a forward reference dance.
-  // KeyStore opens the same file later; SQLite WAL mode keeps both
-  // connections happy.
-  const dbPath = process.env.API_DB_PATH ?? '/data/api.db'
+  // Per-owner task index — same dbPath as taskState/KeyStore.
   const taskIndex = new TaskIndex({ dbPath })
 
-  // Listen to SUBTASK_DONE and store results in API memory
+  // SUBTASK_DONE → persist EVERYTHING the agent broadcast (final answer,
+  // transcript, tool list, iteration counters). This is the row that
+  // makes "agent logs uçar" no longer true — even if the API process
+  // dies the next instant, every detail is on disk.
   deps.network.on(EventType.SUBTASK_DONE, (event: any) => {
-    const { taskId, nodeId, result } = event.payload ?? {}
-    if (!taskId || !nodeId || !result) return
-    if (!taskResults.has(taskId)) taskResults.set(taskId, { nodes: [] })
-    const entry = taskResults.get(taskId)!
-    // avoid duplicates
-    if (!entry.nodes.find(n => n.nodeId === nodeId)) {
-      entry.nodes.push({ nodeId, result })
+    const p = event.payload ?? {}
+    if (!p.taskId || !p.nodeId || !p.result) return
+    try {
+      taskState.recordResult({
+        taskId: p.taskId,
+        nodeId: p.nodeId,
+        result: p.result,
+        outputHash: p.outputHash,
+        agentId: p.agentId,
+        transcript: p.transcript,
+        iterations: p.iterations,
+        stopReason: p.stopReason,
+        toolsUsed: p.toolsUsed,
+      })
+    } catch (err) {
+      console.warn(`[server] taskState.recordResult failed for ${p.taskId}/${p.nodeId}:`, err)
     }
   })
 
@@ -510,6 +507,24 @@ export default async function createServer(deps: ServerDeps) {
       });
     }
 
+    // Colony scope authorization. If the task is tagged with a colonyId,
+    // verify the caller is allowed to dispatch there:
+    //   private  → only the colony owner can submit
+    //   public   → anyone can submit
+    //   missing  → 404, can't route to a non-existent colony
+    if (body.colonyId) {
+      const colony = colonyStore.get(body.colonyId)
+      if (!colony || colony.archivedAt) {
+        return reply.status(404).send({ error: 'Colony not found', colonyId: body.colonyId });
+      }
+      if (colony.visibility === 'private' && colony.owner !== user.address.toLowerCase()) {
+        return reply.status(403).send({
+          error: 'Colony is private — only its owner can submit tasks here',
+          colonyId: body.colonyId,
+        });
+      }
+    }
+
     const event = {
       type: EventType.TASK_SUBMITTED,
       payload: { ...body, taskId: specHash, specHash, submittedBy: user.address },
@@ -530,6 +545,7 @@ export default async function createServer(deps: ServerDeps) {
         budget: body.budget,
         source: 'web',
         model: (body as any).model ?? null,
+        colonyId: body.colonyId ?? null,
       })
     } catch (err) {
       // Index failure must never block /task — log + continue.
@@ -610,7 +626,15 @@ export default async function createServer(deps: ServerDeps) {
   // GET /agent/pool
   fastify.get('/agent/pool', async () => {
     const list = await deps.manager.list();
-    return list;
+    // Hydrate each agent with its colony memberships so the pool page can
+    // cluster agents into colony sections without N+1 fetches. SQLite
+    // listColoniesForAgent is a single indexed query per agent — fine for
+    // demo-scale N. colonyStore is declared further down in createServer;
+    // the closure resolves it lazily on request, by which time init ran.
+    return list.map(a => ({
+      ...a,
+      colonies: colonyStore.listColoniesForAgent(a.agentId),
+    }));
   });
 
   // GET /task/:taskId
@@ -621,40 +645,62 @@ export default async function createServer(deps: ServerDeps) {
     try {
       task = await deps.storage.fetch(taskId);
     } catch (err) {
-      // Storage miss is non-fatal — DAG cache may still have something
-      // useful for a task whose spec we can't fetch (storage retried out).
+      // Storage miss is non-fatal — DB may still have a DAG snapshot for
+      // a task whose spec we can't fetch (storage retried out).
       console.warn(`[GET /task/${taskId}] storage.fetch failed:`, err)
     }
-    let cached = dagCache.get(taskId)
 
-    // Chain-fallback rebuild. If the in-memory cache is empty (typical for
-    // tasks whose live events fired BEFORE the current API process started)
-    // walk DAGRegistry to learn the node IDs + status, then fetch each
-    // node's stored output to recover the subtask description. Result is
-    // pushed back into dagCache so subsequent reads are fast.
-    if (!cached) {
+    // Primary: SQLite-backed DAG snapshot. Survives API restarts.
+    let dagNodes = taskState.getDag(taskId).map(n => ({
+      id: n.nodeId,
+      subtask: n.subtask ?? '',
+      status: n.status,
+      agentId: n.agentId ?? undefined,
+      outputHash: n.outputHash ?? undefined,
+    }))
+
+    // Chain-fallback rebuild. If the DB has no rows (typical for tasks
+    // whose live events fired before this DB existed) walk DAGRegistry,
+    // then seed the rows so subsequent reads are cheap.
+    if (dagNodes.length === 0) {
       try {
         const rebuilt = await rebuildDagFromChain(taskId)
-        if (rebuilt) {
-          cached = rebuilt
-          dagCache.set(taskId, rebuilt)
+        if (rebuilt && rebuilt.nodes.length > 0) {
+          // Persist what we rebuilt so the next reader hits SQLite, not RPC.
+          taskState.seedDag(
+            taskId,
+            rebuilt.nodes.map(n => ({ id: n.id, subtask: n.subtask })),
+          )
+          for (const n of rebuilt.nodes) {
+            taskState.setStatus(taskId, n.id, {
+              status: n.status,
+              agentId: n.agentId,
+              outputHash: n.outputHash,
+            })
+          }
+          if (rebuilt.plannerAgentId) plannerByTask.set(taskId, rebuilt.plannerAgentId)
+          dagNodes = rebuilt.nodes.map(n => ({
+            id: n.id,
+            subtask: n.subtask,
+            status: n.status,
+            agentId: n.agentId,
+            outputHash: n.outputHash,
+          }))
         }
       } catch (err) {
         console.warn(`[GET /task/${taskId}] chain rebuild failed:`, err)
       }
     }
 
-    if (!task && !cached) {
+    if (!task && dagNodes.length === 0) {
       reply.code(404)
-      return { error: 'Task not found in storage or live cache', taskId }
+      return { error: 'Task not found in storage or DB', taskId }
     }
     return {
       ...(task as any ?? {}),
-      // The frontend's useSwarmEvents.fetchState reads `data.dag.nodes` — keep
-      // that shape exactly so a URL-loaded task surfaces its DAG without WS
-      // events. null when DAG_READY hasn't fired yet (still planning).
-      dag: cached
-        ? { nodes: cached.nodes, plannerAgentId: cached.plannerAgentId }
+      // useSwarmEvents.fetchState reads data.dag.nodes — keep the shape.
+      dag: dagNodes.length > 0
+        ? { nodes: dagNodes, plannerAgentId: plannerByTask.get(taskId) }
         : null,
     };
   });
@@ -669,9 +715,19 @@ export default async function createServer(deps: ServerDeps) {
    * payload to recover the subtask description. Returns null when the
    * registry has no entry for this taskId.
    */
+  // Local node shape used only inside the chain-rebuild path. Same fields
+  // we feed into `taskState.setStatus` afterwards so the rebuild can
+  // hydrate the DB row in one pass.
+  type RebuiltDagNode = {
+    id: string
+    subtask: string
+    status: 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
+    agentId?: string
+    outputHash?: string
+  }
   async function rebuildDagFromChain(
     taskId: string,
-  ): Promise<{ nodes: CachedDagNode[]; plannerAgentId?: string } | null> {
+  ): Promise<{ nodes: RebuiltDagNode[]; plannerAgentId?: string } | null> {
     const taskIdBytes32 = deriveTaskId(taskId)
     let nodeIds: string[]
     try {
@@ -685,7 +741,7 @@ export default async function createServer(deps: ServerDeps) {
     const ZERO_BYTES32 = '0x' + '0'.repeat(64)
     const ZERO_ADDR = '0x' + '0'.repeat(40)
 
-    const built: CachedDagNode[] = await Promise.all(nodeIds.map(async (nid: string, idx: number) => {
+    const built: RebuiltDagNode[] = await Promise.all(nodeIds.map(async (nid: string, idx: number) => {
       // Read the on-chain DAGNode struct. Tuple positions:
       //   0: nodeId  1: taskId  2: claimedBy  3: outputHash  4: validated
       let claimedBy: string = ''
@@ -703,7 +759,7 @@ export default async function createServer(deps: ServerDeps) {
       const hasOutput = outputHashRaw !== ZERO_BYTES32
       const isClaimed = claimedBy !== '' && claimedBy.toLowerCase() !== ZERO_ADDR
 
-      let status: CachedDagNode['status'] = 'idle'
+      let status: RebuiltDagNode['status'] = 'idle'
       if (validated) status = 'done'
       else if (hasOutput) status = 'pending'
       else if (isClaimed) status = 'claimed'
@@ -742,7 +798,7 @@ export default async function createServer(deps: ServerDeps) {
    */
   fastify.get('/result/:taskId', async (request, reply) => {
     const { taskId } = request.params as any;
-    const result = taskResults.get(taskId);
+    const result = taskResultsView(taskId);
     if (!result) {
       reply.code(404)
       return { error: 'No results yet for task: ' + taskId }
@@ -874,22 +930,111 @@ export default async function createServer(deps: ServerDeps) {
   // Webapp-driven (SIWE-JWT auth) — generate / list / revoke.
   await registerKeysRoutes(fastify, { keyStore, requireAuth, env: sdkEnv })
 
+  // ColonyStore initialised early so /v1/tasks (SDK) can pass it in for
+  // the privacy gate on colony-scoped task submissions. Same SQLite file
+  // as KeyStore / TaskIndex.
+  const colonyStore = new ColonyStore({ dbPath })
+
   // SDK-consumed (apiKeyAuth) — task submission, balance, agent pool.
-  // Tasks route shares the in-memory `taskResults` map maintained at the
-  // top of createServer so /v1/tasks/:id/result and the legacy
-  // /result/:taskId return the same data.
+  // Tasks/profile routes read results through `taskResultsAdapter` — same
+  // `.get(taskId)` shape they used to consume, but every call hits the
+  // SQLite-backed taskState instead of an in-memory map. A server crash
+  // no longer drops result history; the adapter is a one-line shim.
+  const taskResultsAdapter = {
+    get(taskId: string) {
+      return taskResultsView(taskId) ?? undefined
+    },
+  }
+
   await registerTasksRoutes(fastify, {
     keyStore,
     storage: deps.storage,
     network: deps.network,
-    taskResults,
+    taskResults: taskResultsAdapter as any,
     taskIndex,
+    colonyStore,
   })
   await registerBalanceRoutes(fastify, { keyStore })
   await registerAgentsRoutes(fastify, { keyStore, manager: deps.manager })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
-  await registerProfileRoutes(fastify, { taskIndex, requireAuth, taskResults })
+  await registerProfileRoutes(fastify, {
+    taskIndex,
+    requireAuth,
+    taskResults: taskResultsAdapter as any,
+  })
+
+  // Colony surface — same SQLite file as KeyStore / TaskIndex. Two mounts:
+  //   /v1/me/colonies — webapp (JWT). The resolver is a thin wrapper over
+  //                     requireAuth that returns the resolved EOA, or null
+  //                     if requireAuth already wrote a 401.
+  //   /v1/colonies    — reserved for SDK (API-key auth). Mount it later by
+  //                     calling registerColoniesRoutes again with an
+  //                     apiKey-based resolveUser. The route file is
+  //                     parameterised on prefix + resolver so the same
+  //                     handlers serve both surfaces.
+  await registerColoniesRoutes(fastify, {
+    prefix: '/v1/me/colonies',
+    store: colonyStore,
+    manager: deps.manager,
+    taskIndex,
+    resolveUser: async (req, reply) => {
+      const user = requireAuth(req, reply)
+      return user ? { address: user.address } : null
+    },
+  })
+
+  // SDK mount — same handlers behind API-key auth. Inline resolver
+  // mirrors apiKeyAuth's lookup so a missing/invalid key short-circuits
+  // with the same JSON shape SDK consumers see on /v1/tasks/* errors.
+  // Different prefix means the JWT and API-key surfaces never collide.
+  await registerColoniesRoutes(fastify, {
+    prefix: '/v1/colonies',
+    store: colonyStore,
+    manager: deps.manager,
+    taskIndex,
+    resolveUser: async (req, reply) => {
+      const header = req.headers.authorization
+      if (!header || !header.startsWith('Bearer ')) {
+        reply.status(401).send({ error: 'Missing API key', code: 'MISSING_KEY' })
+        return null
+      }
+      const ctx = keyStore.lookup(header.slice(7).trim())
+      if (!ctx) {
+        reply.status(401).send({ error: 'Invalid or revoked API key', code: 'INVALID_KEY' })
+        return null
+      }
+      return { address: ctx.userAddress }
+    },
+  })
+
+  // Internal: agent self-reads its colony memberships every 30s. No auth —
+  // only swarm_default Docker network can hit /internal/* endpoints. The
+  // agentId path param is what the agent passes (it knows its own ID via
+  // env); we just read SQLite by that key.
+  fastify.get<{ Params: { agentId: string } }>('/internal/agents/:agentId/colonies', async (request) => {
+    const { agentId } = request.params
+    const colonyIds = colonyStore.listColoniesForAgent(agentId)
+    return { colony_ids: colonyIds }
+  })
+
+  // Public colony discovery — no auth. Anyone (logged-in or not) can browse
+  // public colonies for the explorer dropdown / pool grouping. Task
+  // submission to a colony still requires auth + the visibility check
+  // inside the /task and /v1/tasks handlers.
+  fastify.get('/v1/colonies/public', async () => {
+    const colonies = colonyStore.listPublic()
+    return {
+      colonies: colonies.map(c => ({
+        id: c.id,
+        name: c.name,
+        description: c.description,
+        owner: c.owner,
+        created_at: c.createdAt,
+        member_count: colonyStore.getMembers(c.id).length,
+      })),
+    }
+  })
 
   console.log(`[API] SDK routes mounted (env=${sdkEnv})`)
 

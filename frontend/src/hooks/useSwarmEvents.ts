@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { wsClient, WSEvent } from '../lib/ws'
 import { EventType, TranscriptStep } from '../../../shared/types'
+import { ENV } from '../../lib/env'
 
 export type SubtaskStatus = 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
 
@@ -79,7 +80,7 @@ export function useSwarmEvents() {
     if (taskIdFromUrl && !dag) {
       const fetchState = async () => {
         try {
-          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/task/${taskIdFromUrl}`)
+          const res = await fetch(`${ENV.API_URL}/task/${taskIdFromUrl}`)
           const data = await res.json()
           if (data && data.dag) {
             setDag({
@@ -103,7 +104,7 @@ export function useSwarmEvents() {
   }, [taskIdFromUrl, dag])
 
   useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001/ws'
+    const apiUrl = ENV.WS_URL
     wsClient.connect(apiUrl)
 
     const handleAll = (event: WSEvent) => {

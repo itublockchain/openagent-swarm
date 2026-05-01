@@ -236,24 +236,40 @@ const AgentNode = ({
 }
 
 interface ConnectionsProps {
-  agents: { id: string; agentId?: string }[]
+  agents: { id: string; agentId?: string; colonies?: string[] }[]
   agentRefs: React.RefObject<THREE.Group | null>[]
   themeColors: ThemeColors
   isDark: boolean
 }
 
-// Full-mesh straight lines, single LineSegments buffer.
+// Group-aware mesh lines. Two agents get connected ONLY if they share at
+// least one "group" — same colonyId, or both have no colony (open pool).
+// Cross-colony agents stay visually isolated even on the same canvas, so
+// the colony clustering reads at a glance instead of a giant tangled mesh.
 const P2PConnections = ({ agents, agentRefs, themeColors, isDark }: ConnectionsProps) => {
   const geomRef = useRef<THREE.BufferGeometry>(null)
   const matRef = useRef<THREE.LineBasicMaterial>(null)
 
   const pairs = useMemo(() => {
     const p: { i: number; j: number }[] = []
+    // Group key for each agent: '__open__' for colonyless, colonyId otherwise.
+    // Two agents connect iff their group sets intersect; multi-colony
+    // membership means an agent links to peers in any of its colonies.
+    const groupSets = agents.map(a => {
+      const colonies = a.colonies ?? []
+      return colonies.length === 0 ? new Set(['__open__']) : new Set(colonies)
+    })
     for (let i = 0; i < agents.length; i++) {
-      for (let j = i + 1; j < agents.length; j++) p.push({ i, j })
+      for (let j = i + 1; j < agents.length; j++) {
+        let shared = false
+        for (const g of groupSets[i]) {
+          if (groupSets[j].has(g)) { shared = true; break }
+        }
+        if (shared) p.push({ i, j })
+      }
     }
     return p
-  }, [agents.length])
+  }, [agents])
 
   useFrame((state) => {
     const geom = geomRef.current
@@ -435,6 +451,12 @@ interface AgentInput {
   name?: string
   status: string
   stakeAmount?: string
+  /** Colony memberships for the connection-grouping pass. When set, the
+   *  P2P mesh only draws lines between agents that share at least one
+   *  group: same colonyId, or both empty (open pool). Colony-A and
+   *  colony-B agents stay visually disconnected even though they're in
+   *  the same swarm — same as the sidebar clustering on the pool page. */
+  colonies?: string[]
 }
 
 export function TopologyMap({

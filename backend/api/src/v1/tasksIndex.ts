@@ -31,6 +31,15 @@ export interface UserTaskRow {
    *  doesn't slip back to "pending" once the in-memory taskResults map
    *  resets. */
   completedAt: string | null
+  /** Optional colony scope this task was routed to. Stored so per-colony
+   *  stats (total / completed / pending) survive process restart. */
+  colonyId: string | null
+}
+
+export interface ColonyTaskStats {
+  total: number
+  completed: number
+  pending: number
 }
 
 export class TaskIndex {
@@ -58,11 +67,17 @@ export class TaskIndex {
       CREATE INDEX IF NOT EXISTS user_tasks_owner_idx ON user_tasks(owner);
     `)
     // Additive migration — older deployments may have the table without
-    // completed_at. PRAGMA table_info enumerates current columns; we only
-    // ALTER if the column is missing so re-runs are idempotent.
+    // completed_at / colony_id. PRAGMA table_info enumerates current columns;
+    // we only ALTER if the column is missing so re-runs are idempotent.
     const cols = this.db.prepare(`PRAGMA table_info(user_tasks)`).all() as Array<{ name: string }>
     if (!cols.some(c => c.name === 'completed_at')) {
       this.db.exec(`ALTER TABLE user_tasks ADD COLUMN completed_at TEXT`)
+    }
+    if (!cols.some(c => c.name === 'colony_id')) {
+      this.db.exec(`ALTER TABLE user_tasks ADD COLUMN colony_id TEXT`)
+      // Index lets per-colony stats stay O(rows-in-colony) rather than full
+      // table scan as the index grows.
+      this.db.exec(`CREATE INDEX IF NOT EXISTS user_tasks_colony_idx ON user_tasks(colony_id) WHERE colony_id IS NOT NULL`)
     }
   }
 
@@ -79,22 +94,41 @@ export class TaskIndex {
   /** Idempotent on conflict — re-broadcast of the same content-addressed
    *  task spec yields the same taskId and we just keep the original row.
    *  Callers don't supply completedAt — it's filled in later by markCompleted
-   *  when DAG_COMPLETED(settled=true) lands. */
-  record(row: Omit<UserTaskRow, 'submittedAt' | 'completedAt'> & { submittedAt?: string }): void {
+   *  when DAG_COMPLETED(settled=true) lands. colonyId is optional; null means
+   *  "public task, no colony scope". */
+  record(row: Omit<UserTaskRow, 'submittedAt' | 'completedAt' | 'colonyId'> & {
+    submittedAt?: string
+    colonyId?: string | null
+  }): void {
     const submittedAt = row.submittedAt ?? new Date().toISOString()
     this.db
       .prepare(
         `INSERT OR IGNORE INTO user_tasks
-         (task_id, owner, spec, budget, source, submitted_at, model)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (task_id, owner, spec, budget, source, submitted_at, model, colony_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(row.taskId, row.owner.toLowerCase(), row.spec, row.budget, row.source, submittedAt, row.model ?? null)
+      .run(row.taskId, row.owner.toLowerCase(), row.spec, row.budget, row.source, submittedAt, row.model ?? null, row.colonyId ?? null)
+  }
+
+  /** Per-colony aggregate. Total = rows tagged with colonyId. Completed =
+   *  rows with completed_at set. Pending = total − completed. Single
+   *  COUNT(*) + COUNT(completed_at) query so it stays cheap as history grows. */
+  getColonyStats(colonyId: string): ColonyTaskStats {
+    const r = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           COUNT(completed_at) AS completed
+         FROM user_tasks WHERE colony_id = ?`,
+      )
+      .get(colonyId) as { total: number; completed: number }
+    return { total: r.total, completed: r.completed, pending: r.total - r.completed }
   }
 
   listForOwner(owner: string, limit = 100): UserTaskRow[] {
     const rows = this.db
       .prepare(
-        `SELECT task_id, owner, spec, budget, source, submitted_at, model, completed_at
+        `SELECT task_id, owner, spec, budget, source, submitted_at, model, completed_at, colony_id
          FROM user_tasks WHERE owner = ?
          ORDER BY submitted_at DESC LIMIT ?`,
       )
@@ -107,6 +141,7 @@ export class TaskIndex {
         submitted_at: string
         model: string | null
         completed_at: string | null
+        colony_id: string | null
       }>
 
     return rows.map(r => ({
@@ -118,6 +153,7 @@ export class TaskIndex {
       submittedAt: r.submitted_at,
       model: r.model,
       completedAt: r.completed_at,
+      colonyId: r.colony_id,
     }))
   }
 

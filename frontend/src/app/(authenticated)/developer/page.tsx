@@ -8,6 +8,7 @@ import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { cn } from '@/lib/utils'
+import { ConfirmModal } from '@/components/ConfirmModal'
 import { ERC20_ABI, SWARM_TREASURY_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
 import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi'
 import { apiRequest } from '../../../../lib/api'
@@ -125,6 +126,14 @@ export default function DeveloperPage() {
   const [createdKey, setCreatedKey] = useState<CreatedKeyResponse | null>(null)
   const [bindStep, setBindStep] = useState<'idle' | 'awaiting-sign' | 'mining' | 'done' | 'error'>('idle')
   const [bindError, setBindError] = useState<string | null>(null)
+  const [confirmState, setConfirmState] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    isDestructive?: boolean;
+    confirmText?: string;
+  }>({ isOpen: false, title: '', message: '', onConfirm: () => {} })
 
   const toggleScope = (s: Scope) =>
     setGenScopes(prev => {
@@ -386,14 +395,23 @@ export default function DeveloperPage() {
   }
 
   const onRevoke = async (k: ApiKey) => {
-    if (!confirm(`Revoke key "${k.name ?? k.prefix}"? This cannot be undone.`)) return
-    try {
-      const res = await apiRequest(`/v1/keys/${k.id}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error(`revoke failed (${res.status})`)
-      await reloadKeys()
-    } catch (e) {
-      alert(errMsg(e))
-    }
+    setConfirmState({
+      isOpen: true,
+      title: 'Revoke API Key',
+      message: `Are you sure you want to revoke key "${k.name ?? k.prefix}"? This action cannot be undone and any application using this key will lose access immediately.`,
+      isDestructive: true,
+      confirmText: 'Revoke Key',
+      onConfirm: async () => {
+        setConfirmState(prev => ({ ...prev, isOpen: false }))
+        try {
+          const res = await apiRequest(`/v1/keys/${k.id}`, { method: 'DELETE' })
+          if (!res.ok) throw new Error(`revoke failed (${res.status})`)
+          await reloadKeys()
+        } catch (e) {
+          alert(errMsg(e))
+        }
+      }
+    })
   }
 
   const visibleKeys = keys.filter(k => !k.revokedAt)
@@ -607,10 +625,19 @@ export default function DeveloperPage() {
           bindError={bindError}
           onBind={bindCreatedKey}
           onClose={() => {
-            // Discourage close before bind — the key is unusable on-chain
-            // until bindKey lands.
             if (bindStep !== 'done') {
-              if (!confirm('Bind transaction not confirmed yet. Close anyway? You can re-run bindKey from the contract directly using the chain hash you copied.')) return
+              setConfirmState({
+                isOpen: true,
+                title: 'Close without binding?',
+                message: 'The on-chain bind transaction is not confirmed yet. If you close now, this key will work for API requests but will not be able to spend Treasury balance. You can re-run bindKey manually later.',
+                confirmText: 'Close Anyway',
+                onConfirm: () => {
+                  setConfirmState(prev => ({ ...prev, isOpen: false }))
+                  setCreatedKey(null)
+                  reloadKeys()
+                }
+              })
+              return
             }
             setCreatedKey(null)
             reloadKeys()
@@ -619,6 +646,16 @@ export default function DeveloperPage() {
       )}
 
       <DeployAgentModal isOpen={isDeployOpen} onClose={() => setIsDeployOpen(false)} onSuccess={() => {}} />
+
+      <ConfirmModal
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmText={confirmState.confirmText}
+        isDestructive={confirmState.isDestructive}
+        onConfirm={confirmState.onConfirm}
+        onClose={() => setConfirmState(prev => ({ ...prev, isOpen: false }))}
+      />
     </div>
   )
 }

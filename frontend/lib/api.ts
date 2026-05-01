@@ -1,4 +1,6 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+import { ENV } from './env'
+
+const API_URL = ENV.API_URL
 
 /** Custom event AuthContext listens for to flush its in-memory JWT state
  *  the moment the backend rejects a stored token. Stays in lib/ to avoid
@@ -11,10 +13,16 @@ export async function apiRequest(
 ): Promise<Response> {
   const jwt = typeof window !== 'undefined' ? localStorage.getItem('swarm_jwt') : null
 
+  // Only stamp Content-Type when there's actually a body. Fastify's default
+  // JSON content-type-parser throws a 400 (FST_ERR_CTP_EMPTY_JSON_BODY) on
+  // body-less requests that still announce application/json — every DELETE
+  // / GET routed through this helper used to hit that even though the
+  // server-side handler had no body parsing at all.
+  const hasBody = options.body !== undefined && options.body !== null
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
       ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
       ...options.headers,
     },

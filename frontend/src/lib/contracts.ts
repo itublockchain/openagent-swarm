@@ -172,8 +172,10 @@ export const SWARM_TREASURY_ABI = [
   },
 ] as const
 
+import { ENV } from '../../lib/env'
+
 export const CONTRACT_ADDRESSES = {
-  usdc: process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}` | undefined,
-  escrow: process.env.NEXT_PUBLIC_ESCROW_ADDRESS as `0x${string}` | undefined,
-  treasury: process.env.NEXT_PUBLIC_TREASURY_ADDRESS as `0x${string}` | undefined,
+  usdc: ENV.USDC_ADDRESS,
+  escrow: ENV.ESCROW_ADDRESS,
+  treasury: ENV.TREASURY_ADDRESS,
 }

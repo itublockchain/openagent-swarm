@@ -7,6 +7,7 @@ import type { KeyStore } from './keystore'
 import type { IStoragePort, INetworkPort } from '../../../../shared/ports'
 import { EventType } from '../../../../shared/types'
 import type { TaskIndex } from './tasksIndex'
+import type { ColonyStore } from './colonyStore'
 
 // Same shape as the legacy TaskSchema in ../schemas.ts but redefined here
 // so v1 routes don't drift if the legacy schema gains user-flow-only
@@ -18,6 +19,10 @@ const SubmitTaskBody = z.object({
     .regex(/^\d+(\.\d+)?$/, 'budget must be a positive decimal string'),
   model: z.string().trim().max(120).optional(),
   metadata: z.record(z.unknown()).optional(),
+  // Optional colony scope. snake_case in body to match the rest of the
+  // SDK surface; we forward it as `colonyId` in the AXL payload (camelCase
+  // is what SwarmAgent reads).
+  colony_id: z.string().trim().min(1).optional(),
 })
 
 interface RegisterOpts {
@@ -31,6 +36,8 @@ interface RegisterOpts {
   /** Per-owner task index — populated on every successful SDK submit so
    *  the profile page can enumerate the user's history. */
   taskIndex: TaskIndex
+  /** Colony lookup for the privacy gate on colony-scoped task submission. */
+  colonyStore: ColonyStore
 }
 
 /**
@@ -49,7 +56,7 @@ function deriveTaskId(specHash: string): string {
  * are public RPC.
  */
 export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOpts) {
-  const { keyStore, storage, network, taskResults, taskIndex } = opts
+  const { keyStore, storage, network, taskResults, taskIndex, colonyStore } = opts
   const auth = apiKeyAuth({ keyStore })
   const submitGate = requireScope('tasks:submit')
   const readGate = requireScope('tasks:read')
@@ -165,6 +172,27 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
       remaining = balance - budgetWei // best-effort
     }
 
+    // 5b. Colony scope authz. Done AFTER Treasury spend because the spend
+    //     is the irreversible step — once budget moved, we want to actually
+    //     dispatch. Private colony with non-owner caller still 403s here,
+    //     but a refund mechanism would need explicit user action.
+    //     (Frontend should validate visibility before submit; this is the
+    //     server-side defence.)
+    if (body.colony_id) {
+      const colony = colonyStore.get(body.colony_id)
+      if (!colony || colony.archivedAt) {
+        reply.status(404).send({ error: 'Colony not found', code: 'COLONY_NOT_FOUND' })
+        return
+      }
+      if (colony.visibility === 'private' && colony.owner !== ctx.userAddress.toLowerCase()) {
+        reply.status(403).send({
+          error: 'Colony is private — only its owner can submit tasks here',
+          code: 'COLONY_PRIVATE',
+        })
+        return
+      }
+    }
+
     // 6. Broadcast to AXL — same payload shape the existing /task uses
     //    so workers/planners pick it up without any code change.
     await network.emit({
@@ -178,6 +206,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
         specHash,
         submittedBy: ctx.userAddress,
         submittedVia: 'sdk',
+        colonyId: body.colony_id,
       },
       timestamp: Date.now(),
       agentId: 'api-server',
@@ -193,6 +222,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
       budget: body.budget,
       source: 'sdk',
       model: body.model ?? null,
+      colonyId: body.colony_id ?? null,
     })
 
     reply.status(202).send({

@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useAccount, useBalance, useReadContract, useReadContracts } from 'wagmi'
-import { Wallet, Bot, ListChecks, ChevronDown, ChevronUp, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power } from 'lucide-react'
+import { Wallet, Bot, ListChecks, ChevronDown, ChevronUp, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
 import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { AgentActionModal, type ActionMode } from '@/components/AgentActionModal'
+import { ColonyModal, type ColonyModalMode } from '@/components/ColonyModal'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { cn, shortHash } from '@/lib/utils'
 import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
 import { ogTestnet } from '../../../../lib/wagmi'
 import { apiRequest } from '../../../../lib/api'
+import { ENV } from '../../../../lib/env'
 
 interface AgentRecord {
   agentId: string
@@ -40,11 +42,30 @@ interface NodeResult {
   result: string
 }
 
+interface ColonySummary {
+  id: string
+  name: string
+  description: string | null
+  visibility: 'private' | 'public'
+  owner: string
+  created_at: string
+  member_count: number
+  task_stats: { total: number; completed: number; pending: number }
+}
+
 export default function ProfilePage() {
   const { address, isConnected } = useAccount()
   const usdcAddr = CONTRACT_ADDRESSES.usdc
   const [isDeployOpen, setIsDeployOpen] = useState(false)
   const [actionModal, setActionModal] = useState<{ mode: ActionMode; agent: AgentRecord } | null>(null)
+  const [colonyModalMode, setColonyModalMode] = useState<ColonyModalMode | null>(null)
+  const [colonies, setColonies] = useState<ColonySummary[]>([])
+  const [coloniesLoaded, setColoniesLoaded] = useState(false)
+  // When the user clicks "Deploy & add" inside a colony detail modal we
+  // stash the colony id here, hide the colony modal, and open the deploy
+  // modal. On deploy success we POST the new agentId into this colony, then
+  // re-open the colony modal so the user immediately sees the new member.
+  const [pendingDeployToColony, setPendingDeployToColony] = useState<string | null>(null)
 
   // ---------- Wallet stats ----------
   const nativeBalanceQ = useBalance({
@@ -73,7 +94,7 @@ export default function ProfilePage() {
 
   const reloadAgents = useCallback(async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/agent/pool`)
+      const res = await fetch(`${ENV.API_URL}/agent/pool`)
       if (!res.ok) throw new Error(`pool fetch failed (${res.status})`)
       const all = (await res.json()) as AgentRecord[]
       setAgents(all)
@@ -147,6 +168,28 @@ export default function ProfilePage() {
     const t = setInterval(reloadTasks, 8_000)
     return () => clearInterval(t)
   }, [isConnected, reloadTasks])
+
+  const reloadColonies = useCallback(async () => {
+    try {
+      const res = await apiRequest('/v1/me/colonies')
+      if (!res.ok) throw new Error(`colonies fetch failed (${res.status})`)
+      const data = (await res.json()) as { colonies: ColonySummary[] }
+      setColonies(data.colonies)
+    } catch (err) {
+      console.error('[profile] colonies error:', err)
+    } finally {
+      setColoniesLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isConnected) return
+    reloadColonies()
+    // Slower refresh than agents/tasks — colonies change rarely (user
+    // explicit edits), no need to spam the SQLite read every 8s.
+    const t = setInterval(reloadColonies, 30_000)
+    return () => clearInterval(t)
+  }, [isConnected, reloadColonies])
 
   const toggleExpand = async (taskId: string) => {
     if (expanded === taskId) {
@@ -349,6 +392,93 @@ export default function ProfilePage() {
             )}
           </section>
 
+          {/* Colonies */}
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Layers className="w-4 h-4 text-muted-foreground" />
+                My colonies
+                <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                  ({colonies.length})
+                </span>
+              </h2>
+              <button
+                onClick={() => setColonyModalMode({ kind: 'create' })}
+                className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-md border border-border bg-background hover:bg-muted transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                New colony
+              </button>
+            </div>
+
+            {!coloniesLoaded ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {Array.from({ length: 2 }).map((_, i) => (
+                  <div key={i} className="h-20 rounded-lg bg-muted/30 animate-pulse" />
+                ))}
+              </div>
+            ) : colonies.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border bg-muted/20 px-6 py-8 text-center text-sm text-muted-foreground">
+                No colonies yet. Create one to scope tasks to a curated subset of your agents.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {colonies.map(c => (
+                  <button
+                    key={c.id}
+                    onClick={() => setColonyModalMode({ kind: 'detail', colonyId: c.id })}
+                    className="rounded-lg border border-border bg-card p-4 space-y-2 text-left hover:border-foreground/20 hover:bg-muted/40 transition-colors"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className={cn(
+                            'shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider border',
+                            c.visibility === 'public'
+                              ? 'bg-blue-500/10 text-blue-500 border-blue-500/20'
+                              : 'bg-muted text-muted-foreground border-border',
+                          )}
+                          title={c.visibility === 'public' ? 'Anyone can submit tasks' : 'Only you can submit tasks'}
+                        >
+                          {c.visibility}
+                        </span>
+                        <div className="font-bold text-sm truncate">{c.name}</div>
+                      </div>
+                      <span className="shrink-0 text-[10px] font-mono text-muted-foreground tabular-nums">
+                        {c.member_count} agent{c.member_count === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    {c.description && (
+                      <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">
+                        {c.description}
+                      </p>
+                    )}
+                    {/* Task stats — three counts in tight tabular layout. Hidden
+                        when zero so brand-new colonies don't show "0 / 0 / 0". */}
+                    {c.task_stats.total > 0 && (
+                      <div className="flex items-center gap-2 text-[10px] font-mono pt-1 border-t border-border/40">
+                        <span className="text-foreground/80 tabular-nums">
+                          <span className="text-muted-foreground/70">total</span> {c.task_stats.total}
+                        </span>
+                        <span className="text-green-600 dark:text-green-500 tabular-nums">
+                          <span className="opacity-70">✓</span> {c.task_stats.completed}
+                        </span>
+                        {c.task_stats.pending > 0 && (
+                          <span className="text-yellow-600 dark:text-yellow-500 tabular-nums">
+                            <span className="opacity-70">…</span> {c.task_stats.pending}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <div className="text-[10px] font-mono text-muted-foreground/70">
+                      {new Date(c.created_at).toLocaleDateString()}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </section>
+
           {/* Tasks */}
           <section className="space-y-3">
             <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -464,7 +594,36 @@ export default function ProfilePage() {
         </div>
       </main>
 
-      <DeployAgentModal isOpen={isDeployOpen} onClose={() => setIsDeployOpen(false)} onSuccess={() => {}} />
+      <DeployAgentModal
+        isOpen={isDeployOpen}
+        onClose={() => {
+          setIsDeployOpen(false)
+          // Cancel any pending colony auto-add — user closed without deploying.
+          setPendingDeployToColony(null)
+        }}
+        onSuccess={async ({ agentId }) => {
+          if (pendingDeployToColony) {
+            // Auto-add the freshly-deployed agent to the colony the user
+            // came from, then re-open ColonyModal so they see the new
+            // member without re-navigating.
+            const colonyId = pendingDeployToColony
+            setPendingDeployToColony(null)
+            try {
+              await apiRequest(`/v1/me/colonies/${colonyId}/agents`, {
+                method: 'POST',
+                body: JSON.stringify({ agent_id: agentId }),
+              })
+            } catch (err) {
+              console.error('[profile] auto-add to colony failed:', err)
+            }
+            await Promise.all([reloadAgents(), reloadColonies()])
+            setColonyModalMode({ kind: 'detail', colonyId })
+          } else {
+            reloadAgents()
+            reloadColonies()
+          }
+        }}
+      />
       {actionModal && (
         <AgentActionModal
           mode={actionModal.mode}
@@ -481,6 +640,28 @@ export default function ProfilePage() {
             // updated stake / status / balance shows without a manual reload.
             setActionModal(null)
             reloadAgents()
+          }}
+        />
+      )}
+      {colonyModalMode && (
+        <ColonyModal
+          mode={colonyModalMode}
+          myAgents={myAgents.map(a => ({
+            agentId: a.agentId,
+            name: a.name,
+            agentAddress: a.agentAddress,
+            status: a.status,
+          }))}
+          onClose={() => setColonyModalMode(null)}
+          onChanged={reloadColonies}
+          onRequestDeployAndAdd={(colonyId) => {
+            // Hand off to DeployAgentModal — its onSuccess handler reads
+            // pendingDeployToColony and POSTs the new agentId into the
+            // colony, then re-opens this modal in detail mode for the
+            // same colony.
+            setPendingDeployToColony(colonyId)
+            setColonyModalMode(null)
+            setIsDeployOpen(true)
           }}
         />
       )}
