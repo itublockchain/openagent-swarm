@@ -11,7 +11,7 @@ import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
 import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
-import { Send } from 'lucide-react';
+import { Send, Loader2, Plus } from 'lucide-react';
 import { CopyableId } from '@/components/ui/copyable-id';
 import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
@@ -580,55 +580,118 @@ function DashboardContent() {
             </div>
           )}
 
-          {/* Suggested intents — fills textarea, user reviews + dispatches */}
-          <IntentSuggestions
-            onPick={(text) => {
-              setInputText(text);
-              requestAnimationFrame(() => {
-                const ta = textareaRef.current;
-                if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); }
-              });
-            }}
-          />
+          {/* Once a task is in flight (or one is loaded from ?taskId), the
+              intent input is moot — we collapse it and show a compact dispatch
+              indicator. The "New intent" reset below brings the textarea back. */}
+          {(() => {
+            const isDispatching =
+              submitStep === 'preparing' ||
+              submitStep === 'approving' ||
+              submitStep === 'creating' ||
+              submitStep === 'submitting';
+            const hasActiveTask = !!taskIdFromUrl;
+            const showLoader = isDispatching || hasActiveTask;
 
-          {/* Prompt Area */}
-          <div className="p-4 border-t border-border bg-background">
-            <div className="relative group">
-              <textarea
-                ref={textareaRef}
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
-                disabled={submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error'}
-                className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24 disabled:opacity-60"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    submitRealDAG(inputText);
-                    setInputText("");
-                  }
-                }}
-              />
-              <button
-                onClick={() => {
-                  submitRealDAG(inputText);
-                  setInputText("");
-                }}
-                disabled={
-                  !inputText.trim() ||
-                  (submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error')
-                }
-                className="absolute bottom-3 right-3 p-2 bg-primary text-primary-foreground rounded-lg hover:scale-105 transition-transform disabled:opacity-30 disabled:hover:scale-100"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-              {submitStep !== 'idle' && submitStep !== 'done' && (
-                <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-primary">
-                  {submitStep === 'preparing' && 'Preparing...'}
-                  {submitStep === 'approving' && 'Approving USDC...'}
-                  {submitStep === 'creating' && 'Creating on-chain...'}
-                  {submitStep === 'submitting' && 'Submitting to swarm...'}
-                  {submitStep === 'error' && '⚠ Error — see logs'}
+            if (!showLoader) {
+              return (
+                <>
+                  {/* Suggested intents — fills textarea, user reviews + dispatches */}
+                  <IntentSuggestions
+                    onPick={(text) => {
+                      setInputText(text);
+                      requestAnimationFrame(() => {
+                        const ta = textareaRef.current;
+                        if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); }
+                      });
+                    }}
+                  />
+
+                  {/* Prompt Area */}
+                  <div className="p-4 border-t border-border bg-background">
+                    <div className="relative group">
+                      <textarea
+                        ref={textareaRef}
+                        value={inputText}
+                        onChange={(e) => setInputText(e.target.value)}
+                        placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
+                        className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            submitRealDAG(inputText);
+                            setInputText("");
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => {
+                          submitRealDAG(inputText);
+                          setInputText("");
+                        }}
+                        disabled={!inputText.trim()}
+                        className="absolute bottom-3 right-3 p-2 bg-primary text-primary-foreground rounded-lg hover:scale-105 transition-transform disabled:opacity-30 disabled:hover:scale-100"
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                      {submitStep === 'error' && (
+                        <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-red-500">
+                          ⚠ Error — see logs
+                        </div>
+                      )}
+                    </div>
+                    <PromptConfigRow
+                      model={model}
+                      budget={budget}
+                      onModelChange={setModel}
+                      onBudgetChange={setBudget}
+                    />
+                  </div>
+                </>
+              );
+            }
+
+            const dispatchLabel =
+              submitStep === 'preparing' ? 'Preparing spec…'
+              : submitStep === 'approving' ? 'Approving USDC…'
+              : submitStep === 'creating' ? 'Creating task on-chain…'
+              : submitStep === 'submitting' ? 'Broadcasting to swarm…'
+              : dag ? 'DAG live — awaiting subtasks'
+              : 'Awaiting DAG from planner…';
+
+            const handleNewIntent = () => {
+              const params = new URLSearchParams(searchParams.toString());
+              params.delete('taskId');
+              params.delete('intent');
+              const qs = params.toString();
+              router.replace(qs ? `?${qs}` : '?');
+              setSubmitStep('idle');
+              setInputText('');
+            };
+
+            return (
+              <div className="p-4 border-t border-border bg-background">
+                <div className="rounded-xl border border-primary/20 bg-primary/5 px-4 py-3.5 flex items-center gap-3">
+                  <div className="relative shrink-0">
+                    <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                    <span className="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-primary mb-0.5">
+                      Swarm working
+                    </div>
+                    <div className="text-xs text-foreground/85 truncate">{dispatchLabel}</div>
+                  </div>
+                  {/* Only let the user reset once the on-chain dispatch is past;
+                      mid-flight reset would orphan a signed-but-unbroadcast task. */}
+                  {!isDispatching && (
+                    <button
+                      onClick={handleNewIntent}
+                      className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-muted-foreground hover:text-foreground border border-border hover:border-foreground/40 rounded-md px-2 py-1 transition-colors"
+                    >
+                      <Plus className="w-3 h-3" />
+                      New intent
+                    </button>
+                  )}
                 </div>
               )}
             </div>
