@@ -8,7 +8,7 @@ export function CTASection() {
           Where should we start?
         </h2>
         <p className="text-muted-foreground mb-10">
-          Drop in an intent. We&apos;ll spin up the DAG and dispatch it to SPORE.
+          Drop in an intent. The runtime will self-organize a DAG and dispatch it permissionlessly.
         </p>
         <LandingPrompt />
       </div>

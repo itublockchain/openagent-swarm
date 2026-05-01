@@ -33,11 +33,11 @@ export function Stack() {
             The stack
           </span>
           <h2 className="text-3xl md:text-4xl font-extrabold tracking-tighter">
-            Three primitives. One execution layer.
+            Three primitives. One orchestration runtime.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
             SPORE composes decentralized storage, compute, transport, and settlement into a single
-            stake-secured pipeline.
+            permissionless, stake-secured pipeline.
           </p>
         </div>
 

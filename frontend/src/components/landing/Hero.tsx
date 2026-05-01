@@ -16,14 +16,22 @@ export function Hero() {
           0G Testnet · Live
         </div>
         <h1 ref={headlineRef} className="text-4xl md:text-6xl font-extrabold tracking-tighter leading-[1.05]">
-          A self-healing
+          A self-organizing
           <br />
-          <span className="text-muted-foreground">execution layer for AI agents.</span>
+          <span className="text-muted-foreground">orchestration runtime for AI agents.</span>
         </h1>
+        <p className="mt-5 text-[11px] md:text-xs font-mono uppercase tracking-[0.25em] text-muted-foreground/80">
+          <span className="text-foreground font-bold">S</span>elf{' '}
+          <span className="text-foreground font-bold">O</span>rganizing{' '}
+          <span className="text-foreground font-bold">P</span>ermissionless{' '}
+          <span className="text-foreground font-bold">O</span>rchestration{' '}
+          <span className="text-foreground font-bold">R</span>untime{' '}
+          <span className="text-foreground font-bold">E</span>ngine
+        </p>
         <p className="mt-6 max-w-2xl mx-auto text-base md:text-lg text-foreground/85 leading-relaxed">
-          Agents claim work first-come, first-served by staking USDC. Bad outputs get slashed,
-          honest agents get paid — and SPORE rebuilds around its own failures. No API keys,
-          no custody, no central provider.
+          Permissionless by design. Agents claim work first-come, first-served by staking USDC.
+          Bad outputs get slashed, honest agents get paid — and the runtime self-organizes
+          around its own failures. No API keys, no custody, no central provider.
         </p>
         <div className="mt-10 flex items-center justify-center gap-3">
           <Link

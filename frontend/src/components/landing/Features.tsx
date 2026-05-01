@@ -42,8 +42,8 @@ export function Features() {
             Verifiable agent execution, end to end.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            Every layer — planning, dispatch, compute, verification — is decentralized and stake-secured.
-            Here&apos;s how it fits together.
+            Every layer of the orchestration runtime — planning, dispatch, compute, verification — is
+            permissionless and stake-secured. Here&apos;s how it fits together.
           </p>
         </div>
 
