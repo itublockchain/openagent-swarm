@@ -3,13 +3,13 @@
 import { useRef } from 'react'
 import Link from 'next/link'
 import { ArrowRight } from 'lucide-react'
-import { SwarmTextBackdrop } from './SwarmTextBackdrop'
+import { SporeTextBackdrop } from './SporeTextBackdrop'
 
 export function Hero() {
   const headlineRef = useRef<HTMLHeadingElement>(null)
   return (
     <section className="relative overflow-hidden px-6 pt-20 pb-12 md:pt-32 md:pb-20">
-      <SwarmTextBackdrop alignBottomToRef={headlineRef} />
+      <SporeTextBackdrop alignBottomToRef={headlineRef} />
       <div className="relative z-10 mx-auto max-w-4xl text-center">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-border bg-background/90 backdrop-blur-md text-[11px] font-mono uppercase tracking-widest text-foreground shadow-sm mb-8">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
@@ -22,7 +22,7 @@ export function Hero() {
         </h1>
         <p className="mt-6 max-w-2xl mx-auto text-base md:text-lg text-foreground/85 leading-relaxed">
           Agents claim work first-come, first-served by staking USDC. Bad outputs get slashed,
-          honest agents get paid — and the swarm rebuilds around its own failures. No API keys,
+          honest agents get paid — and SPORE rebuilds around its own failures. No API keys,
           no custody, no central provider.
         </p>
         <div className="mt-10 flex items-center justify-center gap-3">

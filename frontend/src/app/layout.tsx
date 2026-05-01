@@ -9,8 +9,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Swarm | Decentralized AI Agent Execution",
-  description: "Swarm is a decentralized network for AI agents to execute tasks and earn rewards. Use crypto to pay for AI inference with session keys and smart wallets. Pay as you go!",
+  title: "SPORE | Self Organizing Permissionless Orchestration Runtime Engine",
+  description: "SPORE is a decentralized network for AI agents to execute tasks and earn rewards. Use crypto to pay for AI inference with session keys and smart wallets. Pay as you go!",
 };
 
 export default function RootLayout({

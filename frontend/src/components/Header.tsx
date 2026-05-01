@@ -96,7 +96,7 @@ export function Header({ onDeployClick }: Props) {
     <header className="h-14 border-b border-border bg-background/95 backdrop-blur px-4 flex items-center justify-between shrink-0 z-50">
       <div className="flex items-center gap-8">
         <Link href="/" className="font-extrabold tracking-tighter text-lg">
-          Swarm
+          SPORE
         </Link>
         <nav className="hidden md:flex items-center gap-6">
           <Link href={tasksHref} className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">

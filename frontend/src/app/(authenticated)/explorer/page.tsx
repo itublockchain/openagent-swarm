@@ -11,14 +11,14 @@ import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
 import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
-import { Send } from 'lucide-react';
+import { Send, Loader2 } from 'lucide-react';
 import { CopyableId } from '@/components/ui/copyable-id';
-import { useSwarmEvents, SubtaskStatus } from '@/hooks/useSwarmEvents';
+import { useSporeEvents, SubtaskStatus } from '@/hooks/useSporeEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
 import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi';
-import { ERC20_ABI, SWARM_ESCROW_ABI } from '@/lib/contracts';
+import { ERC20_ABI, SPORE_ESCROW_ABI } from '@/lib/contracts';
 import { cn } from '@/lib/utils';
 
 const nodeTypes = {
@@ -43,7 +43,7 @@ function DashboardContent() {
     "Ready to generate and deploy DAG."
   ]);
 
-  const { dag, events, taskIdFromUrl } = useSwarmEvents();
+  const { dag, events, taskIdFromUrl } = useSporeEvents();
 
   // Resizable right panel: min = 380px (initial size), max = 50vw.
   // Inline width is only applied at md+ — below that the panel stacks full-width.
@@ -197,7 +197,7 @@ function DashboardContent() {
   // User-signed task submission flow:
   //   1. /task/prepare → backend uploads spec to storage, returns taskIdBytes32 + budgetWei
   //   2. wagmi: USDC.approve(escrow, budget) — skipped if existing allowance is sufficient
-  //   3. wagmi: SwarmEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
+  //   3. wagmi: SporeEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
   //   4. /task → backend verifies on-chain task exists, broadcasts to AXL mesh
   const submitRealDAG = async (intent: string) => {
     if (!walletAddress) {
@@ -280,7 +280,7 @@ function DashboardContent() {
       setSubmitStep('creating');
       const existing = (await readContract(wagmiConfig, {
         address: prep.escrowAddress,
-        abi: SWARM_ESCROW_ABI,
+        abi: SPORE_ESCROW_ABI,
         functionName: 'tasks',
         args: [prep.taskIdBytes32],
       })) as readonly [`0x${string}`, bigint, bigint, boolean];
@@ -292,7 +292,7 @@ function DashboardContent() {
         setLogs(prev => [...prev, `[L2] Creating task on-chain...`]);
         const createHash = await writeContractAsync({
           address: prep.escrowAddress,
-          abi: SWARM_ESCROW_ABI,
+          abi: SPORE_ESCROW_ABI,
           functionName: 'createTask',
           args: [prep.taskIdBytes32, budgetWei],
           chainId: ogTestnet.id,
@@ -305,7 +305,7 @@ function DashboardContent() {
           // landed. Verify on-chain state directly before giving up.
           const verify = (await readContract(wagmiConfig, {
             address: prep.escrowAddress,
-            abi: SWARM_ESCROW_ABI,
+            abi: SPORE_ESCROW_ABI,
             functionName: 'tasks',
             args: [prep.taskIdBytes32],
           })) as readonly [`0x${string}`, bigint, bigint, boolean];
@@ -372,7 +372,7 @@ function DashboardContent() {
       {/* Main Content Split */}
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
         
-        {/* Left: Swarm Intelligence Flow (React Flow) */}
+        {/* Left: SPORE Intelligence Flow (React Flow) */}
         <div className="flex-1 flex flex-col border-r border-border bg-muted/5 min-w-0">
           <div className="h-9 px-4 border-b border-border bg-background/85 backdrop-blur flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-muted-foreground shrink-0">
             <div className="flex items-center gap-1.5">
@@ -446,7 +446,7 @@ function DashboardContent() {
               <Background color="#888" gap={20} />
               <Controls className="fill-foreground" />
             </ReactFlow>
-            {nodes.length === 0 && <CanvasEmptyState />}
+            <CanvasEmptyState visible={nodes.length === 0 && submitStep === 'idle' && !taskIdFromUrl} />
 
             {/* Status legend */}
             {nodes.length > 0 && (
@@ -486,71 +486,119 @@ function DashboardContent() {
               <div className="min-w-0">
                 <div className="font-bold text-yellow-600 dark:text-yellow-400 uppercase tracking-wider text-[10px] mb-0.5">Intent queued</div>
                 <p className="text-muted-foreground leading-snug">
-                  Connect your wallet to dispatch <span className="text-foreground italic">&ldquo;{intentParam.length > 60 ? intentParam.slice(0, 60) + '…' : intentParam}&rdquo;</span> to the swarm.
+                  Connect your wallet to dispatch <span className="text-foreground italic">&ldquo;{intentParam.length > 60 ? intentParam.slice(0, 60) + '…' : intentParam}&rdquo;</span> to SPORE.
                 </p>
               </div>
             </div>
           )}
 
-          {/* Suggested intents — fills textarea, user reviews + dispatches */}
-          <IntentSuggestions
-            onPick={(text) => {
-              setInputText(text);
-              requestAnimationFrame(() => {
-                const ta = textareaRef.current;
-                if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); }
-              });
-            }}
-          />
+          {(() => {
+            const isSubmitting = submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error';
+            const isAwaitingDag = !!taskIdFromUrl && !dag;
+            const isTaskActive = isSubmitting || !!taskIdFromUrl;
+            const isLoading = isSubmitting || isAwaitingDag;
 
-          {/* Prompt Area */}
-          <div className="p-4 border-t border-border bg-background">
-            <div className="relative group">
-              <textarea
-                ref={textareaRef}
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="Enter swarm intent (e.g. Research AI trends on X)..."
-                disabled={submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error'}
-                className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24 disabled:opacity-60"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    submitRealDAG(inputText);
-                    setInputText("");
-                  }
-                }}
-              />
-              <button
-                onClick={() => {
-                  submitRealDAG(inputText);
-                  setInputText("");
-                }}
-                disabled={
-                  !inputText.trim() ||
-                  (submitStep !== 'idle' && submitStep !== 'done' && submitStep !== 'error')
-                }
-                className="absolute bottom-3 right-3 p-2 bg-primary text-primary-foreground rounded-lg hover:scale-105 transition-transform disabled:opacity-30 disabled:hover:scale-100"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-              {submitStep !== 'idle' && submitStep !== 'done' && (
-                <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-primary">
-                  {submitStep === 'preparing' && 'Preparing...'}
-                  {submitStep === 'approving' && 'Approving USDC...'}
-                  {submitStep === 'creating' && 'Creating on-chain...'}
-                  {submitStep === 'submitting' && 'Submitting to swarm...'}
-                  {submitStep === 'error' && '⚠ Error — see logs'}
+            const loadingLabel =
+              submitStep === 'preparing' ? 'Preparing spec...' :
+              submitStep === 'approving' ? 'Approving USDC...' :
+              submitStep === 'creating' ? 'Creating task on-chain...' :
+              submitStep === 'submitting' ? 'Broadcasting to SPORE...' :
+              isAwaitingDag ? 'Awaiting DAG from planner...' :
+              'Working...';
+
+            if (isTaskActive) {
+              return (
+                <div className="p-6 border-t border-border bg-background flex flex-col items-center justify-center gap-3 text-center">
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                      <div className="space-y-1">
+                        <p className="text-xs font-bold uppercase tracking-widest text-primary">
+                          {loadingLabel}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground leading-snug max-w-xs">
+                          Watch the canvas — agents will start claiming subtasks once the planner seals the DAG.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                        Task running
+                      </span>
+                      <button
+                        onClick={() => {
+                          router.push('/explorer');
+                          setInputText('');
+                          setSubmitStep('idle');
+                        }}
+                        className="text-[11px] font-semibold text-primary hover:text-primary/80 transition-colors"
+                      >
+                        + Submit another intent
+                      </button>
+                    </>
+                  )}
                 </div>
-              )}
-            </div>
-            <PromptConfigRow
-              model={model}
-              budget={budget}
-              onModelChange={setModel}
-              onBudgetChange={setBudget}
-            />
-          </div>
+              );
+            }
+
+            return (
+              <>
+                {/* Suggested intents — fills textarea, user reviews + dispatches */}
+                <IntentSuggestions
+                  onPick={(text) => {
+                    setInputText(text);
+                    requestAnimationFrame(() => {
+                      const ta = textareaRef.current;
+                      if (ta) { ta.focus(); ta.setSelectionRange(text.length, text.length); }
+                    });
+                  }}
+                />
+
+                {/* Prompt Area */}
+                <div className="p-4 border-t border-border bg-background">
+                  <div className="relative group">
+                    <textarea
+                      ref={textareaRef}
+                      value={inputText}
+                      onChange={(e) => setInputText(e.target.value)}
+                      placeholder="Enter SPORE intent (e.g. Research AI trends on X)..."
+                      className="w-full bg-muted/30 border border-border rounded-xl p-4 pr-12 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none h-24"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          submitRealDAG(inputText);
+                          setInputText("");
+                        }
+                      }}
+                    />
+                    <button
+                      onClick={() => {
+                        submitRealDAG(inputText);
+                        setInputText("");
+                      }}
+                      disabled={!inputText.trim()}
+                      className="absolute bottom-3 right-3 p-2 bg-primary text-primary-foreground rounded-lg hover:scale-105 transition-transform disabled:opacity-30 disabled:hover:scale-100"
+                    >
+                      <Send className="w-4 h-4" />
+                    </button>
+                    {submitStep === 'error' && (
+                      <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-red-500">
+                        ⚠ Error — see logs
+                      </div>
+                    )}
+                  </div>
+                  <PromptConfigRow
+                    model={model}
+                    budget={budget}
+                    onModelChange={setModel}
+                    onBudgetChange={setBudget}
+                  />
+                </div>
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -565,7 +613,7 @@ function DashboardContent() {
 
 export default function ExplorerPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading Swarm Explorer...</div>}>
+    <Suspense fallback={<div className="p-8 text-sm text-muted-foreground">Loading SPORE Explorer...</div>}>
       <DashboardContent />
     </Suspense>
   );

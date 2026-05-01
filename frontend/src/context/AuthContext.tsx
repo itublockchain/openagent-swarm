@@ -27,7 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setMounted(true)
-    const stored = localStorage.getItem('swarm_jwt')
+    const stored = localStorage.getItem('spore_jwt')
     if (stored) setJwt(stored)
   }, [])
 
@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const message = new SiweMessage({
         domain: window.location.host,
         address,
-        statement: 'Sign in to Swarm Execution Layer',
+        statement: 'Sign in to SPORE Execution Layer',
         uri: window.location.origin,
         version: '1',
         chainId: chain?.id ?? 16602, // Fallback to 0G Galileo Testnet
@@ -88,7 +88,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       const { token } = resData
       console.log('Verification successful. JWT received.')
-      localStorage.setItem('swarm_jwt', token)
+      localStorage.setItem('spore_jwt', token)
       setJwt(token)
     } catch (err: any) {
       console.error('Auth error detail:', err)
@@ -99,7 +99,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [address, chain, signMessageAsync])
 
   const signOut = useCallback(() => {
-    localStorage.removeItem('swarm_jwt')
+    localStorage.removeItem('spore_jwt')
     setJwt(null)
     disconnect()
   }, [disconnect])

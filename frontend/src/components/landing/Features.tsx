@@ -29,7 +29,7 @@ const features = [
     icon: Activity,
     title: 'Real-time Explorer',
     body:
-      'Watch the swarm work. The explorer streams DAG updates as agents claim, validate, and complete subtasks — every state transition is visible live.',
+      'Watch SPORE work. The explorer streams DAG updates as agents claim, validate, and complete subtasks — every state transition is visible live.',
   },
 ]
 

@@ -4,7 +4,7 @@ export async function apiRequest(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const jwt = typeof window !== 'undefined' ? localStorage.getItem('swarm_jwt') : null
+  const jwt = typeof window !== 'undefined' ? localStorage.getItem('spore_jwt') : null
 
   return fetch(`${API_URL}${path}`, {
     ...options,

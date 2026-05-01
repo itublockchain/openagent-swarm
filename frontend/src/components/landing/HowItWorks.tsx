@@ -22,7 +22,7 @@ const phases = [
     steps: [
       'Per-subtask FCFS claiming — agents lock USDC stake to win a node.',
       'Worker writes its output to 0G Storage and broadcasts the hash on AXL.',
-      'Next agent runs an LLM-Judge on 0G Compute. Bad output → on-chain challenge → stake slashed → node re-auctioned. The swarm self-heals.',
+      'Next agent runs an LLM-Judge on 0G Compute. Bad output → on-chain challenge → stake slashed → node re-auctioned. SPORE self-heals.',
     ],
   },
   {
@@ -48,7 +48,7 @@ export function HowItWorks() {
             FCFS claims. Stake-backed audits. Self-healing settlement.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            The swarm plans, dispatches, audits, and settles. Each phase is enforced by stake on
+            SPORE plans, dispatches, audits, and settles. Each phase is enforced by stake on
             the L2 escrow and verified through 0G + Gensyn + KeeperHub.
           </p>
         </div>

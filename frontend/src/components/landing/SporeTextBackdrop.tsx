@@ -83,8 +83,8 @@ function samplePositions({ width, height, step, text, sizeRatio, maxSize, yOffse
   ctx.font = `900 ${fontSize}px "JetBrains Mono", ui-monospace, monospace`
 
   if (alignBottomPx != null) {
-    // Anchor SWARM letters' visual bottom to a target Y. 'alphabetic' baseline puts
-    // the y coord on the cap-baseline; for all-caps no-descender words like SWARM,
+    // Anchor SPORE letters' visual bottom to a target Y. 'alphabetic' baseline puts
+    // the y coord on the cap-baseline; for all-caps no-descender words like SPORE,
     // that's the visible bottom.
     ctx.textBaseline = 'alphabetic'
     ctx.fillText(text, width / 2, alignBottomPx)
@@ -122,7 +122,7 @@ function sampleRands(count: number): Float32Array {
   return arr
 }
 
-type SwarmTextBackdropProps = {
+type SporeTextBackdropProps = {
   text?: string
   sizeRatio?: number
   maxSize?: number
@@ -133,14 +133,14 @@ type SwarmTextBackdropProps = {
   alignBottomToRef?: RefObject<HTMLElement | null>
 }
 
-export function SwarmTextBackdrop({
-  text = 'SWARM',
+export function SporeTextBackdrop({
+  text = 'SPORE',
   sizeRatio = 0.22,
   maxSize = 280,
   pointSize = 2.8,
   yOffset = 0,
   alignBottomToRef,
-}: SwarmTextBackdropProps = {}) {
+}: SporeTextBackdropProps = {}) {
   const mountRef = useRef<HTMLDivElement>(null)
   const uniformsRef = useRef<Record<string, THREE.IUniform> | null>(null)
   const { resolvedTheme } = useTheme()

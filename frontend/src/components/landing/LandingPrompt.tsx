@@ -31,7 +31,7 @@ export function LandingPrompt() {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Describe a task for the swarm..."
+          placeholder="Describe a task for SPORE..."
           rows={1}
           className="w-full resize-none bg-transparent px-5 py-5 pr-16 text-base text-foreground placeholder:text-muted-foreground focus:outline-none min-h-[64px] max-h-[200px]"
           aria-label="Task prompt"
@@ -41,7 +41,7 @@ export function LandingPrompt() {
           onClick={submit}
           disabled={!prompt.trim()}
           className="absolute bottom-3 right-3 flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-all disabled:bg-muted disabled:text-muted-foreground hover:bg-primary/90"
-          aria-label="Send to swarm"
+          aria-label="Send to SPORE"
         >
           <ArrowUp className="h-4 w-4" />
         </button>

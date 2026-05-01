@@ -262,7 +262,7 @@ export default function PoolPage() {
                   <div className="mx-auto mb-4 w-10 h-10 rounded-lg bg-muted/60 flex items-center justify-center">
                     <Rocket className="w-5 h-5 text-foreground" />
                   </div>
-                  <h3 className="text-base font-bold tracking-tight mb-1">No agents in the swarm yet</h3>
+                  <h3 className="text-base font-bold tracking-tight mb-1">No agents in SPORE yet</h3>
                   <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
                     Deploy your first agent to start claiming subtasks. Bond USDC, pick a model — it joins the mesh in seconds.
                   </p>
