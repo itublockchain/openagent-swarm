@@ -1,4 +1,4 @@
-import { Wallet, randomBytes, hexlify, solidityPackedKeccak256, id as keccakId } from 'ethers'
+import { Wallet, randomBytes, hexlify, parseUnits, solidityPackedKeccak256, id as keccakId } from 'ethers'
 import { IStoragePort, IComputePort, INetworkPort, IChainPort } from '../../../shared/ports'
 import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types'
 import { runAgentLoop } from './agentLoop'
@@ -186,6 +186,65 @@ export class SwarmAgent {
     })
 
     console.log(`[Agent ${this.deps.config.agentId}] started and listening for ALL events`)
+
+    this.startSurplusWatchdog()
+  }
+
+  /**
+   * Periodically forward USDC earned above the configured stakeAmount back
+   * to the owner's wallet. The check is balance > stakeWei; when an agent is
+   * mid-task its 10% subtask stake is locked in escrow so balance briefly
+   * dips BELOW stakeWei, naturally preventing a sweep mid-flight. After
+   * settlement the released stake + reward push balance above stakeWei and
+   * the next tick forwards the surplus.
+   *
+   * Disabled when ownerAddress is missing (no recipient) or the chain
+   * adapter doesn't support balance/transfer (Mock).
+   */
+  private startSurplusWatchdog(): void {
+    const owner = this.deps.config.ownerAddress
+    const id = this.deps.config.agentId
+    if (!owner) {
+      console.log(`[Agent ${id}] surplus sweep disabled (no ownerAddress)`)
+      return
+    }
+    if (
+      typeof this.deps.chain.getOwnUsdcBalance !== 'function' ||
+      typeof this.deps.chain.transferUsdc !== 'function'
+    ) {
+      console.log(`[Agent ${id}] surplus sweep disabled (chain adapter lacks USDC methods)`)
+      return
+    }
+
+    // mUSDC ships at 18 decimals (default OZ ERC20). If the deployment ever
+    // pins a different value, override via env or extend AgentConfig.
+    const USDC_DECIMALS = 18
+    let stakeWei: bigint
+    try {
+      stakeWei = parseUnits(this.deps.config.stakeAmount || '0', USDC_DECIMALS)
+    } catch (err) {
+      console.warn(`[Agent ${id}] surplus sweep disabled — bad stakeAmount "${this.deps.config.stakeAmount}":`, err)
+      return
+    }
+
+    const SWEEP_INTERVAL_MS = 60_000
+    const tick = async () => {
+      try {
+        const balanceStr = await this.deps.chain.getOwnUsdcBalance!()
+        const balance = BigInt(balanceStr)
+        if (balance <= stakeWei) return
+        const surplus = balance - stakeWei
+        console.log(`[Agent ${id}] sweeping surplus ${surplus.toString()} wei → ${owner}`)
+        const txHash = await this.deps.chain.transferUsdc!(owner, surplus.toString())
+        console.log(`[Agent ${id}] surplus payout tx ${txHash}`)
+      } catch (err) {
+        console.warn(`[Agent ${id}] surplus sweep tick failed:`, err)
+      }
+    }
+
+    const timer = setInterval(tick, SWEEP_INTERVAL_MS)
+    if (typeof timer.unref === 'function') timer.unref()
+    console.log(`[Agent ${id}] surplus sweep running every ${SWEEP_INTERVAL_MS / 1000}s, owner=${owner}, floor=${stakeWei.toString()} wei`)
   }
 
   private isBusyWithTimeout(newTaskId: string): boolean {
@@ -910,6 +969,29 @@ export class SwarmAgent {
       return
     }
 
+    // Need the agent's wallet address to bind the commit hash to msg.sender.
+    // Also used for the on-chain eligibility lookup below.
+    const myAddr = this.deps.config.agentAddress
+    if (!myAddr) {
+      console.warn(`[Agent ${myAgentId}] cannot commit — agentAddress missing in config`)
+      return
+    }
+
+    // Random jury gate. SlashingVault.challenge() picks JURY_SIZE jurors at
+    // tx-time; everyone else self-filters here with a single mapping read,
+    // skipping the expensive storage-fetch + LLM judge() round entirely.
+    let eligible = false
+    try {
+      eligible = await this.deps.chain.isJuryEligible(nodeId, myAddr)
+    } catch (err) {
+      console.warn(`[Agent ${myAgentId}] eligibility check failed for ${nodeId}:`, err)
+      return
+    }
+    if (!eligible) {
+      console.log(`[Agent ${myAgentId}] CHALLENGE: not selected as juror for ${nodeId}, abstaining`)
+      return
+    }
+
     let output: unknown
     try {
       output = await this.deps.storage.fetch(node.outputHash)
@@ -924,14 +1006,6 @@ export class SwarmAgent {
       `[Agent ${myAgentId}] JUROR verdict on ${nodeId}: ${accusedGuilty ? 'GUILTY' : 'INNOCENT'} (sealing commit)`,
     )
 
-    // Need the agent's wallet address to bind the commit hash to msg.sender.
-    // Without it the contract's reveal-time hash check will never match.
-    const myAddr = this.deps.config.agentAddress
-    if (!myAddr) {
-      console.warn(`[Agent ${myAgentId}] cannot commit — agentAddress missing in config`)
-      return
-    }
-
     // Build the commit hash. Format must match SlashingVault.revealVote:
     //   keccak256(abi.encodePacked(bytes32 nodeId, bool guilty, bytes32 salt, address juror))
     // nodeId here is the off-chain string; keccakId mirrors L2Contract.formatId.
@@ -943,7 +1017,7 @@ export class SwarmAgent {
     )
 
     try {
-      await this.deps.chain.commitVoteOnChallenge(nodeId, myAgentId, commitHash)
+      await this.deps.chain.commitVoteOnChallenge(nodeId, commitHash)
       this.deps.network.emit(this.buildEvent(EventType.JUROR_COMMITTED, {
         nodeId, taskId, agentId: myAgentId,
       })).catch(() => { })

@@ -10,7 +10,12 @@ export type SubtaskStatus = 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
 export interface JuryTally {
   guilty: number
   innocent: number
-  voters: string[] // agentIds that have voted
+  voters: string[] // agentIds that have revealed (commit-reveal phase 2)
+  /** agentIds that have committed but not yet revealed (commit-reveal
+   *  phase 1). During the 20s commit window this fills before voters
+   *  does — UI surfaces the pending count so the dispute doesn't look
+   *  silent until reveals burst in. */
+  committed: string[]
 }
 
 export interface SubtaskBox {
@@ -181,11 +186,33 @@ export function useSwarmEvents() {
       ))
     }
 
-    // Live jury tally for an open CHALLENGE.
+    // Commit phase (~20s): a juror has sealed their verdict but hasn't
+    // revealed it yet. We bump `committed` so the UI shows "X jurors
+    // committed" instead of staying silent until the reveal burst.
+    const handleJurorCommitted = (event: WSEvent) => {
+      const { nodeId, agentId, taskId } = event.payload as any
+      updateBox(nodeId, taskId, b => {
+        const tally = b.jury ?? { guilty: 0, innocent: 0, voters: [], committed: [] }
+        if (tally.committed.includes(agentId)) return b
+        return {
+          ...b,
+          jury: {
+            ...tally,
+            committed: [...tally.committed, agentId],
+          },
+        }
+      })
+    }
+
+    // Live jury tally for an open CHALLENGE — reveal phase only. Commits
+    // come in via JUROR_COMMITTED above; the same agentId then shows up
+    // here when it reveals. We don't double-count: committed list keeps
+    // the agent listed too (so "pending = committed.length - voters.length"
+    // gives the still-to-reveal count).
     const handleJurorVoted = (event: WSEvent) => {
       const { nodeId, agentId, accusedGuilty, taskId } = event.payload as any
       updateBox(nodeId, taskId, b => {
-        const tally = b.jury ?? { guilty: 0, innocent: 0, voters: [] }
+        const tally = b.jury ?? { guilty: 0, innocent: 0, voters: [], committed: [] }
         if (tally.voters.includes(agentId)) return b
         return {
           ...b,
@@ -193,6 +220,9 @@ export function useSwarmEvents() {
             guilty: tally.guilty + (accusedGuilty ? 1 : 0),
             innocent: tally.innocent + (accusedGuilty ? 0 : 1),
             voters: [...tally.voters, agentId],
+            // Defensive: if reveal arrives without a prior commit (network
+            // dropped the event), still mark committed so accounting holds.
+            committed: tally.committed.includes(agentId) ? tally.committed : [...tally.committed, agentId],
           },
         }
       })
@@ -203,8 +233,8 @@ export function useSwarmEvents() {
       updateBox(nodeId, taskId, b => ({
         ...b,
         status: 'failed',
-        // Reset tally for a fresh dispute window
-        jury: { guilty: 0, innocent: 0, voters: [] },
+        // Reset tally for a fresh dispute window — both phases zeroed.
+        jury: { guilty: 0, innocent: 0, voters: [], committed: [] },
       }))
     }
 
@@ -226,6 +256,7 @@ export function useSwarmEvents() {
     wsClient.on(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
     wsClient.on(EventType.SUBTASK_PEER_VALIDATED, handleSubtaskPeerValidated)
     wsClient.on(EventType.AGENT_PASSED, handleAgentPassed)
+    wsClient.on(EventType.JUROR_COMMITTED, handleJurorCommitted)
     wsClient.on(EventType.JUROR_VOTED, handleJurorVoted)
     wsClient.on(EventType.CHALLENGE, handleChallenge)
     wsClient.on(EventType.TASK_REOPENED, handleTaskReopened)
@@ -238,6 +269,7 @@ export function useSwarmEvents() {
       wsClient.off(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
       wsClient.off(EventType.SUBTASK_PEER_VALIDATED, handleSubtaskPeerValidated)
       wsClient.off(EventType.AGENT_PASSED, handleAgentPassed)
+      wsClient.off(EventType.JUROR_COMMITTED, handleJurorCommitted)
       wsClient.off(EventType.JUROR_VOTED, handleJurorVoted)
       wsClient.off(EventType.CHALLENGE, handleChallenge)
       wsClient.off(EventType.TASK_REOPENED, handleTaskReopened)

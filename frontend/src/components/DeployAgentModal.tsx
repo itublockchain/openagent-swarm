@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
 import { waitForTransactionReceipt, readContract } from '@wagmi/core'
@@ -50,6 +50,22 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const currentChainId = useChainId()
   const { switchChainAsync } = useSwitchChain()
   const { writeContractAsync } = useWriteContract()
+
+  // Reset every form field whenever the modal transitions from closed to open.
+  // Without this, values entered in a previous deploy session persist (the
+  // component keeps state because the parent only flips isOpen, never unmounts)
+  // and the user lands on a pre-filled form they didn't author.
+  useEffect(() => {
+    if (isOpen) {
+      setStage(1)
+      setAgentName('')
+      setSelectedModel(AVAILABLE_MODELS[0].value)
+      setSystemPrompt('')
+      setStakeAmount('10')
+      setStep('idle')
+      setErrorMsg('')
+    }
+  }, [isOpen])
 
   if (!isOpen) return null
 

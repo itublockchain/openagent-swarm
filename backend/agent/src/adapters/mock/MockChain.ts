@@ -99,8 +99,13 @@ export class MockChain implements IChainPort {
     console.warn(`[MockChain] Challenge initiated for node: ${nodeId} (challenger node: ${challengerNodeId ?? 'planner'})`);
   }
 
-  async commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void> {
-    console.log(`[MockChain] commitVote on ${nodeId} by ${agentId}: hash=${commitHash.slice(0, 18)}...`);
+  async commitVoteOnChallenge(nodeId: string, commitHash: string): Promise<void> {
+    console.log(`[MockChain] commitVote on ${nodeId} by ${this.agentId}: hash=${commitHash.slice(0, 18)}...`);
+  }
+
+  async isJuryEligible(_nodeId: string, _address: string): Promise<boolean> {
+    // No on-chain selection in mock — every agent participates as a juror.
+    return true;
   }
 
   async revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void> {
@@ -121,6 +126,17 @@ export class MockChain implements IChainPort {
   async getStakeCapacity(_stakeAmount: string): Promise<number> {
     // Mock has no escrow accounting; agents in tests have unbounded stake.
     return Number.MAX_SAFE_INTEGER;
+  }
+
+  async getOwnUsdcBalance(): Promise<string> {
+    // No on-chain accounting in mock — return 0 so surplus watchdog never
+    // triggers a sweep during tests.
+    return '0';
+  }
+
+  async transferUsdc(to: string, amountWei: string): Promise<string> {
+    console.log(`[MockChain] transferUsdc: ${amountWei} wei → ${to} (no-op)`);
+    return `mock-tx-${Math.random().toString(36).slice(2, 10)}`;
   }
 }
 

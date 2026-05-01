@@ -31,3 +31,13 @@ export const AgentDeploySchema = z.object({
 export const AgentIdParamsSchema = z.object({
   id: z.string().min(1)
 });
+
+export const AgentWithdrawSchema = z.object({
+  /** Decimal USDC string (e.g. "5.5"). Omit to drain the entire wallet. */
+  amount: z.string().optional(),
+});
+
+export const AgentTopupSchema = z.object({
+  /** Decimal USDC string the user just transferred to the agent address. */
+  amount: z.string(),
+});

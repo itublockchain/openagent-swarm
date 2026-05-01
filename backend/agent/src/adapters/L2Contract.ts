@@ -278,6 +278,18 @@ export class L2Contract implements IChainPort {
     }
   }
 
+  async getOwnUsdcBalance(): Promise<string> {
+    const balance: bigint = await this.callWithRetry(() =>
+      this.usdc.balanceOf(this.wallet.address),
+    )
+    return balance.toString()
+  }
+
+  async transferUsdc(to: string, amountWei: string): Promise<string> {
+    const receipt = await this.sendTxWithRetry(this.usdc, 'transfer', [to, BigInt(amountWei)])
+    return receipt.hash as string
+  }
+
   async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {
     await this.sendTxWithRetry(this.registry, 'requestSettle', [this.formatId(taskId), winners, amounts])
   }
@@ -296,13 +308,38 @@ export class L2Contract implements IChainPort {
     console.log(`[L2Contract] resetSubtask for ${nodeId} — handled on-chain`)
   }
 
-  async commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void> {
+  async commitVoteOnChallenge(nodeId: string, commitHash: string): Promise<void> {
     const formattedNodeId = this.formatId(nodeId)
-    const formattedAgentId = this.formatId(agentId)
     try {
-      await this.sendTxWithRetry(this.vault, 'commitVote', [formattedNodeId, formattedAgentId, commitHash])
+      await this.sendTxWithRetry(this.vault, 'commitVote', [formattedNodeId, commitHash])
     } catch (err: any) {
       console.warn(`[L2Contract] commitVoteOnChallenge skipped: ${err?.message}`)
+    }
+  }
+
+  /**
+   * Cheap eligibility read. Retries once after a 3s delay so a race between
+   * AXL gossip and tx mining (peer sees event before challenge tx lands)
+   * doesn't false-negative an actual juror selection.
+   */
+  async isJuryEligible(nodeId: string, address: string): Promise<boolean> {
+    const formatted = this.formatId(nodeId)
+    try {
+      const eligible: boolean = await this.callWithRetry(() =>
+        this.vault.isEligibleJuror(formatted, address),
+      )
+      if (eligible) return true
+    } catch (err: any) {
+      console.warn(`[L2Contract] isJuryEligible read failed (will retry): ${err?.message}`)
+    }
+    await new Promise(r => setTimeout(r, 3000))
+    try {
+      return await this.callWithRetry(() =>
+        this.vault.isEligibleJuror(formatted, address),
+      )
+    } catch (err: any) {
+      console.warn(`[L2Contract] isJuryEligible second read failed: ${err?.message}`)
+      return false
     }
   }
 

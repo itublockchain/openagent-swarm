@@ -177,7 +177,12 @@ function DashboardContent() {
           agent: box.agentId,
           passCount: box.passes?.length ?? 0,
           jury: box.jury
-            ? { guilty: box.jury.guilty, innocent: box.jury.innocent, voters: box.jury.voters.length }
+            ? {
+                guilty: box.jury.guilty,
+                innocent: box.jury.innocent,
+                voters: box.jury.voters.length,
+                committed: box.jury.committed.length,
+              }
             : undefined,
           // Reasoning + output, captured by useSwarmEvents from SUBTASK_DONE.
           // Drives the per-node detail panel that opens beside the node.
@@ -454,7 +459,26 @@ function DashboardContent() {
               <Background color="#888" gap={20} />
               <Controls className="fill-foreground" />
             </ReactFlow>
-            {nodes.length === 0 && <CanvasEmptyState />}
+            {nodes.length === 0 && (
+              <CanvasEmptyState
+                // Keep the spinner alive through 'done' too — the API call
+                // returning 'done' just means TASK_SUBMITTED was broadcast;
+                // the planner still has to build the DAG (~5-30s) before
+                // nodes appear. The outer `nodes.length === 0` guard already
+                // hides the whole pill the moment DAG_READY lands and the
+                // first node renders, so dropping 'done' from this condition
+                // bridges the visual gap without overstaying.
+                isSubmitting={submitStep !== 'idle' && submitStep !== 'error'}
+                label={
+                  submitStep === 'preparing' ? 'Preparing intent…' :
+                  submitStep === 'approving' ? 'Approving USDC…' :
+                  submitStep === 'creating' ? 'Creating task on-chain…' :
+                  submitStep === 'submitting' ? 'Dispatching to swarm…' :
+                  submitStep === 'done' ? 'Awaiting DAG from planner…' :
+                  undefined
+                }
+              />
+            )}
 
             {/* Status legend */}
             {nodes.length > 0 && (

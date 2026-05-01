@@ -89,6 +89,10 @@ contract SlashingVault {
     uint256 public constant COMMIT_WINDOW            = 20 seconds;
     uint256 public constant REVEAL_WINDOW            = 20 seconds;
     uint8   public constant QUORUM                   = 3;
+    /// Random jury size. Picked at challenge() time from RUNNING agents in
+    /// AgentRegistry, weighted uniformly. Sized so QUORUM (3) holds even if
+    /// 2/5 jurors are offline / busy / can't fetch the disputed output.
+    uint8   public constant JURY_SIZE                = 5;
     uint8   public constant STATUS_RUNNING           = 1;
 
     uint256 public constant ACCUSED_BURN_BPS          = 8000;
@@ -105,6 +109,13 @@ contract SlashingVault {
     // nodeId => juror EOA => 0=none, 1=guilty, 2=innocent (post-reveal)
     mapping(bytes32 => mapping(address => uint8)) public ballots;
     mapping(bytes32 => address[]) private _jurors;
+    /// nodeId => juror EOA => true iff that EOA was selected as a juror at
+    /// challenge() time. Limits the jury to a random JURY_SIZE-sized subset,
+    /// so 25 active agents don't all spend an LLM judge() round on every
+    /// challenge — only ~5 do, reading this mapping cheaply to self-filter.
+    mapping(bytes32 => mapping(address => bool)) public isEligibleJuror;
+    /// nodeId => list of selected jurors (for enumeration / UI display).
+    mapping(bytes32 => address[]) private _eligibleJurors;
 
     event ChallengeRaised(
         bytes32 indexed nodeId,
@@ -113,6 +124,7 @@ contract SlashingVault {
         uint64 commitDeadline,
         uint64 revealDeadline
     );
+    event JurorsSelected(bytes32 indexed nodeId, address[] jurors);
     event VoteCommitted(bytes32 indexed nodeId, address indexed juror);
     event VoteRevealed(bytes32 indexed nodeId, address indexed juror, bool guilty);
     event ChallengeResolved(bytes32 indexed nodeId, bool accusedGuilty, uint8 guiltyVotes, uint8 innocentVotes);
@@ -150,25 +162,81 @@ contract SlashingVault {
             resolved: false
         });
 
+        // Pick the random jury at challenge time. Off-chain agents read
+        // isEligibleJuror[nodeId][myAddr] right after the AXL CHALLENGE event
+        // and skip judge() entirely if not picked — saves ~20 LLM calls per
+        // challenge in a 25-agent swarm.
+        address[] memory selected = _selectJurors(nodeId, accused, msg.sender);
+        for (uint256 i = 0; i < selected.length; i++) {
+            isEligibleJuror[nodeId][selected[i]] = true;
+            _eligibleJurors[nodeId].push(selected[i]);
+        }
+
         emit ChallengeRaised(nodeId, msg.sender, accused, commitDeadline, revealDeadline);
+        emit JurorsSelected(nodeId, selected);
+    }
+
+    /// Pseudo-random jury selection. Seeds from prior block's hash + nodeId,
+    /// rejection-samples agent indices, filters out inactive agents and the
+    /// accused/challenger. Validator-influenced (the proposer of the prior
+    /// block knows the seed) but acceptable on a small testnet; mainnet
+    /// should swap in a VRF (Chainlink / 0G randomness when shipped).
+    function _selectJurors(
+        bytes32 nodeId,
+        address accused,
+        address challenger
+    ) internal view returns (address[] memory) {
+        uint256 total = agents.totalAgents();
+        if (total == 0) return new address[](0);
+
+        uint256 want = JURY_SIZE;
+        if (want > total) want = total;
+
+        address[] memory picks = new address[](want);
+        uint256 picked = 0;
+        bytes32 seed = keccak256(abi.encodePacked(blockhash(block.number - 1), nodeId));
+        // Bound the loop so a swarm with very few RUNNING agents can't push
+        // selection gas through the roof — at worst we trim the result.
+        uint256 maxAttempts = total * 4 + 20;
+
+        for (uint256 nonce = 0; nonce < maxAttempts && picked < want; nonce++) {
+            uint256 idx = uint256(keccak256(abi.encodePacked(seed, nonce))) % total;
+            bytes32 id = agents.allIds(idx);
+            AgentRegistry.Agent memory a = agents.getAgent(id);
+
+            if (a.status != STATUS_RUNNING) continue;
+            if (a.agentAddress == address(0)) continue;
+            if (a.agentAddress == accused || a.agentAddress == challenger) continue;
+
+            bool dup = false;
+            for (uint256 i = 0; i < picked; i++) {
+                if (picks[i] == a.agentAddress) { dup = true; break; }
+            }
+            if (dup) continue;
+
+            picks[picked++] = a.agentAddress;
+        }
+
+        if (picked == want) return picks;
+
+        // Trim to actual count when the registry didn't have enough RUNNING
+        // candidates to fill JURY_SIZE.
+        address[] memory trimmed = new address[](picked);
+        for (uint256 i = 0; i < picked; i++) trimmed[i] = picks[i];
+        return trimmed;
     }
 
     /// Commit-phase: caller submits a hash of (nodeId, vote, salt, self).
-    /// The vote stays hidden until reveal. Eligibility is checked here so
-    /// non-jurors can't lock up commit slots; the hash itself isn't validated
-    /// (any 32 bytes accepted) — the bind-to-juror happens at reveal time.
-    function commitVote(bytes32 nodeId, bytes32 jurorAgentId, bytes32 commitHash) external {
+    /// Eligibility is enforced via the random jury picked at challenge time;
+    /// non-selected agents revert here so they can't lock up the slot.
+    function commitVote(bytes32 nodeId, bytes32 commitHash) external {
         Challenge storage ch = challenges[nodeId];
         require(ch.commitDeadline != 0, "No challenge");
         require(!ch.resolved, "Already resolved");
         require(block.timestamp <= ch.commitDeadline, "Commit phase closed");
-        require(msg.sender != ch.accused && msg.sender != ch.challenger, "Conflicted juror");
+        require(isEligibleJuror[nodeId][msg.sender], "Not selected as juror");
         require(commits[nodeId][msg.sender] == bytes32(0), "Already committed");
         require(commitHash != bytes32(0), "Empty commit");
-
-        AgentRegistry.Agent memory a = agents.getAgent(jurorAgentId);
-        require(a.agentAddress == msg.sender, "Not your agent id");
-        require(a.status == STATUS_RUNNING, "Inactive agent");
 
         commits[nodeId][msg.sender] = commitHash;
         ch.commitsCount++;
@@ -273,5 +341,9 @@ contract SlashingVault {
 
     function getJurors(bytes32 nodeId) external view returns (address[] memory) {
         return _jurors[nodeId];
+    }
+
+    function getEligibleJurors(bytes32 nodeId) external view returns (address[] memory) {
+        return _eligibleJurors[nodeId];
     }
 }

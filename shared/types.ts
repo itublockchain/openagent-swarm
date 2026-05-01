@@ -84,4 +84,9 @@ export interface AgentConfig {
    *  by SwarmAgent.assess() to skip subtasks outside the agent's skill
    *  before racing to claim. Empty / undefined → claim everything. */
   systemPrompt?: string
+  /** EOA of the user that deployed this agent. When set, the surplus
+   *  watchdog periodically forwards USDC above stakeAmount back to this
+   *  address (rewards from completed tasks flow back to the owner without
+   *  manual withdraw). Empty → sweep disabled. */
+  ownerAddress?: string
 }
