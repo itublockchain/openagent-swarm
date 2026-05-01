@@ -36,6 +36,11 @@ async function bootstrap() {
       stakeAmount,
       agentAddress,
       systemPrompt: process.env.AGENT_SYSTEM_PROMPT,
+      // OWNER_ADDRESS is set by AgentRunner.buildContainerEnv from
+      // secret.ownerAddress (the user who deployed the agent). When set,
+      // SwarmAgent.startSurplusWatchdog forwards USDC above stakeAmount
+      // back to this address every 60s.
+      ownerAddress: process.env.OWNER_ADDRESS,
     }
   };
 

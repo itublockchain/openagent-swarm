@@ -105,6 +105,12 @@ export function Header({ onDeployClick }: Props) {
           <Link href={poolHref} className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
             Agent Pool
           </Link>
+          <Link href="/developer" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+            Developer
+          </Link>
+          <Link href="/profile" className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+            Profile
+          </Link>
         </nav>
       </div>
 

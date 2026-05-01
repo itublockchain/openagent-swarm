@@ -67,16 +67,23 @@ export interface IChainPort {
   /**
    * Commit-reveal phase 1 — juror sends sealed hash of their vote.
    * commitHash = keccak256(abi.encodePacked(nodeId, accusedGuilty, salt, msg.sender)).
-   * agentId is the juror's own bytes32 AgentRegistry id (used by the contract
-   * to verify msg.sender owns it and is RUNNING).
+   * Caller must already be in the on-chain eligibility list (random jury
+   * picked at challenge() time); use isJuryEligible() before calling.
    */
-  commitVoteOnChallenge(nodeId: string, agentId: string, commitHash: string): Promise<void>
+  commitVoteOnChallenge(nodeId: string, commitHash: string): Promise<void>
   /**
    * Commit-reveal phase 2 — juror reveals their vote and salt; the contract
    * recomputes the hash and matches against the stored commit. Only callable
    * after commitDeadline and before revealDeadline.
    */
   revealVoteOnChallenge(nodeId: string, accusedGuilty: boolean, salt: string): Promise<void>
+  /**
+   * Returns true iff `address` was randomly selected as a juror for `nodeId`.
+   * Off-chain agents call this right after the AXL CHALLENGE event and skip
+   * the judge() round entirely if they aren't on the list — saves ~80% of
+   * jury-side work in a 25-agent swarm with JURY_SIZE=5.
+   */
+  isJuryEligible(nodeId: string, address: string): Promise<boolean>
   /** Reveal penceresi dolduktan sonra çağrılır; revealed votes'a göre çözer */
   finalizeChallenge(nodeId: string): Promise<void>
   /** Explicit per-agent ödül dağıtımı (planner yetkili) */
@@ -95,6 +102,14 @@ export interface IChainPort {
    * task). Optional — adapters that lack accounting (mock) may return
    * Number.MAX_SAFE_INTEGER. */
   getStakeCapacity?(stakeAmount: string): Promise<number>
+  /** Returns this wallet's USDC balance in wei (smallest unit). Used by the
+   *  surplus watchdog to detect rewards above stakeAmount and forward them
+   *  back to the owner. Optional — Mock has no accounting. */
+  getOwnUsdcBalance?(): Promise<string>
+  /** Send USDC from this agent's wallet to `to`. amountWei is the smallest
+   *  unit (e.g. 1 USDC at 18 decimals = "1000000000000000000"). Returns the
+   *  tx hash. Optional — Mock no-ops. */
+  transferUsdc?(to: string, amountWei: string): Promise<string>
 
   // Sync methods
   syncPlannerClaim(taskId: string, agentId: string): Promise<void>
