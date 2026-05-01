@@ -10,9 +10,15 @@ export function LogsPanel({ logs, onClear }: { logs: string[]; onClear: () => vo
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const filtered = useMemo(() => {
+    // Errors are intentionally suppressed from the orchestration log —
+    // dynamic budget cap + Treasury-aware UI mean the only surfaceable
+    // failure left is a transient backend hiccup, and a red banner
+    // mid-run reads as scarier than the underlying issue is. Errors
+    // still go to console / network tab for debugging.
+    const visible = logs.filter(l => !l.includes('[ERROR]'))
     const q = search.trim().toLowerCase()
-    if (!q) return logs
-    return logs.filter(l => l.toLowerCase().includes(q))
+    if (!q) return visible
+    return visible.filter(l => l.toLowerCase().includes(q))
   }, [logs, search])
 
   useEffect(() => {

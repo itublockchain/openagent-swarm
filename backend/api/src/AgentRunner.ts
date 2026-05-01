@@ -2,10 +2,13 @@ import Dockerode from 'dockerode'
 import { ethers } from 'ethers'
 import { generateKeyPairSync } from 'node:crypto'
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json'
-import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json'
+import SwarmTreasuryABI from '../../../contracts/artifacts/src/SwarmTreasury.sol/SwarmTreasury.json'
 import AgentRegistryABI from '../../../contracts/artifacts/src/AgentRegistry.sol/AgentRegistry.json'
 import deployments from '../../../contracts/deployments/og_testnet.json'
 import { AgentSecretStore, AgentSecret } from './AgentSecretStore'
+
+// USDC fixed at 6 decimals system-wide (matches Circle's testnet USDC).
+const USDC_DECIMALS = 6
 
 const docker = process.env.DOCKER_HOST
   ? new Dockerode({
@@ -95,18 +98,28 @@ export class AgentManager {
   private rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai'
   private fundingPk = process.env.PRIVATE_KEY || ''
   private escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow
-  private usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC
+  private treasuryAddr = process.env.L2_TREASURY_ADDRESS || (deployments as any).SwarmTreasury || ''
   private registryAddr = process.env.L2_AGENT_REGISTRY_ADDRESS || (deployments as any).AgentRegistry || ''
 
   private provider = new ethers.JsonRpcProvider(this.rpcUrl)
   private fundingSigner = this.fundingPk ? new ethers.Wallet(this.fundingPk, this.provider) : null
-  private readUsdc = new ethers.Contract(this.usdcAddr, MockERC20ABI.abi, this.provider)
+  private escrow: ethers.Contract | null
+  private treasury: ethers.Contract | null
   private registry: ethers.Contract | null
-  private cachedDecimals: number | null = null
 
   constructor() {
     this.secrets = new AgentSecretStore()
 
+    if (this.fundingSigner && this.escrowAddr) {
+      this.escrow = new ethers.Contract(this.escrowAddr, SwarmEscrowABI.abi, this.fundingSigner)
+    } else {
+      this.escrow = null
+    }
+    if (this.fundingSigner && this.treasuryAddr) {
+      this.treasury = new ethers.Contract(this.treasuryAddr, SwarmTreasuryABI.abi, this.fundingSigner)
+    } else {
+      this.treasury = null
+    }
     if (this.fundingSigner && this.registryAddr) {
       this.registry = new ethers.Contract(this.registryAddr, AgentRegistryABI.abi, this.fundingSigner)
       console.log(`[AgentManager] AgentRegistry @ ${this.registryAddr}`)
@@ -119,12 +132,6 @@ export class AgentManager {
 
   private toBytes32Id(agentId: string): string {
     return ethers.keccak256(ethers.toUtf8Bytes(agentId))
-  }
-
-  private async getDecimals(): Promise<number> {
-    if (this.cachedDecimals !== null) return this.cachedDecimals
-    this.cachedDecimals = Number(await this.readUsdc.decimals())
-    return this.cachedDecimals
   }
 
   /**
@@ -181,7 +188,6 @@ export class AgentManager {
       `COMPUTE_MODE=${COMPUTE_MODE}`,
       `AXL_PEER=${process.env.AXL_PEER ?? 'tcp://axl-seed:7000'}`,
       `AXL_URL=${process.env.AXL_URL ?? 'http://localhost:9002'}`,
-      `L2_USDC_ADDRESS=${this.usdcAddr}`,
       `L2_ESCROW_ADDRESS=${this.escrowAddr}`,
       `L2_DAG_REGISTRY_ADDRESS=${process.env.L2_DAG_REGISTRY_ADDRESS ?? deployments.DAGRegistry}`,
       `L2_SLASHING_VAULT_ADDRESS=${process.env.L2_SLASHING_VAULT_ADDRESS ?? deployments.SlashingVault}`,
@@ -241,10 +247,13 @@ export class AgentManager {
   }
 
   /**
-   * Generates a fresh wallet for the agent and prefunds it with native gas
-   * so the spawned container can pay for stake/claim transactions. Returns
-   * the agent's on-chain address; the caller (UI) must then sign a USDC
-   * transfer to this address before calling deploy().
+   * Pre-flight an agent deploy: validates the user has enough Treasury
+   * balance for the stake, generates a fresh wallet, prefunds gas, then
+   * commits the stake on-chain (Treasury debit + Escrow agent credit).
+   *
+   * The stake is moved on the operator's signature alone — no user tx
+   * needed. The frontend just calls /agent/prepare → /agent/deploy and
+   * never sees a wallet popup.
    */
   async prepare(input: {
     name: string
@@ -255,15 +264,83 @@ export class AgentManager {
   }): Promise<{
     agentId: string
     agentAddress: string
-    usdcAddress: string
-    decimals: number
-    stakeWei: string
+    stakeAmount: string
     gasPrefundOG: string
   }> {
+    if (!this.fundingSigner) {
+      throw new Error('[AgentManager] PRIVATE_KEY missing — operator wallet required')
+    }
+    if (!this.treasury || !this.escrow) {
+      throw new Error('[AgentManager] Treasury/Escrow not configured — deploy contracts first')
+    }
+    if (!input.ownerAddress) {
+      throw new Error('[AgentManager] ownerAddress required to debit user Treasury balance')
+    }
+
+    const stakeWei = ethers.parseUnits(input.stakeAmount, USDC_DECIMALS)
+    if (stakeWei <= 0n) {
+      throw new Error('[AgentManager] stake must be > 0')
+    }
+
+    // 1. Balance pre-flight. Cleaner UX: 402 before we generate a wallet
+    //    or burn gas. The on-chain debit also enforces this.
+    const balance = (await this.treasury.balanceOf(input.ownerAddress)) as bigint
+    if (balance < stakeWei) {
+      throw new Error(
+        `Insufficient Treasury balance: have ${ethers.formatUnits(balance, USDC_DECIMALS)} USDC, need ${input.stakeAmount}`,
+      )
+    }
+
     const slug = input.name.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 24) || 'agent'
     const agentId = `${slug}-${Date.now().toString(36)}`
 
     const wallet = ethers.Wallet.createRandom()
+
+    // 2. Prefund native 0G gas so the agent can submit its own claim/
+    //    stake/submitOutput txs. The operator covers this — it's not the
+    //    user's money.
+    try {
+      const tx = await this.fundingSigner.sendTransaction({
+        to: wallet.address,
+        value: ethers.parseEther(GAS_PREFUND_OG),
+      })
+      console.log(`[AgentManager] Prefund TX sent: ${tx.hash} → ${wallet.address} (${GAS_PREFUND_OG} OG)`)
+      await tx.wait()
+    } catch (err) {
+      throw new Error(`[AgentManager] Gas prefund failed for ${wallet.address}: ${(err as Error).message}`)
+    }
+
+    // 3. Move USDC stake from user's Treasury balance into agent's Escrow
+    //    credit pool. Two separate operator txs — atomic from the
+    //    operator's POV; if step 4 fails after step 3 lands, the stake
+    //    is stranded in agentBalances. Recovery: the operator can call
+    //    Escrow.debitAgent + Treasury.creditBalance to refund manually.
+    try {
+      const debitTx = await this.treasury.debitBalance(input.ownerAddress, stakeWei)
+      await debitTx.wait()
+    } catch (err) {
+      throw new Error(`[AgentManager] Treasury.debitBalance failed: ${(err as Error).message}`)
+    }
+    try {
+      const creditTx = await this.escrow.creditAgent(wallet.address, stakeWei)
+      await creditTx.wait()
+    } catch (err) {
+      // Refund the user — debit landed, credit didn't.
+      try {
+        const refundTx = await this.treasury.creditBalance(input.ownerAddress, stakeWei)
+        await refundTx.wait()
+      } catch (refundErr) {
+        console.error(
+          `[AgentManager] Treasury refund AFTER creditAgent failure ALSO failed for ${input.ownerAddress}:`,
+          refundErr,
+        )
+      }
+      throw new Error(`[AgentManager] Escrow.creditAgent failed: ${(err as Error).message}`)
+    }
+    console.log(
+      `[AgentManager] Committed stake ${input.stakeAmount} USDC: user ${input.ownerAddress} → agent ${wallet.address}`,
+    )
+
     const record: PreparedAgent = {
       agentId,
       name: input.name,
@@ -277,67 +354,22 @@ export class AgentManager {
     }
     this.prepared.set(agentId, record)
 
-    // Best-effort gas prefund. If it fails the user can still transfer USDC,
-    // but the agent will be unable to submit txs until topped up another way.
-    // tx.wait() is intentionally NOT awaited here — 0G testnet block times
-    // can exceed 30s and blocking the prepare() call causes the UI to show
-    // "Transaction receipt not found". The transfer is sent and confirmed in
-    // the background; the agent container starts a few seconds later and by
-    // then the funds are almost always available.
-    // Prefund must succeed before prepare() returns — otherwise we leak
-    const decimals = await this.getDecimals()
-    const stakeWei = ethers.parseUnits(input.stakeAmount, decimals).toString()
-
-    if (!this.fundingSigner) {
-      throw new Error('[AgentManager] PRIVATE_KEY missing — cannot prefund agent gas')
-    }
-
-    // We ONLY prefund native gas (OG) here — the agent's wallet needs gas to
-    // submit L2 tx (claim, stake, submitOutput). USDC stake comes from the
-    // user via DeployAgentModal's signed `usdc.transfer` immediately after
-    // this prepare() returns. Auto-funding USDC from the API wallet here
-    // would mean the user's transfer is redundant — they could reject the
-    // popup and deploy() would still pass the balance check, leaving
-    // operations effectively free for the user. Stick to gas-only prefund.
-    try {
-      const tx = await this.fundingSigner.sendTransaction({
-        to: wallet.address,
-        value: ethers.parseEther(GAS_PREFUND_OG),
-      })
-      console.log(`[AgentManager] Prefund TX sent: ${tx.hash} → ${wallet.address} (${GAS_PREFUND_OG} OG)`)
-      await tx.wait()
-      console.log(`[AgentManager] Prefund confirmed for ${wallet.address} — awaiting user-signed USDC stake`)
-    } catch (err) {
-      throw new Error(`[AgentManager] Gas prefund failed for ${wallet.address}: ${(err as Error).message}`)
-    }
-
     return {
       agentId,
       agentAddress: wallet.address,
-      usdcAddress: this.usdcAddr,
-      decimals,
-      stakeWei,
+      stakeAmount: input.stakeAmount,
       gasPrefundOG: GAS_PREFUND_OG,
     }
   }
 
   /**
-   * Verifies the prepared agent's USDC balance covers the requested stake,
-   * spawns its Docker container, persists the secret, and publishes the
-   * agent on-chain so the pool is visible to other readers.
+   * Spawns the agent's Docker container, persists the secret, and
+   * publishes the agent on-chain. The stake commitment already happened
+   * in prepare(), so this call is a pure provisioning step.
    */
   async deploy(agentId: string): Promise<AgentRecord> {
     const prep = this.prepared.get(agentId)
     if (!prep) throw new Error(`Agent ${agentId} not prepared (call /agent/prepare first)`)
-
-    const decimals = await this.getDecimals()
-    const required = ethers.parseUnits(prep.stakeAmount, decimals)
-    const balance: bigint = await this.readUsdc.balanceOf(prep.agentAddress)
-    if (balance < required) {
-      throw new Error(
-        `Agent ${prep.agentAddress} has ${ethers.formatUnits(balance, decimals)} USDC but needs ${prep.stakeAmount}. Transfer USDC first.`,
-      )
-    }
 
     const secret: AgentSecret = {
       agentId: prep.agentId,
@@ -384,8 +416,7 @@ export class AgentManager {
   private async registerOnChainAsync(secret: AgentSecret): Promise<void> {
     if (!this.registry) return
     const id = this.toBytes32Id(secret.agentId)
-    const decimals = await this.getDecimals()
-    const stakeWei = ethers.parseUnits(secret.stakeAmount, decimals)
+    const stakeWei = ethers.parseUnits(secret.stakeAmount, USDC_DECIMALS)
     const tx = await this.registry.register(id, secret.agentAddress, secret.name, secret.model, stakeWei)
     await tx.wait()
     const tx2 = await this.registry.setStatus(id, STATUS_RUNNING)
@@ -409,86 +440,90 @@ export class AgentManager {
   }
 
   /**
-   * Drain an agent's wallet to its owner. Used by both the explicit user
-   * "Withdraw" flow (partial USDC) and the "Stop" flow (full USDC + OG, with
-   * a small gas reserve so the drain tx itself can land).
+   * Drain an agent's Escrow ledger balance back to its owner's Treasury
+   * balance. Replaces the old USDC/OG token sweep — in the tokenless model,
+   * an agent has no on-chain token to transfer; "moving funds back to the
+   * user" means debitAgent + creditUser on the operator's signature.
    *
-   * Returns whichever sub-drains actually moved funds. Errors inside one
-   * drain (USDC fails but OG succeeds, say) are logged and the other path
-   * continues — better partial recovery than total abort.
+   * `partialAmountWei` (in 6-decimal units) drains only that portion;
+   * omit to drain the agent's entire balance.
+   *
+   * Returns the matching tx hashes. Native 0G gas is NOT swept — that's
+   * operator-funded, not user money.
    */
   private async drainAgentToOwner(
     secret: AgentSecret,
-    opts?: { partialUsdcWei?: bigint; skipOg?: boolean },
-  ): Promise<{
-    usdc?: { txHash: string; amountWei: string }
-    og?: { txHash: string; amountWei: string }
-  }> {
-    const result: {
-      usdc?: { txHash: string; amountWei: string }
-      og?: { txHash: string; amountWei: string }
-    } = {}
+    opts?: { partialAmountWei?: bigint },
+  ): Promise<{ debitTx?: string; creditTx?: string; amountWei: string }> {
     if (!secret.ownerAddress) {
       console.warn(`[AgentManager] drain skipped for ${secret.agentId}: no ownerAddress`)
-      return result
+      return { amountWei: '0' }
+    }
+    if (!this.escrow || !this.treasury) {
+      throw new Error('Treasury/Escrow not configured — cannot drain agent balance')
     }
 
-    const wallet = new ethers.Wallet(secret.privateKey, this.provider)
-    const usdc = new ethers.Contract(this.usdcAddr, MockERC20ABI.abi, wallet)
+    const fullBalance = (await this.escrow.agentBalances(secret.agentAddress)) as bigint
+    const target = opts?.partialAmountWei ?? fullBalance
+    if (target <= 0n) {
+      return { amountWei: '0' }
+    }
+    if (target > fullBalance) {
+      throw new Error(
+        `Drain target ${ethers.formatUnits(target, USDC_DECIMALS)} exceeds agent balance ${ethers.formatUnits(fullBalance, USDC_DECIMALS)}`,
+      )
+    }
 
-    // USDC sweep
+    let debitTx: string | undefined
     try {
-      const balance: bigint = await usdc.balanceOf(wallet.address)
-      const target = opts?.partialUsdcWei ?? balance
-      if (target > 0n && target <= balance) {
-        const tx = await usdc.transfer(secret.ownerAddress, target)
-        await tx.wait()
-        result.usdc = { txHash: tx.hash, amountWei: target.toString() }
-        console.log(`[AgentManager] Drained ${target.toString()} USDC wei → ${secret.ownerAddress} (${secret.agentId})`)
-      }
+      const tx = await this.escrow.debitAgent(secret.agentAddress, target)
+      const r = await tx.wait()
+      debitTx = r?.hash ?? tx.hash
     } catch (err) {
-      console.error(`[AgentManager] USDC drain failed for ${secret.agentId}:`, err)
+      throw new Error(`[AgentManager] Escrow.debitAgent failed: ${(err as Error).message}`)
     }
 
-    // Native OG sweep — only on full drain, leaves a tx-cost reserve so the
-    // drain tx itself can settle on-chain. partialUsdcWei callers explicitly
-    // skip this because they only wanted to move USDC.
-    if (!opts?.skipOg && opts?.partialUsdcWei === undefined) {
+    let creditTx: string | undefined
+    try {
+      const tx = await this.treasury.creditBalance(secret.ownerAddress, target)
+      const r = await tx.wait()
+      creditTx = r?.hash ?? tx.hash
+    } catch (err) {
+      // Debit landed but credit failed — refund the agent so the ledger
+      // doesn't lose the value. If THIS fails, manual operator intervention
+      // is required (logged loudly).
       try {
-        const balance = await this.provider.getBalance(wallet.address)
-        const feeData = await this.provider.getFeeData()
-        const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? ethers.parseUnits('1', 'gwei')
-        const reserve = 21000n * gasPrice * 2n // headroom for the transfer itself
-        if (balance > reserve) {
-          const amount = balance - reserve
-          const tx = await wallet.sendTransaction({
-            to: secret.ownerAddress,
-            value: amount,
-            gasLimit: 21000n,
-          })
-          await tx.wait()
-          result.og = { txHash: tx.hash, amountWei: amount.toString() }
-          console.log(`[AgentManager] Drained ${amount.toString()} OG wei → ${secret.ownerAddress} (${secret.agentId})`)
-        }
-      } catch (err) {
-        console.error(`[AgentManager] OG drain failed for ${secret.agentId}:`, err)
+        const refundTx = await this.escrow.creditAgent(secret.agentAddress, target)
+        await refundTx.wait()
+        console.error(
+          `[AgentManager] Treasury credit failed; refunded ${target} to agent ${secret.agentAddress}`,
+        )
+      } catch (refundErr) {
+        console.error(
+          `[AgentManager] CRITICAL: agent debit landed but credit + refund both failed for ${secret.agentId}:`,
+          refundErr,
+        )
       }
+      throw new Error(`[AgentManager] Treasury.creditBalance failed: ${(err as Error).message}`)
     }
 
-    return result
+    console.log(
+      `[AgentManager] Drained ${ethers.formatUnits(target, USDC_DECIMALS)} USDC: agent ${secret.agentAddress} → user ${secret.ownerAddress} (${secret.agentId})`,
+    )
+    return { debitTx, creditTx, amountWei: target.toString() }
   }
 
   /**
-   * User-initiated USDC withdrawal from an agent's wallet to the owner.
-   * Auth check: requesterAddress must equal secret.ownerAddress. amountStr
-   * is a decimal string (e.g. "5.5"); omit it to drain the full USDC balance
-   * (does NOT touch OG — for that, use stop()).
+   * User-initiated withdraw from an agent's Escrow balance back to the
+   * user's Treasury balance. Auth: requesterAddress must equal
+   * secret.ownerAddress. `amountStr` is a decimal string (e.g. "5.5"); omit
+   * to drain the agent's full balance.
    */
   async withdraw(
     agentId: string,
     requesterAddress: string,
     amountStr?: string,
-  ): Promise<{ txHash: string; amountWei: string }> {
+  ): Promise<{ debitTx?: string; creditTx?: string; amountWei: string }> {
     const secret = this.secrets.get(agentId)
     if (!secret) throw new Error(`Agent ${agentId} not found`)
     if (!secret.ownerAddress) throw new Error('Agent has no registered owner')
@@ -496,55 +531,84 @@ export class AgentManager {
       throw new Error('Not authorized — requester is not the agent owner')
     }
 
-    const decimals = await this.getDecimals()
-    let partialUsdcWei: bigint | undefined
+    let partialAmountWei: bigint | undefined
     if (amountStr) {
       try {
-        partialUsdcWei = ethers.parseUnits(amountStr, decimals)
+        partialAmountWei = ethers.parseUnits(amountStr, USDC_DECIMALS)
       } catch (err) {
         throw new Error(`Invalid amount "${amountStr}": ${(err as Error).message}`)
       }
-      if (partialUsdcWei <= 0n) throw new Error('Amount must be > 0')
+      if (partialAmountWei <= 0n) throw new Error('Amount must be > 0')
     }
 
-    const drained = await this.drainAgentToOwner(secret, { partialUsdcWei, skipOg: true })
-    if (!drained.usdc) {
-      throw new Error('Withdraw produced no transfer (zero balance or partial > balance)')
-    }
-    return drained.usdc
+    return this.drainAgentToOwner(secret, { partialAmountWei })
   }
 
   /**
-   * Record a user-signed USDC deposit. The frontend signs `usdc.transfer`
-   * to the agent address itself; we just bump our local floor so the surplus
-   * watchdog doesn't immediately sweep the deposit back. Container is
-   * restarted so SwarmAgent reads the new STAKE_AMOUNT env on boot.
+   * User-initiated top-up: moves USDC from the user's Treasury balance
+   * into the agent's Escrow credit pool. Operator signs both ledger ops;
+   * the user signs nothing. Container is restarted so SwarmAgent picks
+   * up the new STAKE_AMOUNT floor.
    *
-   * Auth: requesterAddress must equal secret.ownerAddress. amountStr is a
-   * positive decimal string.
+   * Auth: requesterAddress must equal secret.ownerAddress. amountStr is
+   * a positive decimal string.
    */
   async recordDeposit(
     agentId: string,
     requesterAddress: string,
     amountStr: string,
-  ): Promise<{ newStakeAmount: string }> {
+  ): Promise<{ newStakeAmount: string; debitTx?: string; creditTx?: string }> {
     const secret = this.secrets.get(agentId)
     if (!secret) throw new Error(`Agent ${agentId} not found`)
     if (!secret.ownerAddress) throw new Error('Agent has no registered owner')
     if (secret.ownerAddress.toLowerCase() !== requesterAddress.toLowerCase()) {
       throw new Error('Not authorized — requester is not the agent owner')
+    }
+    if (!this.treasury || !this.escrow) {
+      throw new Error('Treasury/Escrow not configured')
     }
 
     const addAmount = parseFloat(amountStr)
     if (!Number.isFinite(addAmount) || addAmount <= 0) {
       throw new Error('Amount must be a positive decimal')
     }
+    const amountWei = ethers.parseUnits(amountStr, USDC_DECIMALS)
+
+    // Pre-flight balance.
+    const balance = (await this.treasury.balanceOf(secret.ownerAddress)) as bigint
+    if (balance < amountWei) {
+      throw new Error(
+        `Insufficient Treasury balance: have ${ethers.formatUnits(balance, USDC_DECIMALS)} USDC, need ${amountStr}`,
+      )
+    }
+
+    let debitTx: string | undefined
+    try {
+      const tx = await this.treasury.debitBalance(secret.ownerAddress, amountWei)
+      const r = await tx.wait()
+      debitTx = r?.hash ?? tx.hash
+    } catch (err) {
+      throw new Error(`Treasury.debitBalance failed: ${(err as Error).message}`)
+    }
+    let creditTx: string | undefined
+    try {
+      const tx = await this.escrow.creditAgent(secret.agentAddress, amountWei)
+      const r = await tx.wait()
+      creditTx = r?.hash ?? tx.hash
+    } catch (err) {
+      // Refund user.
+      try {
+        const refundTx = await this.treasury.creditBalance(secret.ownerAddress, amountWei)
+        await refundTx.wait()
+      } catch (refundErr) {
+        console.error(`[AgentManager] CRITICAL: deposit refund failed for ${secret.agentId}:`, refundErr)
+      }
+      throw new Error(`Escrow.creditAgent failed: ${(err as Error).message}`)
+    }
+
     const newStake = (parseFloat(secret.stakeAmount) + addAmount).toString()
     this.secrets.update(agentId, { stakeAmount: newStake })
 
-    // Restart so SwarmAgent picks up the new floor — without this, the next
-    // surplus sweep tick would treat the deposit as reward and forward it
-    // straight back to the owner.
     if (secret.containerId) {
       try {
         const c = docker.getContainer(secret.containerId)
@@ -555,7 +619,7 @@ export class AgentManager {
       }
     }
 
-    return { newStakeAmount: newStake }
+    return { newStakeAmount: newStake, debitTx, creditTx }
   }
 
   /**
@@ -566,23 +630,24 @@ export class AgentManager {
    * funds aren't stranded with the dead container.
    */
   async stop(idOrContainerId: string): Promise<{
-    drained?: {
-      usdc?: { txHash: string; amountWei: string }
-      og?: { txHash: string; amountWei: string }
-    }
+    drained?: { debitTx?: string; creditTx?: string; amountWei: string }
   }> {
     let secret = this.secrets.get(idOrContainerId)
     if (!secret) {
       secret = this.secrets.list().find(s => s.containerId === idOrContainerId)
     }
 
-    // Drain BEFORE stopping the container — once the on-chain status flips
-    // to STOPPED there's nothing wrong with the wallet still moving funds,
-    // but we want the drain happening while the secret is still in our hot
-    // path. Errors inside drain don't block the stop sequence.
-    let drained: { usdc?: { txHash: string; amountWei: string }; og?: { txHash: string; amountWei: string } } | undefined
+    // Drain BEFORE stopping the container so the agent's earnings flow
+    // back to the user's Treasury balance. Errors inside drain don't
+    // block the stop sequence — better to land STOPPED on-chain than
+    // leave a half-stopped agent because the bridge had a hiccup.
+    let drained: { debitTx?: string; creditTx?: string; amountWei: string } | undefined
     if (secret && secret.ownerAddress) {
-      drained = await this.drainAgentToOwner(secret)
+      try {
+        drained = await this.drainAgentToOwner(secret)
+      } catch (err) {
+        console.error(`[AgentManager] stop drain failed for ${secret.agentId}:`, err)
+      }
     }
 
     const containerId = secret?.containerId ?? idOrContainerId
@@ -647,7 +712,6 @@ export class AgentManager {
       }
     }
 
-    const decimals = await this.getDecimals().catch(() => 18)
     const records: AgentRecord[] = []
     const seenLocal = new Set<string>()
 
@@ -670,7 +734,7 @@ export class AgentManager {
         agentAddress: a.agentAddress,
         containerId,
         model: a.model,
-        stakeAmount: ethers.formatUnits(a.stakeAmount, decimals),
+        stakeAmount: ethers.formatUnits(a.stakeAmount, USDC_DECIMALS),
         status,
         deployedAt: Number(a.deployedAt) * 1000,
         ownerAddress: a.owner,

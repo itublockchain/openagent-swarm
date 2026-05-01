@@ -455,9 +455,6 @@ export function ColonyModal({ mode, myAgents, onClose, onChanged, onRequestDeplo
                       disabled={!taskSpec.trim() || (taskSubmit.step !== 'idle' && taskSubmit.step !== 'done' && taskSubmit.step !== 'error')}
                       className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {taskSubmit.step === 'preparing' && <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>}
-                      {taskSubmit.step === 'approving' && <><Loader2 className="w-3 h-3 animate-spin" /> Approve USDC…</>}
-                      {taskSubmit.step === 'creating' && <><Loader2 className="w-3 h-3 animate-spin" /> Creating…</>}
                       {taskSubmit.step === 'submitting' && <><Loader2 className="w-3 h-3 animate-spin" /> Dispatching…</>}
                       {(taskSubmit.step === 'idle' || taskSubmit.step === 'done' || taskSubmit.step === 'error') && (
                         <><Send className="w-3 h-3" /> Dispatch</>

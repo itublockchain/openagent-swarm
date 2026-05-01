@@ -2,122 +2,85 @@ import { expect } from 'chai'
 import { ethers } from 'hardhat'
 import type { SignerWithAddress } from '@nomicfoundation/hardhat-ethers/signers'
 
-const KEY = (s: string) => ethers.keccak256(ethers.toUtf8Bytes(s))
 const TASK = (s: string) => ethers.keccak256(ethers.toUtf8Bytes(s))
 const E = (n: string) => ethers.parseEther(n)
 
-describe('SwarmTreasury', () => {
-  let usdc: any, escrow: any, treasury: any
+describe('SwarmTreasury (tokenless)', () => {
+  let escrow: any, treasury: any
   let owner: SignerWithAddress, operator: SignerWithAddress
   let user: SignerWithAddress, other: SignerWithAddress
 
   beforeEach(async () => {
     ;[owner, operator, user, other] = await ethers.getSigners()
 
-    const ERC = await ethers.getContractFactory('MockERC20')
-    usdc = await ERC.deploy('Mock USDC', 'mUSDC')
-    await usdc.waitForDeployment()
-
     const Escrow = await ethers.getContractFactory('SwarmEscrow')
-    escrow = await Escrow.deploy(await usdc.getAddress())
+    escrow = await Escrow.deploy(operator.address)
     await escrow.waitForDeployment()
 
     const Treasury = await ethers.getContractFactory('SwarmTreasury')
-    treasury = await Treasury.deploy(
-      await usdc.getAddress(),
-      await escrow.getAddress(),
-      operator.address,
-    )
+    treasury = await Treasury.deploy(await escrow.getAddress(), operator.address)
     await treasury.waitForDeployment()
 
     await escrow.setTreasury(await treasury.getAddress())
-
-    // Pre-fund the user with mock USDC.
-    await usdc.mint(user.address, E('100'))
-    await usdc.connect(user).approve(await treasury.getAddress(), E('100'))
   })
 
   // ----------------------------------------------------------------
-  describe('deposit / withdraw', () => {
-    it('deposit credits balance, pulls USDC, emits event', async () => {
-      await expect(treasury.connect(user).deposit(E('10')))
-        .to.emit(treasury, 'Deposited')
+  describe('credit / debit (bridge ops)', () => {
+    it('creditBalance increments user balance + emits event', async () => {
+      await expect(treasury.connect(operator).creditBalance(user.address, E('10')))
+        .to.emit(treasury, 'Credited')
         .withArgs(user.address, E('10'), E('10'))
       expect(await treasury.balanceOf(user.address)).to.equal(E('10'))
-      expect(await usdc.balanceOf(await treasury.getAddress())).to.equal(E('10'))
     })
 
-    it('deposit rejects zero', async () => {
-      await expect(treasury.connect(user).deposit(0)).to.be.revertedWith('zero amount')
+    it('creditBalance rejects zero amount', async () => {
+      await expect(treasury.connect(operator).creditBalance(user.address, 0))
+        .to.be.revertedWith('zero amount')
     })
 
-    it('withdraw refunds balance', async () => {
-      await treasury.connect(user).deposit(E('10'))
-      await expect(treasury.connect(user).withdraw(E('4')))
-        .to.emit(treasury, 'Withdrew')
+    it('creditBalance rejects zero address', async () => {
+      await expect(treasury.connect(operator).creditBalance(ethers.ZeroAddress, E('1')))
+        .to.be.revertedWith('user=0')
+    })
+
+    it('creditBalance gated by operator', async () => {
+      await expect(treasury.connect(other).creditBalance(user.address, E('1')))
+        .to.be.revertedWith('not operator')
+    })
+
+    it('debitBalance subtracts user balance + emits event', async () => {
+      await treasury.connect(operator).creditBalance(user.address, E('10'))
+      await expect(treasury.connect(operator).debitBalance(user.address, E('4')))
+        .to.emit(treasury, 'Debited')
         .withArgs(user.address, E('4'), E('6'))
       expect(await treasury.balanceOf(user.address)).to.equal(E('6'))
     })
 
-    it('withdraw works even when paused — invariant: custodial exit always available', async () => {
-      await treasury.connect(user).deposit(E('10'))
-      await treasury.connect(owner).pause()
-      await expect(treasury.connect(user).withdraw(E('10'))).to.emit(treasury, 'Withdrew')
-      expect(await treasury.balanceOf(user.address)).to.equal(0n)
+    it('debitBalance rejects over-debit', async () => {
+      await treasury.connect(operator).creditBalance(user.address, E('1'))
+      await expect(treasury.connect(operator).debitBalance(user.address, E('5')))
+        .to.be.revertedWith('insufficient balance')
     })
 
-    it('withdraw rejects over-withdraw', async () => {
-      await treasury.connect(user).deposit(E('1'))
-      await expect(treasury.connect(user).withdraw(E('5'))).to.be.revertedWith('insufficient balance')
-    })
-  })
-
-  // ----------------------------------------------------------------
-  describe('key binding + freezing', () => {
-    const k = KEY('alpha')
-
-    it('bindKey records owner, rejects re-bind', async () => {
-      await expect(treasury.connect(user).bindKey(k))
-        .to.emit(treasury, 'KeyBound')
-        .withArgs(k, user.address)
-      expect(await treasury.keyOwner(k)).to.equal(user.address)
-      await expect(treasury.connect(other).bindKey(k)).to.be.revertedWith('already bound')
-    })
-
-    it('bindKey rejects zero hash', async () => {
-      await expect(treasury.connect(user).bindKey(ethers.ZeroHash)).to.be.revertedWith('key=0')
-    })
-
-    it('freezeKey gated by binding', async () => {
-      await treasury.connect(user).bindKey(k)
-      await expect(treasury.connect(other).freezeKey(k)).to.be.revertedWith('not your key')
-      await expect(treasury.connect(user).freezeKey(k)).to.emit(treasury, 'KeyFrozen')
-      expect(await treasury.frozenKey(k)).to.equal(true)
-    })
-
-    it('unfreezeKey gated by binding', async () => {
-      await treasury.connect(user).bindKey(k)
-      await treasury.connect(user).freezeKey(k)
-      await expect(treasury.connect(other).unfreezeKey(k)).to.be.revertedWith('not your key')
-      await expect(treasury.connect(user).unfreezeKey(k)).to.emit(treasury, 'KeyUnfrozen')
-      expect(await treasury.frozenKey(k)).to.equal(false)
+    it('debitBalance gated by operator', async () => {
+      await treasury.connect(operator).creditBalance(user.address, E('5'))
+      await expect(treasury.connect(other).debitBalance(user.address, E('1')))
+        .to.be.revertedWith('not operator')
     })
   })
 
   // ----------------------------------------------------------------
   describe('spendOnBehalfOf', () => {
-    const k = KEY('spend-key')
     const t1 = TASK('task-1')
 
     beforeEach(async () => {
-      await treasury.connect(user).deposit(E('20'))
-      await treasury.connect(user).bindKey(k)
+      await treasury.connect(operator).creditBalance(user.address, E('20'))
     })
 
-    it('debits balance, calls Escrow.createTaskFor with user as owner', async () => {
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('5'), k))
+    it('debits balance + creates task in escrow with user as owner', async () => {
+      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('5')))
         .to.emit(treasury, 'SpentOnBehalf')
-        .withArgs(user.address, t1, E('5'), k)
+        .withArgs(user.address, t1, E('5'))
         .and.to.emit(escrow, 'TaskCreated')
         .withArgs(t1, user.address, E('5'))
 
@@ -127,84 +90,30 @@ describe('SwarmTreasury', () => {
       expect(task.budget).to.equal(E('5'))
     })
 
-    it('rejects when key is frozen', async () => {
-      await treasury.connect(user).freezeKey(k)
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('1'), k))
-        .to.be.revertedWith('key frozen')
-    })
-
-    it('rejects when keyHash is bound to a different user', async () => {
-      await expect(treasury.connect(operator).spendOnBehalfOf(other.address, t1, E('1'), k))
-        .to.be.revertedWith('key/user mismatch')
-    })
-
     it('rejects when balance is insufficient', async () => {
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('999'), k))
+      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('999')))
         .to.be.revertedWith('insufficient balance')
     })
 
     it('rejects from non-operator', async () => {
-      await expect(treasury.connect(other).spendOnBehalfOf(user.address, t1, E('1'), k))
+      await expect(treasury.connect(other).spendOnBehalfOf(user.address, t1, E('1')))
         .to.be.revertedWith('not operator')
     })
 
-    it('respects pause for operator path (but not withdraw)', async () => {
+    it('respects pause', async () => {
       await treasury.connect(owner).pause()
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('1'), k)).to.be.reverted
+      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('1')))
+        .to.be.reverted
     })
 
     it('rejects zero amount', async () => {
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, 0, k))
+      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, 0))
         .to.be.revertedWith('zero amount')
     })
-  })
 
-  // ----------------------------------------------------------------
-  describe('dailyCap sliding window', () => {
-    const k = KEY('cap-key')
-    const t1 = TASK('cap-1')
-    const t2 = TASK('cap-2')
-    const t3 = TASK('cap-3')
-
-    beforeEach(async () => {
-      await treasury.connect(user).deposit(E('20'))
-      await treasury.connect(user).bindKey(k)
-      await treasury.connect(user).setDailyCap(E('5'))
-    })
-
-    it('blocks spend that would exceed the cap', async () => {
-      await treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('3'), k)
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t2, E('3'), k))
-        .to.be.revertedWith('daily cap reached')
-    })
-
-    it('rolls window after 24h, allowing fresh spend', async () => {
-      await treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('5'), k)
-      // Window expired
-      await ethers.provider.send('evm_increaseTime', [86_401])
-      await ethers.provider.send('evm_mine', [])
-      await expect(
-        treasury.connect(operator).spendOnBehalfOf(user.address, t2, E('5'), k),
-      ).to.emit(treasury, 'SpentOnBehalf')
-    })
-
-    it('cap = 0 means unlimited', async () => {
-      await treasury.connect(user).setDailyCap(0)
-      await expect(treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('20'), k))
-        .to.emit(treasury, 'SpentOnBehalf')
-    })
-
-    it('dailySpentView reflects rolled window without state change', async () => {
-      await treasury.connect(operator).spendOnBehalfOf(user.address, t1, E('3'), k)
-      const [spent1, ws1] = await treasury.dailySpentView(user.address)
-      expect(spent1).to.equal(E('3'))
-      expect(ws1).to.be.gt(0n)
-
-      await ethers.provider.send('evm_increaseTime', [86_401])
-      await ethers.provider.send('evm_mine', [])
-      const [spent2, ws2] = await treasury.dailySpentView(user.address)
-      expect(spent2).to.equal(0n)
-      expect(ws2).to.be.gt(ws1)
+    it('rejects zero user', async () => {
+      await expect(treasury.connect(operator).spendOnBehalfOf(ethers.ZeroAddress, t1, E('1')))
+        .to.be.revertedWith('user=0')
     })
   })
 
@@ -219,7 +128,8 @@ describe('SwarmTreasury', () => {
     })
 
     it('setOperator rejects zero address', async () => {
-      await expect(treasury.connect(owner).setOperator(ethers.ZeroAddress)).to.be.revertedWith('operator=0')
+      await expect(treasury.connect(owner).setOperator(ethers.ZeroAddress))
+        .to.be.revertedWith('operator=0')
     })
 
     it('pause only by owner', async () => {
@@ -234,7 +144,6 @@ describe('SwarmTreasury', () => {
     const t1 = TASK('only-treasury')
 
     it('rejects calls from non-treasury', async () => {
-      // operator is not the treasury contract itself
       await expect(
         escrow.connect(operator).createTaskFor(t1, E('1'), user.address),
       ).to.be.revertedWith('Only treasury')
@@ -246,17 +155,190 @@ describe('SwarmTreasury', () => {
     })
 
     it('rejects zero owner', async () => {
-      // We'd need to reach createTaskFor as the treasury contract; easiest
-      // is to redeploy with treasury = a signer so we can call directly.
+      // Redeploy a fresh Escrow with `operator` posing as the treasury so we
+      // can call createTaskFor directly.
       const Escrow2 = await ethers.getContractFactory('SwarmEscrow')
-      const escrow2 = await Escrow2.deploy(await usdc.getAddress())
+      const escrow2 = await Escrow2.deploy(operator.address)
       await escrow2.waitForDeployment()
       await escrow2.setTreasury(operator.address)
-      await usdc.mint(operator.address, E('5'))
-      await usdc.connect(operator).approve(await escrow2.getAddress(), E('5'))
       await expect(
         escrow2.connect(operator).createTaskFor(t1, E('1'), ethers.ZeroAddress),
       ).to.be.revertedWith('Zero owner')
+    })
+  })
+})
+
+describe('SwarmEscrow (tokenless agent ledger)', () => {
+  let escrow: any
+  let operator: SignerWithAddress, registry: SignerWithAddress, vault: SignerWithAddress
+  let agent: SignerWithAddress, otherAgent: SignerWithAddress, challenger: SignerWithAddress
+
+  beforeEach(async () => {
+    ;[operator, registry, vault, agent, otherAgent, challenger] = await ethers.getSigners()
+
+    const Escrow = await ethers.getContractFactory('SwarmEscrow')
+    escrow = await Escrow.deploy(operator.address)
+    await escrow.waitForDeployment()
+    await escrow.setAuthorities(registry.address, vault.address)
+    await escrow.setTreasury(operator.address) // operator poses as treasury for createTaskFor
+  })
+
+  describe('agent ledger (creditAgent / debitAgent)', () => {
+    it('creditAgent + debitAgent flow', async () => {
+      await expect(escrow.connect(operator).creditAgent(agent.address, E('10')))
+        .to.emit(escrow, 'AgentCredited')
+        .withArgs(agent.address, E('10'), E('10'))
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('10'))
+
+      await expect(escrow.connect(operator).debitAgent(agent.address, E('4')))
+        .to.emit(escrow, 'AgentDebited')
+        .withArgs(agent.address, E('4'), E('6'))
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('6'))
+    })
+
+    it('creditAgent gated by operator', async () => {
+      await expect(escrow.connect(agent).creditAgent(agent.address, E('1')))
+        .to.be.revertedWith('not operator')
+    })
+
+    it('debitAgent rejects over-debit', async () => {
+      await escrow.connect(operator).creditAgent(agent.address, E('1'))
+      await expect(escrow.connect(operator).debitAgent(agent.address, E('5')))
+        .to.be.revertedWith('insufficient agent balance')
+    })
+  })
+
+  describe('subtask staking', () => {
+    const t1 = TASK('task-stake')
+    const n1 = TASK('node-1')
+
+    beforeEach(async () => {
+      // Treasury (= operator in tests) creates a task; operator credits agents.
+      await escrow.connect(operator).createTaskFor(t1, E('100'), agent.address)
+      await escrow.connect(operator).creditAgent(agent.address, E('10'))
+      await escrow.connect(operator).creditAgent(otherAgent.address, E('10'))
+    })
+
+    it('agent stakes for subtask, debits its own balance', async () => {
+      await expect(escrow.connect(agent).stakeForSubtask(t1, n1, E('3')))
+        .to.emit(escrow, 'SubtaskStaked')
+        .withArgs(t1, n1, agent.address, E('3'))
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('7'))
+      expect(await escrow.subtaskStakes(t1, n1, agent.address)).to.equal(E('3'))
+      expect(await escrow.subtaskStakeOwners(t1, n1)).to.equal(agent.address)
+    })
+
+    it('rejects double-stake on same subtask', async () => {
+      await escrow.connect(agent).stakeForSubtask(t1, n1, E('3'))
+      await expect(escrow.connect(otherAgent).stakeForSubtask(t1, n1, E('3')))
+        .to.be.revertedWith('Subtask already staked')
+    })
+
+    it('insufficient agent balance reverts', async () => {
+      await expect(escrow.connect(agent).stakeForSubtask(t1, n1, E('999')))
+        .to.be.revertedWith('insufficient balance')
+    })
+
+    it('releaseSubtaskStake refunds to agentBalances', async () => {
+      await escrow.connect(agent).stakeForSubtask(t1, n1, E('3'))
+      await expect(escrow.connect(registry).releaseSubtaskStake(t1, n1))
+        .to.emit(escrow, 'SubtaskStakeReleased')
+        .withArgs(t1, n1, agent.address, E('3'))
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('10'))
+      expect(await escrow.subtaskStakes(t1, n1, agent.address)).to.equal(0n)
+    })
+
+    it('releaseSubtaskStake gated by registry', async () => {
+      await escrow.connect(agent).stakeForSubtask(t1, n1, E('3'))
+      await expect(escrow.connect(operator).releaseSubtaskStake(t1, n1))
+        .to.be.revertedWith('Caller is not the registry')
+    })
+  })
+
+  describe('slashing (vault-only)', () => {
+    const t1 = TASK('task-slash')
+    const n1 = TASK('node-slash')
+
+    beforeEach(async () => {
+      await escrow.connect(operator).createTaskFor(t1, E('100'), agent.address)
+      await escrow.connect(operator).creditAgent(agent.address, E('10'))
+      await escrow.connect(operator).creditAgent(challenger.address, E('5'))
+      await escrow.connect(agent).stakeForSubtask(t1, n1, E('5'))
+    })
+
+    it('slashSubtaskPartial burns + rewards + refunds', async () => {
+      // 80% burn, 20% reward to challenger
+      await expect(
+        escrow.connect(vault).slashSubtaskPartial(t1, n1, agent.address, 8000, challenger.address, 2000),
+      ).to.emit(escrow, 'Slashed').withArgs(t1, agent.address, E('5'))
+
+      // 5 stake → 4 burned (totalSlashed) + 1 reward → challenger
+      expect(await escrow.totalSlashed()).to.equal(E('4'))
+      expect(await escrow.agentBalances(challenger.address)).to.equal(E('6')) // 5 + 1
+      // Agent's stake is fully spent on burn+reward, original 10 - 5 (staked) = 5 left
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('5'))
+    })
+
+    it('slashSubtaskPartial rejects from non-vault', async () => {
+      await expect(
+        escrow.connect(operator).slashSubtaskPartial(t1, n1, agent.address, 5000, challenger.address, 0),
+      ).to.be.revertedWith('Caller is not the vault')
+    })
+
+    it('rejects when bps > 10000', async () => {
+      await expect(
+        escrow.connect(vault).slashSubtaskPartial(t1, n1, agent.address, 6000, challenger.address, 5000),
+      ).to.be.revertedWith('Bps overflow')
+    })
+
+    it('partial slash refunds remainder to agent', async () => {
+      // 20% burn, no reward, 80% refund
+      await escrow.connect(vault).slashSubtaskPartial(t1, n1, agent.address, 2000, ethers.ZeroAddress, 0)
+      expect(await escrow.totalSlashed()).to.equal(E('1')) // 5 * 20%
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('9')) // 5 (unstaked) + 4 (refund)
+    })
+  })
+
+  describe('settlement', () => {
+    const t1 = TASK('task-settle')
+
+    beforeEach(async () => {
+      await escrow.connect(operator).createTaskFor(t1, E('20'), agent.address)
+    })
+
+    it('settle distributes equal share + refunds task-level stake', async () => {
+      // Set up two winners, each with 1 ETH stake at task-level
+      await escrow.connect(operator).creditAgent(agent.address, E('1'))
+      await escrow.connect(operator).creditAgent(otherAgent.address, E('1'))
+      await escrow.connect(agent).stake(t1, E('1'))
+      await escrow.connect(otherAgent).stake(t1, E('1'))
+
+      await expect(escrow.connect(registry).settle(t1, [agent.address, otherAgent.address]))
+        .to.emit(escrow, 'Settled')
+
+      // 20 budget / 2 = 10 each, plus 1 stake refunded each
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('11'))
+      expect(await escrow.agentBalances(otherAgent.address)).to.equal(E('11'))
+
+      const task = await escrow.tasks(t1)
+      expect(task.finalized).to.equal(true)
+    })
+
+    it('settleWithAmounts respects per-winner amounts', async () => {
+      await escrow.connect(registry).settleWithAmounts(t1, [agent.address, otherAgent.address], [E('5'), E('15')])
+      expect(await escrow.agentBalances(agent.address)).to.equal(E('5'))
+      expect(await escrow.agentBalances(otherAgent.address)).to.equal(E('15'))
+    })
+
+    it('settleWithAmounts rejects total > budget', async () => {
+      await expect(
+        escrow.connect(registry).settleWithAmounts(t1, [agent.address, otherAgent.address], [E('15'), E('15')]),
+      ).to.be.revertedWith('Exceeds budget')
+    })
+
+    it('settle gated by registry', async () => {
+      await expect(escrow.connect(operator).settle(t1, [agent.address]))
+        .to.be.revertedWith('Caller is not the registry')
     })
   })
 })

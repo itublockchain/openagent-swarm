@@ -7,10 +7,9 @@ import { AgentManager } from './AgentRunner';
 import { CentralComputeProxy } from './CentralComputeProxy';
 import { TaskSchema, AgentPrepareSchema, AgentDeploySchema, AgentIdParamsSchema, AgentWithdrawSchema, AgentTopupSchema } from './schemas';
 import { ethers } from 'ethers';
-import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json';
-import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json';
 import DAGRegistryABI from '../../../contracts/artifacts/src/DAGRegistry.sol/DAGRegistry.json';
 import deployments from '../../../contracts/deployments/og_testnet.json';
+import { getChainClient, USDC_DECIMALS } from './v1/chain';
 import { EventType } from '../../../shared/types';
 import { generateNonce, SiweMessage } from 'siwe'
 import jwt from 'jsonwebtoken'
@@ -24,6 +23,8 @@ import { registerTasksRoutes } from './v1/tasksRoutes'
 import { registerBalanceRoutes } from './v1/balanceRoutes'
 import { registerAgentsRoutes } from './v1/agentsRoutes'
 import { registerProfileRoutes } from './v1/profileRoutes'
+import { registerWithdrawRoutes } from './v1/withdrawRoutes'
+import { BridgeWatcher } from './BridgeWatcher'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
 const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
@@ -408,13 +409,9 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
-  // Shared L2 helpers — read-only RPC client used for verification.
+  // Shared L2 helpers — read-only RPC for DAG state lookups.
   const rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai';
-  const escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow;
-  const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC;
   const readProvider = new ethers.JsonRpcProvider(rpcUrl);
-  const readEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, readProvider);
-  const readUsdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, readProvider);
   const dagRegistryAddr = process.env.L2_DAG_REGISTRY_ADDRESS || deployments.DAGRegistry;
   const readDagRegistry = new ethers.Contract(dagRegistryAddr, DAGRegistryABI.abi, readProvider);
 
@@ -425,45 +422,11 @@ export default async function createServer(deps: ServerDeps) {
   }
 
   /**
-   * POST /task/prepare
-   * First half of the user-signed task creation flow. Uploads the spec to
-   * storage and returns everything the frontend needs to sign the on-chain
-   * approve + createTask transactions itself. No on-chain side effects.
-   */
-  fastify.post('/task/prepare', async (request, reply) => {
-    const user = requireAuth(request, reply)
-    if (!user) return
-
-    const body = TaskSchema.parse(request.body);
-    const specHash = await deps.storage.append(body);
-    const taskIdBytes32 = deriveTaskId(specHash);
-
-    let decimals: number
-    try {
-      decimals = Number(await readUsdc.decimals());
-    } catch (err) {
-      console.error('[L2] Failed to read USDC decimals:', err);
-      return reply.status(502).send({ error: 'L2 RPC unreachable' });
-    }
-    // TaskSchema.refine already guarantees a positive numeric string here.
-    const budgetWei = ethers.parseUnits(body.budget, decimals).toString();
-
-    return {
-      specHash,
-      taskIdBytes32,
-      budgetWei,
-      decimals,
-      escrowAddress: escrowAddr,
-      usdcAddress: usdcAddr,
-    };
-  });
-
-  /**
    * POST /task
-   * Second half of the flow: verifies the user has already created the task
-   * on-chain (via their own wallet) and then broadcasts to the AXL mesh.
-   * The legacy fallback path (API wallet creates the task itself) is gated
-   * behind ALLOW_API_CREATE_TASK=true for backward compat / dev workflows.
+   * Backend-relayed task submission for the explorer's browser flow.
+   * Debits the user's Treasury balance via operator-signed
+   * `spendOnBehalfOf` and broadcasts to AXL. The user signs nothing
+   * on-chain — they only proved ownership of the address via SIWE.
    */
   fastify.post('/task', async (request, reply) => {
     const user = requireAuth(request, reply)
@@ -473,39 +436,51 @@ export default async function createServer(deps: ServerDeps) {
     const specHash = await deps.storage.append(body);
     const taskIdBytes32 = deriveTaskId(specHash);
 
-    // Verify the on-chain task exists. The user's wallet (or, in dev, the API
-    // wallet) must have called createTask with this exact taskIdBytes32.
-    let taskOnChain: any
-    try {
-      taskOnChain = await readEscrow.tasks(taskIdBytes32);
-    } catch (err) {
-      console.error('[L2] tasks() lookup failed:', err);
-      return reply.status(502).send({ error: 'L2 RPC unreachable' });
+    const { readTreasury, writeTreasury, treasuryAddr, operatorAddress } = getChainClient();
+    if (!writeTreasury || !operatorAddress) {
+      return reply.status(503).send({ error: 'Operator wallet not configured', code: 'OPERATOR_DOWN' });
     }
 
-    if (taskOnChain.owner === ethers.ZeroAddress) {
-      if (process.env.ALLOW_API_CREATE_TASK === 'true') {
-        // Legacy / dev path: fall back to API-funded createTask. Useful for
-        // server-to-server testing without a connected wallet. Schema has
-        // already validated body.budget is a positive numeric string.
-        const r = await apiFundedCreateTask(taskIdBytes32, body.budget);
-        if (!r.ok) return reply.status(500).send(r.payload);
-      } else {
-        return reply.status(402).send({
-          error: 'Task not found on-chain. Frontend must call createTask first.',
-          taskIdBytes32,
-        });
-      }
-    } else if (taskOnChain.owner.toLowerCase() !== user.address.toLowerCase()) {
-      // Task exists on-chain but was created by someone other than the
-      // authenticated caller. Without this check, anyone with a JWT could
-      // re-broadcast another user's task to the AXL mesh by guessing
-      // (or observing) their taskIdBytes32.
-      return reply.status(403).send({
-        error: 'Task owner mismatch — only the on-chain creator can broadcast it.',
-        onChainOwner: taskOnChain.owner,
+    let budgetWei: bigint;
+    try {
+      budgetWei = ethers.parseUnits(body.budget, USDC_DECIMALS);
+    } catch {
+      return reply.status(400).send({ error: 'Invalid budget format' });
+    }
+    if (budgetWei <= 0n) {
+      return reply.status(400).send({ error: 'Budget must be > 0' });
+    }
+
+    // Pre-flight balance — clean 402 before sending the spend tx.
+    let balance: bigint;
+    try {
+      balance = (await readTreasury.balanceOf(user.address)) as bigint;
+    } catch (err) {
+      console.error('[L2] Treasury read failed:', err);
+      return reply.status(502).send({ error: 'L2 RPC unreachable', code: 'RPC_DOWN' });
+    }
+    if (balance < budgetWei) {
+      return reply.status(402).send({
+        error: 'Insufficient Treasury balance',
+        code: 'INSUFFICIENT_BALANCE',
+        balance: ethers.formatUnits(balance, USDC_DECIMALS),
+        required: body.budget,
       });
     }
+
+    // Operator signs spendOnBehalfOf → Treasury debits user, Escrow records task.
+    let treasuryTxHash: string;
+    try {
+      const tx = await writeTreasury.spendOnBehalfOf(user.address, taskIdBytes32, budgetWei);
+      const receipt = await tx.wait();
+      treasuryTxHash = receipt?.hash ?? tx.hash;
+    } catch (err: any) {
+      const reason = err?.shortMessage ?? err?.reason ?? err?.message ?? 'unknown';
+      console.error('[L2] spendOnBehalfOf failed:', reason);
+      const status = /insufficient/i.test(reason) ? 402 : 400;
+      return reply.status(status).send({ error: reason, code: 'TX_REVERTED' });
+    }
+    console.log(`[L2] /task spendOnBehalfOf user=${user.address} task=${taskIdBytes32.slice(0, 12)} tx=${treasuryTxHash}`);
 
     // Colony scope authorization. If the task is tagged with a colonyId,
     // verify the caller is allowed to dispatch there:
@@ -552,40 +527,14 @@ export default async function createServer(deps: ServerDeps) {
       console.warn('[API] taskIndex.record failed (non-fatal):', err)
     }
 
-    return { taskId: specHash, taskIdBytes32 };
+    return { taskId: specHash, taskIdBytes32, treasuryTxHash };
   });
-
-  // Legacy helper preserved behind ALLOW_API_CREATE_TASK=true.
-  async function apiFundedCreateTask(taskIdBytes32: string, budgetStr: string): Promise<{ ok: true } | { ok: false; payload: any }> {
-    try {
-      const privateKey = process.env.PRIVATE_KEY;
-      if (!privateKey) return { ok: false, payload: { error: 'PRIVATE_KEY env var required for API-funded createTask' } };
-      const signer = new ethers.Wallet(privateKey, readProvider);
-      const escrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, signer);
-      const usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, signer);
-      const decimals: number = Number(await usdc.decimals());
-      const budget = ethers.parseUnits(budgetStr, decimals);
-
-      const allowance: bigint = await usdc.allowance(signer.address, escrowAddr);
-      if (allowance < budget) {
-        const approveTx = await usdc.approve(escrowAddr, ethers.MaxUint256);
-        await approveTx.wait();
-      }
-      const tx = await escrow.createTask(taskIdBytes32, budget);
-      await tx.wait();
-      console.log(`[L2] API-funded createTask ${taskIdBytes32} tx=${tx.hash}`);
-      return { ok: true };
-    } catch (err) {
-      console.error('[L2] apiFundedCreateTask failed:', err);
-      return { ok: false, payload: { error: 'createTask failed', details: (err as Error).message } };
-    }
-  }
 
   /**
    * POST /agent/prepare
-   * Mints a fresh wallet for the agent, prefunds it with native gas, returns
-   * the address. The frontend then asks the user to sign a USDC.transfer to
-   * this address before calling /agent/deploy.
+   * Validates the user has enough Treasury balance, mints a fresh wallet,
+   * prefunds gas, commits the stake on-chain (Treasury debit + Escrow
+   * agent credit). User signs nothing — the operator handles all moves.
    */
   fastify.post('/agent/prepare', async (request: any, reply) => {
     const user = requireAuth(request, reply)
@@ -606,7 +555,7 @@ export default async function createServer(deps: ServerDeps) {
     }
   });
 
-  // POST /agent/deploy — verifies USDC arrival, then spawns the container.
+  // POST /agent/deploy — spawns the container; stake was already committed in /agent/prepare.
   fastify.post('/agent/deploy', async (request: any, reply) => {
     if (!requireAuth(request, reply)) return
     const body = AgentDeploySchema.parse(request.body)
@@ -977,6 +926,18 @@ export default async function createServer(deps: ServerDeps) {
   })
   await registerBalanceRoutes(fastify, { keyStore })
   await registerAgentsRoutes(fastify, { keyStore, manager: deps.manager })
+
+  // SIWE-JWT withdraw flow: debits Treasury on 0G, releases real USDC
+  // on Base Sepolia. Operator wallet covers Base ETH gas; user pays a
+  // flat USDC fee from their Treasury balance.
+  await registerWithdrawRoutes(fastify, { requireAuth })
+
+  // BridgeWatcher mirrors USDCGateway.Deposited (Base) → Treasury.creditBalance
+  // (0G). Boots in the background — failure to start is logged but does
+  // not block server startup; the watcher itself is robust to
+  // disconnects/restarts.
+  const bridgeWatcher = new BridgeWatcher()
+  bridgeWatcher.start().catch(err => console.error('[server] BridgeWatcher start failed:', err))
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
   await registerProfileRoutes(fastify, {

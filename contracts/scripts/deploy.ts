@@ -1,3 +1,11 @@
+/**
+ * Deploys the tokenless swarm stack to 0G Galileo testnet:
+ *   SwarmEscrow → DAGRegistry → AgentRegistry → SlashingVault → SwarmTreasury
+ *
+ * No ERC20 anywhere. Real USDC custody lives on Base Sepolia
+ * (USDCGateway, deployed via deploy-base.ts). The API operator bridges
+ * deposits into Treasury.balanceOf and withdrawals back to the gateway.
+ */
 import { ethers } from 'hardhat'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -6,26 +14,13 @@ async function main() {
   const [deployer] = await ethers.getSigners()
   console.log('Deploying with:', deployer.address)
 
-  // 0. MockERC20 (USDC for Testnet)
-  console.log('Deploying MockERC20...')
-  const MockERC20 = await ethers.getContractFactory('MockERC20')
-  const usdc = await MockERC20.deploy('Mock USDC', 'mUSDC')
-  await usdc.waitForDeployment()
-  const usdcAddress = await usdc.getAddress()
-  console.log('MockERC20 (USDC):', usdcAddress)
-
-  // 0.1 Mint for the deployer (API wallet)
-  console.log('Minting USDC to deployer...')
-  const mintTx = await usdc.mint(deployer.address, ethers.parseEther('1000'))
-  await mintTx.wait()
-
-  // 1. SwarmEscrow
+  // 1. SwarmEscrow — operator EOA = deployer (rotate later for prod).
   console.log('Deploying SwarmEscrow...')
   const SwarmEscrow = await ethers.getContractFactory('SwarmEscrow')
-  const escrow = await SwarmEscrow.deploy(usdcAddress)
+  const escrow = await SwarmEscrow.deploy(deployer.address)
   await escrow.waitForDeployment()
   const escrowAddress = await escrow.getAddress()
-  console.log('SwarmEscrow:', escrowAddress)
+  console.log('SwarmEscrow:', escrowAddress, '(operator:', deployer.address, ')')
 
   // 2. DAGRegistry
   console.log('Deploying DAGRegistry...')
@@ -35,8 +30,7 @@ async function main() {
   const registryAddress = await registry.getAddress()
   console.log('DAGRegistry:', registryAddress)
 
-  // 3. AgentRegistry — must be deployed BEFORE SlashingVault, because the
-  //    vault's jury-vote path verifies juror eligibility against this registry.
+  // 3. AgentRegistry — must be deployed BEFORE SlashingVault.
   console.log('Deploying AgentRegistry...')
   const AgentRegistry = await ethers.getContractFactory('AgentRegistry')
   const agentRegistry = await AgentRegistry.deploy()
@@ -44,8 +38,7 @@ async function main() {
   const agentRegistryAddress = await agentRegistry.getAddress()
   console.log('AgentRegistry:', agentRegistryAddress)
 
-  // 4. SlashingVault — admin-free; resolves challenges by quorum of registered
-  //    RUNNING agents acting as LLM-Judge jurors.
+  // 4. SlashingVault.
   console.log('Deploying SlashingVault...')
   const SlashingVault = await ethers.getContractFactory('SlashingVault')
   const vault = await SlashingVault.deploy(escrowAddress, registryAddress, agentRegistryAddress)
@@ -53,19 +46,18 @@ async function main() {
   const vaultAddress = await vault.getAddress()
   console.log('SlashingVault:', vaultAddress)
 
-  // 5. Setup Connections
+  // 5. Wire DAGRegistry + Escrow authorities.
   console.log('Setting up contract connections...')
   const setRegTx = await registry.setAddresses(escrowAddress, vaultAddress)
   await setRegTx.wait()
   const setEscrowTx = await escrow.setAuthorities(registryAddress, vaultAddress)
   await setEscrowTx.wait()
 
-  // 5.5 SwarmTreasury — SDK API-key flow target. The deployer is the
-  // initial operator (rotate to a multisig/dedicated EOA before mainnet).
-  // Wire Escrow.setTreasury here so `createTaskFor` accepts Treasury calls.
+  // 6. SwarmTreasury — operator = deployer initially. Wire Escrow.setTreasury
+  // so `createTaskFor` accepts Treasury calls.
   console.log('Deploying SwarmTreasury...')
   const SwarmTreasury = await ethers.getContractFactory('SwarmTreasury')
-  const treasury = await SwarmTreasury.deploy(usdcAddress, escrowAddress, deployer.address)
+  const treasury = await SwarmTreasury.deploy(escrowAddress, deployer.address)
   await treasury.waitForDeployment()
   const treasuryAddress = await treasury.getAddress()
   console.log('SwarmTreasury:', treasuryAddress, '(operator:', deployer.address, ')')
@@ -73,15 +65,7 @@ async function main() {
   await setTreasuryTx.wait()
   console.log('Wired Escrow.setTreasury → Treasury')
 
-  // 6. Approve Escrow
-  console.log('Approving SwarmEscrow to spend USDC...')
-  const approveTx = await usdc.approve(escrowAddress, ethers.MaxUint256)
-  await approveTx.wait()
-  console.log('Approved.')
-
-  // Adresleri kaydet
   const addresses = {
-    MockUSDC: usdcAddress,
     SwarmEscrow: escrowAddress,
     DAGRegistry: registryAddress,
     SlashingVault: vaultAddress,
@@ -97,4 +81,7 @@ async function main() {
   console.log('Saved to deployments/og_testnet.json')
 }
 
-main().catch(console.error)
+main().catch((err) => {
+  console.error(err)
+  process.exit(1)
+})

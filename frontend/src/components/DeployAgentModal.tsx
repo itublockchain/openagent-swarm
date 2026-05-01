@@ -2,10 +2,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import { X, Rocket } from 'lucide-react'
-import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi'
-import { waitForTransactionReceipt, readContract } from '@wagmi/core'
-import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi'
-import { ERC20_ABI } from '@/lib/contracts'
+import { useAccount } from 'wagmi'
 import { apiRequest } from '../../lib/api'
 import { ENV } from '../../lib/env'
 import { cn } from '@/lib/utils'
@@ -34,15 +31,8 @@ const AVAILABLE_MODELS = [
 
 type Step =
   | 'idle'
-  | 'switching-chain'
   | 'preparing'
-  | 'transferring'
-  // Backend returned containerId. Container is up but the on-chain
-  // registry tx (register + setStatus(RUNNING)) may still be pending.
   | 'deploying'
-  // Polling /agent/pool until the new agent surfaces with status='running'.
-  // Keeps the deploy button disabled so a user can't fire a second deploy
-  // while the first one is still wiring itself into the swarm.
   | 'awaiting-active'
   | 'done'
   | 'error'
@@ -56,11 +46,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<Step>('idle')
   const [errorMsg, setErrorMsg] = useState('')
 
-  const { address: userAddress, isConnected, connector } = useAccount()
-  const walletName = connector?.name?.trim() || 'your wallet'
-  const currentChainId = useChainId()
-  const { switchChainAsync } = useSwitchChain()
-  const { writeContractAsync } = useWriteContract()
+  const { address: userAddress, isConnected } = useAccount()
 
   // Aborts the waiting-active poll when the modal unmounts mid-deploy.
   const pollAbortRef = useRef<AbortController | null>(null)
@@ -144,24 +130,9 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
     }
 
     try {
-      // 0. Make sure the wallet is on 0G Galileo. If not, prompt a switch —
-      // otherwise writeContract silently hangs waiting for an unreachable RPC.
-      if (currentChainId !== ogTestnet.id) {
-        setStep('switching-chain')
-        try {
-          await switchChainAsync({ chainId: ogTestnet.id })
-        } catch (err: any) {
-          // 4902 = chain not added to the wallet. Tell the user to add it
-          // manually rather than trying wallet_addEthereumChain RPC (which
-          // varies per wallet) — gives a clearer remediation path.
-          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
-            throw new Error('Add 0G Galileo testnet (chainId 16602, RPC https://evmrpc-testnet.0g.ai) to your wallet, then retry')
-          }
-          throw err
-        }
-      }
-
-      // 1. Prepare — backend mints a fresh wallet for the agent and gas-funds it.
+      // 1. Prepare — backend pulls stake from user's Treasury balance,
+      //    mints a fresh wallet, prefunds 0G gas, credits agent's Escrow
+      //    balance with the stake. User signs nothing.
       setStep('preparing')
       const prepRes = await apiRequest('/agent/prepare', {
         method: 'POST',
@@ -174,58 +145,20 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
       })
       if (!prepRes.ok) {
         const e = await prepRes.json().catch(() => ({}))
-        throw new Error(e.error || `prepare failed (${prepRes.status})`)
+        const msg = e.error || `prepare failed (${prepRes.status})`
+        if (/insufficient/i.test(msg)) {
+          throw new Error(`${msg} — open the Deposit modal to top up first.`)
+        }
+        throw new Error(msg)
       }
       const prep = (await prepRes.json()) as {
         agentId: string
         agentAddress: `0x${string}`
-        usdcAddress: `0x${string}`
-        decimals: number
-        stakeWei: string
+        stakeAmount: string
         gasPrefundOG: string
       }
 
-      // 2. User signs USDC.transfer to fund the agent's wallet directly.
-      setStep('transferring')
-      console.log('[Deploy] requesting USDC.transfer signature', {
-        usdc: prep.usdcAddress, to: prep.agentAddress, amount: prep.stakeWei, chainId: ogTestnet.id,
-      })
-      const transferHash = await writeContractAsync({
-        address: prep.usdcAddress,
-        abi: ERC20_ABI,
-        functionName: 'transfer',
-        args: [prep.agentAddress, BigInt(prep.stakeWei)],
-        chainId: ogTestnet.id,
-      })
-      console.log('[Deploy] transfer tx hash:', transferHash)
-      // 0G RPC can take ~30-60s to surface receipts; bump default timeout.
-      // If receipt fetch times out, the tx may still have landed — verify by
-      // reading the agent's USDC balance directly. Same defensive pattern as
-      // task creation in /explorer/page.tsx.
-      try {
-        await waitForTransactionReceipt(wagmiConfig, {
-          hash: transferHash,
-          timeout: 300_000,
-          pollingInterval: 3_000,
-        })
-        console.log('[Deploy] transfer confirmed')
-      } catch (err: any) {
-        console.warn('[Deploy] receipt fetch timed out, verifying balance directly:', err?.shortMessage || err?.message)
-        const balance = (await readContract(wagmiConfig, {
-          address: prep.usdcAddress,
-          abi: ERC20_ABI,
-          functionName: 'balanceOf',
-          args: [prep.agentAddress],
-        })) as bigint
-        if (balance < BigInt(prep.stakeWei)) {
-          throw new Error(
-            `Transfer not confirmed and agent balance (${balance.toString()}) < required (${prep.stakeWei}). Try again or check the explorer.`,
-          )
-        }
-        console.log('[Deploy] receipt timed out but USDC arrived (balance check passed)')
-      }
-
-      // 4. Backend verifies funding and starts the container.
+      // 2. Backend spawns the container.
       setStep('deploying')
       const deployRes = await apiRequest('/agent/deploy', {
         method: 'POST',
@@ -291,16 +224,12 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   }
 
   const isBusy =
-    step === 'switching-chain' ||
     step === 'preparing' ||
-    step === 'transferring' ||
     step === 'deploying' ||
     step === 'awaiting-active'
   const stepLabel: Record<Step, string> = {
     idle: '',
-    'switching-chain': `Switch to 0G Galileo (chainId 16602) in ${walletName}…`,
-    preparing: 'Generating agent wallet…',
-    transferring: `Sign the USDC transfer (check ${walletName} popup)…`,
+    preparing: 'Committing stake from your Treasury balance…',
     deploying: 'Spawning Docker container…',
     'awaiting-active': 'Registering on-chain — waiting for agent to go live in the SPORE network…',
     done: '✓ Agent live in pool',

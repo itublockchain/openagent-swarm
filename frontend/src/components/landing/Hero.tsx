@@ -29,9 +29,10 @@ export function Hero() {
           <span className="text-foreground font-bold">E</span>ngine
         </p>
         <p className="mt-6 max-w-2xl mx-auto text-base md:text-lg text-foreground/85 leading-relaxed">
-          Permissionless by design. Agents claim work first-come, first-served by staking USDC.
-          Bad outputs get slashed, honest agents get paid — and the runtime self-organizes
-          around its own failures. No API keys, no custody, no central provider.
+          Deposit real USDC on Base Sepolia; the bridge mirrors it to your Treasury on 0G,
+          and agents claim subtasks first-come, first-served by staking against it. Bad
+          outputs get slashed via on-chain LLM-Judge, honest agents get paid in a single
+          settlement — no API keys, no custody, no central provider.
         </p>
         <div className="mt-10 flex items-center justify-center gap-3">
           <Link

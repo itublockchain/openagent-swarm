@@ -2,13 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowDownToLine, ArrowUpFromLine, Loader2, Power, X } from 'lucide-react'
-import { parseUnits } from 'viem'
-import { useAccount, useChainId, useSwitchChain, useWriteContract } from 'wagmi'
-import { readContract } from '@wagmi/core'
-import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
-import { config as wagmiConfig, ogTestnet } from '../../lib/wagmi'
 import { apiRequest } from '../../lib/api'
-import { waitTxOrVerify } from '../../lib/tx'
 import { cn } from '@/lib/utils'
 
 export type ActionMode = 'deposit' | 'withdraw' | 'stop'
@@ -23,39 +17,32 @@ interface AgentLite {
 interface Props {
   mode: ActionMode
   agent: AgentLite
-  decimals: number
-  /** Called after the action lands successfully (so the caller can refetch). */
+  /** Decimals kept in the prop for backwards compat — ignored now that
+   *  the API speaks USDC (6 decimals) over plain decimal strings. */
+  decimals?: number
   onSuccess: () => void
   onClose: () => void
 }
 
 /**
- * Combined deposit / withdraw / stop modal. Three flows with different chain
- * interactions but the same outer shell:
- *   - deposit  → user signs USDC.transfer(agent, amount); on confirm we POST
- *               /agent/:id/topup so the API can bump the stake floor and
- *               restart the container (otherwise the surplus watchdog would
- *               immediately sweep the new deposit back out).
- *   - withdraw → POST /agent/:id/withdraw {amount?}; backend signs from the
- *               agent's wallet. No user signature needed.
- *   - stop     → DELETE /agent/:id; backend drains both USDC and OG before
- *               killing the container, returns the drain receipts in body.
+ * Combined deposit / withdraw / stop modal. All three flows are pure
+ * backend calls now — the user only proves SIWE identity (already in JWT)
+ * and the API operator handles every on-chain move.
+ *   - deposit  → POST /agent/:id/topup — operator debits user's Treasury
+ *               balance, credits the agent's Escrow balance, restarts
+ *               the container to pick up the new stake floor.
+ *   - withdraw → POST /agent/:id/withdraw {amount?} — operator debits
+ *               agent's Escrow balance, credits user's Treasury balance.
+ *   - stop     → DELETE /agent/:id — operator drains the agent's Escrow
+ *               balance back to the user's Treasury, kills the container.
  */
-export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: Props) {
+export function AgentActionModal({ mode, agent, onSuccess, onClose }: Props) {
   const [amount, setAmount] = useState('')
   const [withdrawAll, setWithdrawAll] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
-  const usdcAddr = CONTRACT_ADDRESSES.usdc
-  const { isConnected } = useAccount()
-  const currentChainId = useChainId()
-  const { switchChainAsync } = useSwitchChain()
-  const { writeContractAsync } = useWriteContract()
-
-  // Reset every time the modal switches mode/agent so a previous error or
-  // amount doesn't leak across actions.
   useEffect(() => {
     setAmount('')
     setWithdrawAll(false)
@@ -64,28 +51,13 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
     setSuccess(null)
   }, [mode, agent.agentId])
 
-  const ensureChain = async () => {
-    if (currentChainId === ogTestnet.id) return
-    await switchChainAsync({ chainId: ogTestnet.id })
-  }
-
   const handleDeposit = async () => {
-    if (!agent.agentAddress) {
-      setError('Agent has no on-chain address yet')
+    if (!amount.trim()) {
+      setError('Enter a USDC amount')
       return
     }
-    if (!usdcAddr) {
-      setError('USDC address missing in frontend env')
-      return
-    }
-    let parsed: bigint
-    try {
-      parsed = parseUnits(amount, decimals)
-    } catch {
-      setError('Enter a valid USDC amount')
-      return
-    }
-    if (parsed <= BigInt(0)) {
+    const numeric = Number(amount)
+    if (!Number.isFinite(numeric) || numeric <= 0) {
       setError('Amount must be > 0')
       return
     }
@@ -93,45 +65,19 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
     setBusy(true)
     setError(null)
     try {
-      await ensureChain()
-      // Snapshot agent's USDC balance pre-transfer so we can confirm
-      // landing via state-delta if the receipt fetch times out (0G
-      // Galileo's RPC frequently misses receipts on tx that did land).
-      const balBefore = (await readContract(wagmiConfig, {
-        abi: ERC20_ABI,
-        address: usdcAddr,
-        functionName: 'balanceOf',
-        args: [agent.agentAddress as `0x${string}`],
-      })) as bigint
-
-      const txHash = await writeContractAsync({
-        address: usdcAddr,
-        abi: ERC20_ABI,
-        functionName: 'transfer',
-        args: [agent.agentAddress as `0x${string}`, parsed],
-        chainId: ogTestnet.id,
-      })
-      await waitTxOrVerify(txHash, async () => {
-        const balAfter = (await readContract(wagmiConfig, {
-          abi: ERC20_ABI,
-          address: usdcAddr,
-          functionName: 'balanceOf',
-          args: [agent.agentAddress as `0x${string}`],
-        })) as bigint
-        return balAfter >= balBefore + parsed
-      })
-      // Tell the API so it bumps the stake floor + restarts the container.
-      // Without this step, the agent's surplus watchdog would sweep the
-      // deposit straight back to the owner on its next 60s tick.
       const res = await apiRequest(`/agent/${agent.agentId}/topup`, {
         method: 'POST',
         body: JSON.stringify({ amount }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
-        throw new Error(`API topup failed: ${body.error ?? res.status}`)
+        const msg = body.error ?? `topup failed (${res.status})`
+        if (/insufficient/i.test(msg)) {
+          throw new Error(`${msg} — open the Deposit modal to add USDC to your Treasury balance.`)
+        }
+        throw new Error(msg)
       }
-      setSuccess(`Deposited ${amount} USDC`)
+      setSuccess(`Deposited ${amount} USDC into agent`)
       onSuccess()
     } catch (err) {
       setError((err as Error).message ?? String(err))
@@ -149,8 +95,8 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         if (!amount.trim()) {
           throw new Error('Enter an amount or check "Withdraw all"')
         }
-        // Quick client-side parse just to fail fast — backend re-parses.
-        try { parseUnits(amount, decimals) } catch { throw new Error('Invalid amount') }
+        const numeric = Number(amount)
+        if (!Number.isFinite(numeric) || numeric <= 0) throw new Error('Invalid amount')
         body.amount = amount
       }
       const res = await apiRequest(`/agent/${agent.agentId}/withdraw`, {
@@ -161,7 +107,7 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         const errBody = await res.json().catch(() => ({}))
         throw new Error(errBody.error ?? `withdraw failed (${res.status})`)
       }
-      setSuccess('Withdraw confirmed — funds returned to your wallet')
+      setSuccess('Withdraw confirmed — funds returned to your Treasury balance')
       onSuccess()
     } catch (err) {
       setError((err as Error).message ?? String(err))
@@ -179,7 +125,7 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         const errBody = await res.json().catch(() => ({}))
         throw new Error(errBody.error ?? `stop failed (${res.status})`)
       }
-      setSuccess('Agent stopped — USDC + OG returned to your wallet')
+      setSuccess('Agent stopped — earnings + stake returned to your Treasury balance')
       onSuccess()
     } catch (err) {
       setError((err as Error).message ?? String(err))
@@ -230,9 +176,9 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         {mode === 'deposit' && (
           <>
             <p className="text-[11px] text-muted-foreground mb-3 leading-snug">
-              Sends USDC from your wallet to the agent's address. The stake floor
-              is raised by the same amount so the surplus watchdog won't sweep
-              this deposit back. The agent is restarted to pick up the new floor.
+              Moves USDC from your Treasury balance into the agent's stake. The
+              operator signs both ledger ops; you sign nothing. The agent
+              restarts to pick up the new stake floor.
             </p>
             <label className="text-xs font-medium text-foreground">Amount (USDC)</label>
             <input
@@ -247,11 +193,11 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
             />
             <button
               onClick={handleDeposit}
-              disabled={busy || !isConnected || !amount.trim()}
+              disabled={busy || !amount.trim()}
               className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-              {busy ? 'Depositing…' : 'Sign & deposit'}
+              {busy ? 'Depositing…' : 'Deposit'}
             </button>
           </>
         )}
@@ -259,9 +205,9 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         {mode === 'withdraw' && (
           <>
             <p className="text-[11px] text-muted-foreground mb-3 leading-snug">
-              Pulls USDC from the agent's wallet to yours. The agent's tx-gas
-              (OG) stays so the agent can keep working. Use Stop if you want
-              to reclaim everything.
+              Pulls USDC from the agent's Escrow balance back to your
+              Treasury balance. The agent keeps its 0G gas — that's
+              operator-funded, not yours.
             </p>
             <label className="flex items-center gap-2 text-xs font-medium mb-3 cursor-pointer">
               <input
@@ -302,9 +248,9 @@ export function AgentActionModal({ mode, agent, decimals, onSuccess, onClose }: 
         {mode === 'stop' && (
           <>
             <p className="text-[11px] text-muted-foreground mb-3 leading-snug">
-              Stops and removes the agent. The container is killed and its full
-              USDC balance plus remaining OG (minus a small gas reserve) is
-              returned to your wallet in the same flow.
+              Stops and removes the agent. The agent's full Escrow balance
+              (stake + earnings) is returned to your Treasury balance, then
+              the container is destroyed.
             </p>
             <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-[11px] text-red-500 mb-4">
               This is irreversible. The agent will be removed from the on-chain
