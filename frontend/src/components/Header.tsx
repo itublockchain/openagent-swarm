@@ -1,7 +1,9 @@
 'use client'
 
 import React, { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import Link from 'next/link'
+import Image from 'next/image'
 import { useSearchParams } from 'next/navigation'
 import { ArrowDownToLine, ArrowUpFromLine, Copy, Check, LogOut, Rocket, Wallet } from 'lucide-react'
 import { useChainId, useReadContract, useSwitchChain } from 'wagmi'
@@ -181,9 +183,18 @@ export function Header({ onDeployClick }: Props) {
   const poolHref = taskId ? `/pool?taskId=${taskId}` : '/pool'
 
   return (
+    <>
     <header className="h-14 border-b border-border bg-background/95 backdrop-blur px-4 flex items-center justify-between shrink-0 z-50">
       <div className="flex items-center gap-8">
-        <Link href="/" className="font-extrabold tracking-tighter text-lg">
+        <Link href="/" className="flex items-center gap-2 font-extrabold tracking-tighter text-lg">
+          <Image
+            src="/spore_icon.svg"
+            alt="SPORE"
+            width={22}
+            height={22}
+            className="w-5 h-5 dark:invert"
+            priority
+          />
           SPORE
         </Link>
         <nav className="hidden md:flex items-center gap-6">
@@ -239,32 +250,38 @@ export function Header({ onDeployClick }: Props) {
 
         <ThemeToggle />
       </div>
+    </header>
 
-      {showWallet && (
+      {/* Modals are portalled to document.body so that the header's
+          backdrop-blur (CSS filter) doesn't create a new containing
+          block that breaks position:fixed viewport centering. */}
+      {showWallet && createPortal(
         <WalletModal
           onClose={() => setShowWallet(false)}
           onAuthenticated={() => setShowWallet(false)}
-        />
+        />,
+        document.body,
       )}
-      {showDeposit && (
+      {showDeposit && createPortal(
         <DepositModal
           onClose={() => setShowDeposit(false)}
           onSuccess={() => {
             refreshBalance()
             setShowDeposit(false)
           }}
-        />
+        />,
+        document.body,
       )}
-      {showWithdraw && balance != null && (
+      {showWithdraw && balance != null && createPortal(
         <WithdrawModal
           balance={balance}
           onClose={() => setShowWithdraw(false)}
           onSuccess={() => {
             refreshBalance()
-            // Don't auto-close — let the user see the tx hashes.
           }}
-        />
+        />,
+        document.body,
       )}
-    </header>
+    </>
   )
 }

@@ -139,6 +139,47 @@ function DashboardContent() {
   })();
   const { address: walletAddress } = useAccount();
 
+  // Live Treasury balance — drives the budget input's max so the user can
+  // never type a value the backend would reject with 402. Refreshes on
+  // the same cadence as the header pill (12s) so deposits land in the cap
+  // a tick after BridgeWatcher mirrors them. Null until the first /v1/me
+  // /balance read returns; PromptConfigRow falls back to its default 1000
+  // cap until then so the field isn't pinned to 1 during initial load.
+  const [treasuryBalance, setTreasuryBalance] = useState<number | null>(null);
+  useEffect(() => {
+    if (!walletAddress) {
+      setTreasuryBalance(null)
+      return
+    }
+    let cancelled = false
+    const load = async () => {
+      try {
+        const res = await apiRequest('/v1/me/balance')
+        if (!res.ok) return
+        const data = (await res.json()) as { balance: string }
+        const n = Number(data.balance)
+        if (!cancelled && Number.isFinite(n)) setTreasuryBalance(n)
+      } catch {
+        // Transient — keep last known value.
+      }
+    }
+    load()
+    const t = setInterval(load, 12_000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [walletAddress])
+
+  // Clamp budget to current balance whenever balance changes (e.g. after
+  // a withdrawal). Without this, a stale 50-USDC budget would persist
+  // after the wallet's Treasury drops to 10, and submit would 402.
+  useEffect(() => {
+    if (treasuryBalance == null) return
+    const cap = Math.max(1, Math.floor(treasuryBalance))
+    setBudget(b => Math.min(b, cap))
+  }, [treasuryBalance])
+
   // Fetch the user's own colonies + all public colonies so the explorer
   // dropdown surfaces both: own (any visibility) and public (others'
   // colonies the user can dispatch into). Backend rejects private + non-
@@ -520,11 +561,6 @@ function DashboardContent() {
                       >
                         <Send className="w-4 h-4" />
                       </button>
-                      {submitStep === 'error' && (
-                        <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-red-500">
-                          ⚠ Error — see logs
-                        </div>
-                      )}
                     </div>
                   </div>
                 </>
@@ -583,7 +619,7 @@ function DashboardContent() {
               onBudgetChange={setBudget}
               onColonyChange={setSelectedColony}
               hideModel
-              hideBudget
+              maxBudget={treasuryBalance != null ? Math.floor(treasuryBalance) : undefined}
             />
           </div>
         </div>

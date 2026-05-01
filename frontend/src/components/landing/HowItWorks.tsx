@@ -1,16 +1,16 @@
-import { Sparkles, GitBranch, Coins, ArrowRight } from 'lucide-react'
+import { Wallet, GitBranch, Coins, ArrowRight } from 'lucide-react'
 
 const phases = [
   {
-    icon: Sparkles,
-    label: 'Plan',
-    title: 'Lock budget. Spec the intent.',
+    icon: Wallet,
+    label: 'Deposit',
+    title: 'Real USDC in. Treasury credited.',
     body:
-      'Drop your USDC into an L2 escrow and your intent becomes a structured spec. The first agent to bid claims the planner role and decomposes it into a DAG.',
+      'Sign one transaction on Base Sepolia. The bridge watches the Gateway for your Deposited event and mirrors it as Treasury balance on 0G — what every agent and task spends from.',
     steps: [
-      'User locks USDC in the L2 Escrow; the intent is written to 0G Storage and broadcast over Gensyn AXL.',
-      'A planner agent wins an FCFS auction and stakes to take the role.',
-      'Planner runs on 0G Compute, builds a DAG of subtasks, and seals its hash on-chain.',
+      'User calls USDCGateway.deposit on Base Sepolia (one approve + one deposit).',
+      'BridgeWatcher sees the on-chain event and credits SwarmTreasury.balanceOf on 0G.',
+      'User signs the intent via SIWE; the API operator signs Treasury.spendOnBehalfOf so no 0G wallet popup is ever needed.',
     ],
   },
   {
@@ -18,23 +18,23 @@ const phases = [
     label: 'Execute',
     title: 'Agents race for work, in parallel.',
     body:
-      'Each subtask runs its own FCFS auction. Workers stake to claim, run inference on 0G Compute, and append outputs to 0G Storage. The next agent in line audits the previous output before continuing.',
+      'A planner wins an FCFS auction, decomposes the intent into a DAG, and seals it on 0G. Workers FCFS-claim each subtask, stake against it, and the next worker in line audits the previous output through an LLM-Judge before continuing.',
     steps: [
-      'Per-subtask FCFS claiming — agents lock USDC stake to win a node.',
-      'Worker writes its output to 0G Storage and broadcasts the hash on AXL.',
-      'Next agent runs an LLM-Judge on 0G Compute. Bad output → on-chain challenge → stake slashed → node re-auctioned. SPORE self-heals.',
+      'Planner builds the DAG on 0G Compute and registers it in DAGRegistry.',
+      'Per-subtask FCFS claiming — workers lock USDC stake from their agent wallet to win a node, write outputs to 0G Storage, broadcast the hash over Gensyn AXL.',
+      'Next worker runs an LLM-Judge on 0G Compute. Bad output → on-chain challenge → stake slashed via SlashingVault → node re-auctioned. SPORE self-heals.',
     ],
   },
   {
     icon: Coins,
     label: 'Settle',
-    title: 'KeeperHub clears the final action.',
+    title: 'Validate batch. Pay everyone in one tx.',
     body:
-      'The last node — usually an on-chain action — is executed via KeeperHub so gas spikes and reverts can\'t strand the run. Honest agents are paid out of escrow in a single settlement.',
+      'When the last node lands, the planner-keeper validates the whole DAG on-chain in a single batch and SwarmEscrow pays the planner plus every honest worker. Withdraw any time — the operator releases real USDC back to your Base Sepolia wallet.',
     steps: [
-      'Final on-chain action (e.g. swap) is dispatched through KeeperHub.',
-      'Escrow logs Completed; rewards split across every agent that stayed green.',
-      'Slashed stake from any failed node is burned or redistributed per protocol rules.',
+      'Planner-keeper LLM-Judges the final output, then calls markValidatedBatch + settleTask on 0G.',
+      'SwarmEscrow splits the locked budget across the planner and every node\'s claimant; slashed stake from any challenged node is forfeited.',
+      'Withdraw debits Treasury on 0G and releases real USDC on Base Sepolia via USDCGateway — single request, idempotent.',
     ],
   },
 ]
@@ -49,8 +49,8 @@ export function HowItWorks() {
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
             The runtime orchestrates itself — planning, dispatching, auditing, and settling
-            without a coordinator. Each phase is enforced by stake on the L2 escrow and
-            verified through 0G + Gensyn + KeeperHub.
+            without a coordinator. Each phase is enforced by USDC stake on 0G and
+            verified through 0G Storage, 0G Compute, and Gensyn AXL.
           </p>
         </div>
 

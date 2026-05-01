@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useAccount, useBalance, useReadContract, useReadContracts } from 'wagmi'
-import { Wallet, Bot, ListChecks, ChevronDown, ChevronUp, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
+import { Wallet, Bot, ListChecks, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
 import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { AgentActionModal, type ActionMode } from '@/components/AgentActionModal'
@@ -121,6 +121,44 @@ export default function ProfilePage() {
     a => address && a.ownerAddress?.toLowerCase() === address.toLowerCase(),
   )
 
+  // Pagination state. Three independent indices because the three lists
+  // refresh on different cadences and resetting them together would
+  // surprise the user (e.g. a colony refresh shouldn't bounce them off
+  // page 2 of agents). Each section's page is clamped further down so
+  // a deletion that shrinks the list doesn't strand the user past the
+  // last page.
+  const AGENTS_PER_PAGE = 4
+  const COLONIES_PER_PAGE = 4
+  const TASKS_PER_PAGE = 8
+  const [agentsPage, setAgentsPage] = useState(0)
+  const [coloniesPage, setColoniesPage] = useState(0)
+  const [tasksPage, setTasksPage] = useState(0)
+
+  // Clamp page indices to the new last-page when a list shrinks (agent
+  // stopped, colony archived, etc.). Without this, a delete-from-page-2
+  // would render an empty grid until the user pages back manually.
+  useEffect(() => {
+    const last = Math.max(0, Math.ceil(myAgents.length / AGENTS_PER_PAGE) - 1)
+    if (agentsPage > last) setAgentsPage(last)
+  }, [myAgents.length, agentsPage])
+
+  const agentsTotalPages = Math.max(1, Math.ceil(myAgents.length / AGENTS_PER_PAGE))
+  const visibleAgents = myAgents.slice(
+    agentsPage * AGENTS_PER_PAGE,
+    (agentsPage + 1) * AGENTS_PER_PAGE,
+  )
+
+  useEffect(() => {
+    const last = Math.max(0, Math.ceil(colonies.length / COLONIES_PER_PAGE) - 1)
+    if (coloniesPage > last) setColoniesPage(last)
+  }, [colonies.length, coloniesPage])
+
+  const coloniesTotalPages = Math.max(1, Math.ceil(colonies.length / COLONIES_PER_PAGE))
+  const visibleColonies = colonies.slice(
+    coloniesPage * COLONIES_PER_PAGE,
+    (coloniesPage + 1) * COLONIES_PER_PAGE,
+  )
+
   // Per-agent USDC balances — batched into a single multicall via wagmi.
   // Same chainId pin as above: agent wallets hold real USDC on Base Sepolia,
   // not on whatever chain the user happens to have selected in MetaMask.
@@ -155,6 +193,17 @@ export default function ProfilePage() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [resultCache, setResultCache] = useState<Record<string, NodeResult[] | null>>({})
   const [resultLoading, setResultLoading] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    const last = Math.max(0, Math.ceil(tasks.length / TASKS_PER_PAGE) - 1)
+    if (tasksPage > last) setTasksPage(last)
+  }, [tasks.length, tasksPage])
+
+  const tasksTotalPages = Math.max(1, Math.ceil(tasks.length / TASKS_PER_PAGE))
+  const visibleTasks = tasks.slice(
+    tasksPage * TASKS_PER_PAGE,
+    (tasksPage + 1) * TASKS_PER_PAGE,
+  )
 
   const reloadTasks = useCallback(async () => {
     try {
@@ -318,7 +367,7 @@ export default function ProfilePage() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {myAgents.map(a => (
+                {visibleAgents.map(a => (
                   <article
                     key={a.containerId || a.agentId}
                     className="rounded-lg border border-border bg-card p-4 space-y-2"
@@ -398,6 +447,12 @@ export default function ProfilePage() {
                 ))}
               </div>
             )}
+            <Pagination
+              page={agentsPage}
+              totalPages={agentsTotalPages}
+              total={myAgents.length}
+              onChange={setAgentsPage}
+            />
           </section>
 
           {/* Colonies */}
@@ -431,7 +486,7 @@ export default function ProfilePage() {
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {colonies.map(c => (
+                {visibleColonies.map(c => (
                   <button
                     key={c.id}
                     onClick={() => setColonyModalMode({ kind: 'detail', colonyId: c.id })}
@@ -485,6 +540,12 @@ export default function ProfilePage() {
                 ))}
               </div>
             )}
+            <Pagination
+              page={coloniesPage}
+              totalPages={coloniesTotalPages}
+              total={colonies.length}
+              onChange={setColoniesPage}
+            />
           </section>
 
           {/* Tasks */}
@@ -511,7 +572,7 @@ export default function ProfilePage() {
               </div>
             ) : (
               <ul className="space-y-2">
-                {tasks.map(t => {
+                {visibleTasks.map(t => {
                   const isOpen = expanded === t.task_id
                   const loading = resultLoading.has(t.task_id)
                   const cached = resultCache[t.task_id]
@@ -603,6 +664,12 @@ export default function ProfilePage() {
                 })}
               </ul>
             )}
+            <Pagination
+              page={tasksPage}
+              totalPages={tasksTotalPages}
+              total={tasks.length}
+              onChange={setTasksPage}
+            />
           </section>
         </div>
       </main>
@@ -691,6 +758,52 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="rounded-md bg-muted/40 border border-border/60 px-3 py-2">
       <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">{label}</div>
       <div className="text-base font-semibold tabular-nums mt-0.5">{value}</div>
+    </div>
+  )
+}
+
+/**
+ * Compact prev/next pager. Hidden entirely when totalPages <= 1 so an
+ * unfilled list doesn't grow a useless "Page 1 of 1" footer.
+ */
+function Pagination({
+  page,
+  totalPages,
+  total,
+  onChange,
+}: {
+  page: number
+  totalPages: number
+  /** Underlying item count — only used to render "n items" alongside the
+   *  page indicator so the user can see at a glance whether more exist. */
+  total: number
+  onChange: (next: number) => void
+}) {
+  if (totalPages <= 1) return null
+  const canPrev = page > 0
+  const canNext = page < totalPages - 1
+  return (
+    <div className="flex items-center justify-end gap-2 pt-1 text-[11px] font-mono text-muted-foreground">
+      <span className="tabular-nums">
+        {page + 1} / {totalPages}
+        <span className="opacity-60"> · {total} total</span>
+      </span>
+      <button
+        onClick={() => canPrev && onChange(page - 1)}
+        disabled={!canPrev}
+        className="p-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        aria-label="Previous page"
+      >
+        <ChevronLeft className="w-3 h-3" />
+      </button>
+      <button
+        onClick={() => canNext && onChange(page + 1)}
+        disabled={!canNext}
+        className="p-1 rounded border border-border bg-background hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        aria-label="Next page"
+      >
+        <ChevronRight className="w-3 h-3" />
+      </button>
     </div>
   )
 }

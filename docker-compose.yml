@@ -11,6 +11,19 @@ services:
     # values for a non-default deploy (e.g. ngrok URLs, multisig
     # operator), add them under `environment:` here — compose values
     # win over Dockerfile ENV at runtime.
+    #
+    # Operator key is interpolated from root .env so the contract
+    # operator can be rotated without rebuilding the image. The image's
+    # baked PRIVATE_KEY is a faucet-grade dev key; if you redeploy
+    # contracts with a different deployer EOA, set PRIVATE_KEY in .env
+    # to that key (same address must be `operator` on Treasury+Gateway,
+    # otherwise BridgeWatcher.creditBalance reverts "not operator").
+    # L2_PRIVATE_KEY mirrors PRIVATE_KEY — both are read by chain.ts /
+    # AgentRunner; keeping them aligned avoids a split-brain wallet.
+    environment:
+      PRIVATE_KEY: ${PRIVATE_KEY}
+      L2_PRIVATE_KEY: ${PRIVATE_KEY}
+      AGENT_PRIVATE_KEY: ${AGENT_PRIVATE_KEY:-${PRIVATE_KEY}}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - agents-data:/data

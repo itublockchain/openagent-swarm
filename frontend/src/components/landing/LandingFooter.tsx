@@ -1,13 +1,23 @@
 import Link from 'next/link'
-import { Hexagon, ExternalLink } from 'lucide-react'
+import Image from 'next/image'
+import { ExternalLink } from 'lucide-react'
 
 export function LandingFooter() {
   const escrow = process.env.NEXT_PUBLIC_ESCROW_ADDRESS
   return (
     <footer className="bg-zinc-950 text-zinc-300">
       <div className="mx-auto max-w-6xl px-6 py-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div className="flex items-start gap-2">
-          <Hexagon className="w-5 h-5 mt-0.5" />
+        <div className="flex items-start gap-2.5">
+          {/* Footer is always dark (bg-zinc-950) — invert the spore tile so
+              its near-black background flips to a light frame and reads
+              against the surrounding zinc. */}
+          <Image
+            src="/spore_icon.svg"
+            alt="SPORE"
+            width={28}
+            height={28}
+            className="w-7 h-7 invert mt-0.5"
+          />
           <div className="flex flex-col">
             <span className="font-extrabold tracking-tighter text-lg leading-none text-white">SPORE</span>
             <span className="text-[9px] font-mono uppercase tracking-[0.2em] text-zinc-500 mt-1">
