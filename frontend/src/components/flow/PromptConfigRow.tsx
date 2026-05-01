@@ -10,18 +10,37 @@ const MODELS = [
 
 export type ModelId = typeof MODELS[number]['id']
 
+export interface ColonyOption {
+  id: string
+  name: string
+}
+
 type Props = {
   model: ModelId
   budget: number
+  /** Selected colony id; null routes to public (any agent). */
+  colonyId: string | null
+  /** User's colonies. Empty array → dropdown is hidden entirely. */
+  colonies: ColonyOption[]
   onModelChange: (m: ModelId) => void
   onBudgetChange: (b: number) => void
+  onColonyChange: (id: string | null) => void
   hint?: string
 }
 
-export function PromptConfigRow({ model, budget, onModelChange, onBudgetChange, hint }: Props) {
+export function PromptConfigRow({
+  model,
+  budget,
+  colonyId,
+  colonies,
+  onModelChange,
+  onBudgetChange,
+  onColonyChange,
+  hint,
+}: Props) {
   return (
     <div className="mt-3 flex items-center justify-between px-1">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <div className="relative inline-flex items-center h-6 rounded border border-border bg-muted hover:border-foreground/30 focus-within:border-foreground/30">
           <select
             value={model}
@@ -50,6 +69,26 @@ export function PromptConfigRow({ model, budget, onModelChange, onBudgetChange, 
           />
           <span className="pr-1.5 text-[10px] leading-none text-muted-foreground">USDC</span>
         </div>
+
+        {/* Colony scope. Hidden when the user has no colonies — keeps the
+            row tidy for newcomers, surfaces immediately once they create
+            one in profile/page. "Public" route = colonyId null = any agent. */}
+        {colonies.length > 0 && (
+          <div className="relative inline-flex items-center h-6 rounded border border-border bg-muted hover:border-foreground/30 focus-within:border-foreground/30">
+            <select
+              value={colonyId ?? ''}
+              onChange={e => onColonyChange(e.target.value || null)}
+              className="appearance-none h-full bg-transparent pl-2 pr-5 text-[10px] leading-none text-foreground/80 focus:outline-none cursor-pointer max-w-[140px]"
+              title="Restrict task to a colony of agents"
+            >
+              <option value="">Public (any agent)</option>
+              {colonies.map(c => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <ChevronDown className="absolute right-1 w-2.5 h-2.5 text-muted-foreground pointer-events-none" />
+          </div>
+        )}
       </div>
       <span className="text-[10px] text-muted-foreground italic">
         {hint ?? 'Press Enter to dispatch'}

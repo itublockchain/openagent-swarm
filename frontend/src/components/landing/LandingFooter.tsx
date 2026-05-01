@@ -6,9 +6,14 @@ export function LandingFooter() {
   return (
     <footer className="bg-zinc-950 text-zinc-300">
       <div className="mx-auto max-w-6xl px-6 py-12 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-        <div className="flex items-center gap-2">
-          <Hexagon className="w-5 h-5" />
-          <span className="font-extrabold tracking-tighter text-lg text-white">Swarm</span>
+        <div className="flex items-start gap-2">
+          <Hexagon className="w-5 h-5 mt-0.5" />
+          <div className="flex flex-col">
+            <span className="font-extrabold tracking-tighter text-lg leading-none text-white">SPORE</span>
+            <span className="text-[9px] font-mono uppercase tracking-[0.2em] text-zinc-500 mt-1">
+              Self Organizing Permissionless Orchestration Runtime Engine
+            </span>
+          </div>
         </div>
 
         <nav className="flex flex-wrap items-center gap-6 text-sm">
@@ -50,7 +55,7 @@ export function LandingFooter() {
             <span className="w-1.5 h-1.5 rounded-full bg-pink-400" />
             Built for ETHGlobal
           </a>
-          <p className="text-xs text-zinc-500">© 2026 Swarm. All rights reserved.</p>
+          <p className="text-xs text-zinc-500">© 2026 SPORE. All rights reserved.</p>
         </div>
       </div>
     </footer>

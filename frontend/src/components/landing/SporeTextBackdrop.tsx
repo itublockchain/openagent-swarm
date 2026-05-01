@@ -29,8 +29,10 @@ const VERTEX_SHADER = /* glsl */ `
     vec2 fromMouse = displaced.xy - uMouse;
     float dist = length(fromMouse);
     if (dist < uMouseRadius && dist > 0.0001) {
-      float falloff = 1.0 - dist / uMouseRadius;
-      falloff = pow(falloff, 2.0);
+      // Smoothstep S-curve gives a soft bell: zero slope at both center and edge,
+      // so particles ease in/out instead of snapping at the radius boundary.
+      float t = 1.0 - dist / uMouseRadius;
+      float falloff = smoothstep(0.0, 1.0, t);
       displaced.xy += normalize(fromMouse) * falloff * uMouseStrength;
     }
 
@@ -83,8 +85,8 @@ function samplePositions({ width, height, step, text, sizeRatio, maxSize, yOffse
   ctx.font = `900 ${fontSize}px "JetBrains Mono", ui-monospace, monospace`
 
   if (alignBottomPx != null) {
-    // Anchor SWARM letters' visual bottom to a target Y. 'alphabetic' baseline puts
-    // the y coord on the cap-baseline; for all-caps no-descender words like SWARM,
+    // Anchor SPORE letters' visual bottom to a target Y. 'alphabetic' baseline puts
+    // the y coord on the cap-baseline; for all-caps no-descender words like SPORE,
     // that's the visible bottom.
     ctx.textBaseline = 'alphabetic'
     ctx.fillText(text, width / 2, alignBottomPx)
@@ -122,7 +124,7 @@ function sampleRands(count: number): Float32Array {
   return arr
 }
 
-type SwarmTextBackdropProps = {
+type SporeTextBackdropProps = {
   text?: string
   sizeRatio?: number
   maxSize?: number
@@ -133,14 +135,14 @@ type SwarmTextBackdropProps = {
   alignBottomToRef?: RefObject<HTMLElement | null>
 }
 
-export function SwarmTextBackdrop({
-  text = 'SWARM',
+export function SporeTextBackdrop({
+  text = 'SPORE',
   sizeRatio = 0.22,
   maxSize = 280,
   pointSize = 2.8,
   yOffset = 0,
   alignBottomToRef,
-}: SwarmTextBackdropProps = {}) {
+}: SporeTextBackdropProps = {}) {
   const mountRef = useRef<HTMLDivElement>(null)
   const uniformsRef = useRef<Record<string, THREE.IUniform> | null>(null)
   const { resolvedTheme } = useTheme()
@@ -175,8 +177,8 @@ export function SwarmTextBackdrop({
     const uniforms: Record<string, THREE.IUniform> = {
       uTime:          { value: 0 },
       uMouse:         { value: new THREE.Vector2(99999, 99999) },
-      uMouseRadius:   { value: 140 },
-      uMouseStrength: { value: 70 },
+      uMouseRadius:   { value: 170 },
+      uMouseStrength: { value: 26 },
       uPixelRatio:    { value: dpr },
       uPointSize:     { value: pointSize },
       uDriftAmp:      { value: 3.8 },
@@ -234,20 +236,23 @@ export function SwarmTextBackdrop({
 
     buildPoints()
 
-    // Mouse: listen on window so the section's pointer-events:none doesn't block us.
+    // Lerped mouse: targetMouse is set instantly from pointer events; the uniform
+    // is eased toward it each frame. Smooths over fast pointer flicks and gives
+    // particles a slight inertia/trail feel instead of snapping to the cursor.
+    const targetMouse = new THREE.Vector2(99999, 99999)
     const onMouseMove = (e: MouseEvent) => {
       const rect = mount.getBoundingClientRect()
       const insideX = e.clientX >= rect.left && e.clientX <= rect.right
       const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom
       if (!insideX || !insideY) {
-        uniforms.uMouse.value.set(99999, 99999)
+        targetMouse.set(99999, 99999)
         return
       }
       const localX = e.clientX - rect.left - rect.width / 2
       const localY = -(e.clientY - rect.top - rect.height / 2)
-      uniforms.uMouse.value.set(localX, localY)
+      targetMouse.set(localX, localY)
     }
-    const onMouseLeave = () => uniforms.uMouse.value.set(99999, 99999)
+    const onMouseLeave = () => targetMouse.set(99999, 99999)
     window.addEventListener('mousemove', onMouseMove, { passive: true })
     window.addEventListener('mouseleave', onMouseLeave)
 
@@ -288,6 +293,11 @@ export function SwarmTextBackdrop({
       if (!reduceMotion) {
         uniforms.uTime.value = (performance.now() - start) * 0.001
       }
+      // Ease the shader's mouse uniform toward the real cursor. 0.12 is slow
+      // enough to feel like the field has weight, fast enough not to lag.
+      const m = uniforms.uMouse.value as THREE.Vector2
+      m.x += (targetMouse.x - m.x) * 0.12
+      m.y += (targetMouse.y - m.y) * 0.12
       renderer.render(scene, camera)
     }
     animate()

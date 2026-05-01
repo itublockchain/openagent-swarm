@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "_sync-env": "node -e \"try { require('node:fs').copyFileSync(require('node:path').resolve('..', '.env'), '.env.local') } catch (e) { console.warn('[_sync-env] no root .env (fine in Docker — Dockerfile ENV provides values)') }\"",
+    "dev": "pnpm _sync-env && next dev",
+    "build": "pnpm _sync-env && next build",
     "start": "next start",
     "lint": "eslint"
   },

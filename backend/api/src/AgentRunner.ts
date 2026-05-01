@@ -1,5 +1,6 @@
 import Dockerode from 'dockerode'
 import { ethers } from 'ethers'
+import { generateKeyPairSync } from 'node:crypto'
 import SwarmEscrowABI from '../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json'
 import MockERC20ABI from '../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json'
 import AgentRegistryABI from '../../../contracts/artifacts/src/AgentRegistry.sol/AgentRegistry.json'
@@ -150,12 +151,24 @@ export class AgentManager {
   }
 
   private buildContainerEnv(secret: AgentSecret): string[] {
+    // Fresh AXL ed25519 identity per spawned container. Without overriding
+    // the baked AXL_PRIVATE_KEY from the agent image, every spawned agent
+    // would land on the mesh with the same yggdrasil pubkey and the seed
+    // would refuse the duplicate peer. Format: 64-byte hex = seed (32) +
+    // derived pubkey (32), which is what yggdrasil's config parser expects.
+    const kp = generateKeyPairSync('ed25519')
+    const privDer = kp.privateKey.export({ format: 'der', type: 'pkcs8' })
+    const pubDer = kp.publicKey.export({ format: 'der', type: 'spki' })
+    const axlKey =
+      Buffer.concat([privDer.subarray(-32), pubDer.subarray(-32)]).toString('hex')
+
     const env = [
       `AGENT_ID=${secret.agentId}`,
       `STAKE_AMOUNT=${secret.stakeAmount}`,
       `AGENT_PRIVATE_KEY=${secret.privateKey}`,
       // L2Contract reads PRIVATE_KEY for the signer — same as the agent's wallet.
       `PRIVATE_KEY=${secret.privateKey}`,
+      `AXL_PRIVATE_KEY=${axlKey}`,
       `ZG_COMPUTE_MODEL=${secret.model}`,
       `ZG_COMPUTE_RPC_URL=${process.env.ZG_COMPUTE_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'}`,
       `OG_RPC_URL=${process.env.OG_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'}`,
@@ -179,6 +192,9 @@ export class AgentManager {
       `API_INTERNAL_URL=${process.env.API_INTERNAL_URL ?? 'http://api:3001'}`,
     ]
     if (secret.systemPrompt) env.push(`AGENT_SYSTEM_PROMPT=${secret.systemPrompt}`)
+    // Owner wallet — surplus auto-payout target inside SwarmAgent. Without
+    // it, the agent's earnings stay in the agent wallet until manual withdraw.
+    if (secret.ownerAddress) env.push(`OWNER_ADDRESS=${secret.ownerAddress}`)
     return env
   }
 
@@ -276,6 +292,13 @@ export class AgentManager {
       throw new Error('[AgentManager] PRIVATE_KEY missing — cannot prefund agent gas')
     }
 
+    // We ONLY prefund native gas (OG) here — the agent's wallet needs gas to
+    // submit L2 tx (claim, stake, submitOutput). USDC stake comes from the
+    // user via DeployAgentModal's signed `usdc.transfer` immediately after
+    // this prepare() returns. Auto-funding USDC from the API wallet here
+    // would mean the user's transfer is redundant — they could reject the
+    // popup and deploy() would still pass the balance check, leaving
+    // operations effectively free for the user. Stick to gas-only prefund.
     try {
       const tx = await this.fundingSigner.sendTransaction({
         to: wallet.address,
@@ -283,20 +306,9 @@ export class AgentManager {
       })
       console.log(`[AgentManager] Prefund TX sent: ${tx.hash} → ${wallet.address} (${GAS_PREFUND_OG} OG)`)
       await tx.wait()
-      console.log(`[AgentManager] Prefund confirmed for ${wallet.address}`)
-
-      // Also send initial USDC stake if needed
-      const stakeWeiBigInt = BigInt(stakeWei)
-      if (stakeWeiBigInt > 0n) {
-        console.log(`[AgentManager] Sending ${input.stakeAmount} USDC stake to ${wallet.address}...`)
-        // Connect the read-only USDC contract to our funding signer to make it writable
-        const writeUsdc = (this.readUsdc as any).connect(this.fundingSigner)
-        const usdcTx = await writeUsdc.transfer(wallet.address, stakeWeiBigInt)
-        await usdcTx.wait()
-        console.log(`[AgentManager] USDC stake sent to ${wallet.address}`)
-      }
+      console.log(`[AgentManager] Prefund confirmed for ${wallet.address} — awaiting user-signed USDC stake`)
     } catch (err) {
-      throw new Error(`[AgentManager] Funding failed for ${wallet.address}: ${(err as Error).message}`)
+      throw new Error(`[AgentManager] Gas prefund failed for ${wallet.address}: ${(err as Error).message}`)
     }
 
     return {
@@ -382,14 +394,195 @@ export class AgentManager {
   }
 
   /**
-   * Stops and removes an agent. Accepts either the agentId (string) or the
-   * containerId, since the existing API contract used containerId. Marks the
-   * on-chain status as STOPPED and purges the local secret.
+   * Owner-address lookup for the auth gate on /agent/:id endpoints. Returns
+   * null when no secret is held locally (e.g. the agent was registered
+   * elsewhere or was already stopped) — callers should treat that as
+   * "no auth requirement enforceable, fall through to best-effort".
    */
-  async stop(idOrContainerId: string): Promise<void> {
+  getSecretMeta(idOrContainerId: string): { agentId: string; ownerAddress?: string } | null {
     let secret = this.secrets.get(idOrContainerId)
     if (!secret) {
       secret = this.secrets.list().find(s => s.containerId === idOrContainerId)
+    }
+    if (!secret) return null
+    return { agentId: secret.agentId, ownerAddress: secret.ownerAddress }
+  }
+
+  /**
+   * Drain an agent's wallet to its owner. Used by both the explicit user
+   * "Withdraw" flow (partial USDC) and the "Stop" flow (full USDC + OG, with
+   * a small gas reserve so the drain tx itself can land).
+   *
+   * Returns whichever sub-drains actually moved funds. Errors inside one
+   * drain (USDC fails but OG succeeds, say) are logged and the other path
+   * continues — better partial recovery than total abort.
+   */
+  private async drainAgentToOwner(
+    secret: AgentSecret,
+    opts?: { partialUsdcWei?: bigint; skipOg?: boolean },
+  ): Promise<{
+    usdc?: { txHash: string; amountWei: string }
+    og?: { txHash: string; amountWei: string }
+  }> {
+    const result: {
+      usdc?: { txHash: string; amountWei: string }
+      og?: { txHash: string; amountWei: string }
+    } = {}
+    if (!secret.ownerAddress) {
+      console.warn(`[AgentManager] drain skipped for ${secret.agentId}: no ownerAddress`)
+      return result
+    }
+
+    const wallet = new ethers.Wallet(secret.privateKey, this.provider)
+    const usdc = new ethers.Contract(this.usdcAddr, MockERC20ABI.abi, wallet)
+
+    // USDC sweep
+    try {
+      const balance: bigint = await usdc.balanceOf(wallet.address)
+      const target = opts?.partialUsdcWei ?? balance
+      if (target > 0n && target <= balance) {
+        const tx = await usdc.transfer(secret.ownerAddress, target)
+        await tx.wait()
+        result.usdc = { txHash: tx.hash, amountWei: target.toString() }
+        console.log(`[AgentManager] Drained ${target.toString()} USDC wei → ${secret.ownerAddress} (${secret.agentId})`)
+      }
+    } catch (err) {
+      console.error(`[AgentManager] USDC drain failed for ${secret.agentId}:`, err)
+    }
+
+    // Native OG sweep — only on full drain, leaves a tx-cost reserve so the
+    // drain tx itself can settle on-chain. partialUsdcWei callers explicitly
+    // skip this because they only wanted to move USDC.
+    if (!opts?.skipOg && opts?.partialUsdcWei === undefined) {
+      try {
+        const balance = await this.provider.getBalance(wallet.address)
+        const feeData = await this.provider.getFeeData()
+        const gasPrice = feeData.gasPrice ?? feeData.maxFeePerGas ?? ethers.parseUnits('1', 'gwei')
+        const reserve = 21000n * gasPrice * 2n // headroom for the transfer itself
+        if (balance > reserve) {
+          const amount = balance - reserve
+          const tx = await wallet.sendTransaction({
+            to: secret.ownerAddress,
+            value: amount,
+            gasLimit: 21000n,
+          })
+          await tx.wait()
+          result.og = { txHash: tx.hash, amountWei: amount.toString() }
+          console.log(`[AgentManager] Drained ${amount.toString()} OG wei → ${secret.ownerAddress} (${secret.agentId})`)
+        }
+      } catch (err) {
+        console.error(`[AgentManager] OG drain failed for ${secret.agentId}:`, err)
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * User-initiated USDC withdrawal from an agent's wallet to the owner.
+   * Auth check: requesterAddress must equal secret.ownerAddress. amountStr
+   * is a decimal string (e.g. "5.5"); omit it to drain the full USDC balance
+   * (does NOT touch OG — for that, use stop()).
+   */
+  async withdraw(
+    agentId: string,
+    requesterAddress: string,
+    amountStr?: string,
+  ): Promise<{ txHash: string; amountWei: string }> {
+    const secret = this.secrets.get(agentId)
+    if (!secret) throw new Error(`Agent ${agentId} not found`)
+    if (!secret.ownerAddress) throw new Error('Agent has no registered owner')
+    if (secret.ownerAddress.toLowerCase() !== requesterAddress.toLowerCase()) {
+      throw new Error('Not authorized — requester is not the agent owner')
+    }
+
+    const decimals = await this.getDecimals()
+    let partialUsdcWei: bigint | undefined
+    if (amountStr) {
+      try {
+        partialUsdcWei = ethers.parseUnits(amountStr, decimals)
+      } catch (err) {
+        throw new Error(`Invalid amount "${amountStr}": ${(err as Error).message}`)
+      }
+      if (partialUsdcWei <= 0n) throw new Error('Amount must be > 0')
+    }
+
+    const drained = await this.drainAgentToOwner(secret, { partialUsdcWei, skipOg: true })
+    if (!drained.usdc) {
+      throw new Error('Withdraw produced no transfer (zero balance or partial > balance)')
+    }
+    return drained.usdc
+  }
+
+  /**
+   * Record a user-signed USDC deposit. The frontend signs `usdc.transfer`
+   * to the agent address itself; we just bump our local floor so the surplus
+   * watchdog doesn't immediately sweep the deposit back. Container is
+   * restarted so SwarmAgent reads the new STAKE_AMOUNT env on boot.
+   *
+   * Auth: requesterAddress must equal secret.ownerAddress. amountStr is a
+   * positive decimal string.
+   */
+  async recordDeposit(
+    agentId: string,
+    requesterAddress: string,
+    amountStr: string,
+  ): Promise<{ newStakeAmount: string }> {
+    const secret = this.secrets.get(agentId)
+    if (!secret) throw new Error(`Agent ${agentId} not found`)
+    if (!secret.ownerAddress) throw new Error('Agent has no registered owner')
+    if (secret.ownerAddress.toLowerCase() !== requesterAddress.toLowerCase()) {
+      throw new Error('Not authorized — requester is not the agent owner')
+    }
+
+    const addAmount = parseFloat(amountStr)
+    if (!Number.isFinite(addAmount) || addAmount <= 0) {
+      throw new Error('Amount must be a positive decimal')
+    }
+    const newStake = (parseFloat(secret.stakeAmount) + addAmount).toString()
+    this.secrets.update(agentId, { stakeAmount: newStake })
+
+    // Restart so SwarmAgent picks up the new floor — without this, the next
+    // surplus sweep tick would treat the deposit as reward and forward it
+    // straight back to the owner.
+    if (secret.containerId) {
+      try {
+        const c = docker.getContainer(secret.containerId)
+        await c.restart()
+        console.log(`[AgentManager] Restarted ${secret.agentId} to pick up new stake floor ${newStake}`)
+      } catch (err) {
+        console.warn(`[AgentManager] Restart failed for ${secret.agentId} (deposit recorded anyway):`, err)
+      }
+    }
+
+    return { newStakeAmount: newStake }
+  }
+
+  /**
+   * Stops and removes an agent. Accepts either the agentId (string) or the
+   * containerId, since the existing API contract used containerId. Marks the
+   * on-chain status as STOPPED and purges the local secret. Drains both
+   * USDC and remaining OG (minus a gas reserve) to the owner first so the
+   * funds aren't stranded with the dead container.
+   */
+  async stop(idOrContainerId: string): Promise<{
+    drained?: {
+      usdc?: { txHash: string; amountWei: string }
+      og?: { txHash: string; amountWei: string }
+    }
+  }> {
+    let secret = this.secrets.get(idOrContainerId)
+    if (!secret) {
+      secret = this.secrets.list().find(s => s.containerId === idOrContainerId)
+    }
+
+    // Drain BEFORE stopping the container — once the on-chain status flips
+    // to STOPPED there's nothing wrong with the wallet still moving funds,
+    // but we want the drain happening while the secret is still in our hot
+    // path. Errors inside drain don't block the stop sequence.
+    let drained: { usdc?: { txHash: string; amountWei: string }; og?: { txHash: string; amountWei: string } } | undefined
+    if (secret && secret.ownerAddress) {
+      drained = await this.drainAgentToOwner(secret)
     }
 
     const containerId = secret?.containerId ?? idOrContainerId
@@ -414,6 +607,8 @@ export class AgentManager {
     }
 
     if (secret) this.secrets.delete(secret.agentId)
+
+    return { drained }
   }
 
   /**

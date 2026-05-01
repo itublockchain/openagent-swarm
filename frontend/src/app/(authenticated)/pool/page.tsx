@@ -1,12 +1,13 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { Search, X, Rocket, PanelRightOpen, PanelRightClose } from 'lucide-react'
+import { Search, X, Rocket, PanelRightOpen, PanelRightClose, Globe, Lock, Layers } from 'lucide-react'
 import { TopologyMap } from '@/components/TopologyMap'
 import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { cn, shortHash } from '@/lib/utils'
+import { ENV } from '../../../../lib/env'
 
 interface AgentRecord {
   agentId: string
@@ -18,6 +19,15 @@ interface AgentRecord {
   status: 'pending' | 'running' | 'stopped' | 'error'
   deployedAt: number
   ownerAddress?: string
+  /** Colony memberships hydrated by /agent/pool. Empty array → "Open Pool". */
+  colonies?: string[]
+}
+
+interface ColonySummary {
+  id: string
+  name: string
+  visibility: 'private' | 'public'
+  owner: string
 }
 
 const STATUS_PILL: Record<AgentRecord['status'], string> = {
@@ -123,6 +133,10 @@ const MOCK_AGENTS: AgentRecord[] = [
 export default function PoolPage() {
   const [fetchedAgents, setFetchedAgents] = useState<AgentRecord[]>([])
   const [fetchedLoaded, setFetchedLoaded] = useState(false)
+  // Known colonies (own + public) for sidebar grouping. Agents that are
+  // members of a colony NOT in this list (e.g. someone else's private
+  // colony) fall back to the Open Pool section so they're never invisible.
+  const [knownColonies, setKnownColonies] = useState<ColonySummary[]>([])
   // Track the selected agent by id; derive the full record below so it always
   // reflects the latest poll without a sync-effect.
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -161,7 +175,7 @@ export default function PoolPage() {
     const load = async () => {
       try {
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/agent/pool`
+          `${ENV.API_URL}/agent/pool`
         )
         const data = await res.json()
         if (!cancelled) setFetchedAgents(data)
@@ -173,6 +187,65 @@ export default function PoolPage() {
     }
     load()
     const interval = setInterval(load, 5000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [useMock])
+
+  // Fetch known colonies — public for everyone (no auth), plus the user's
+  // own colonies if they're authenticated (auth check is best-effort, no
+  // Authorization header → 401 silently ignored).
+  useEffect(() => {
+    if (useMock) {
+      setKnownColonies([])
+      return
+    }
+    let cancelled = false
+    const apiUrl = ENV.API_URL
+
+    const load = async () => {
+      try {
+        const tokens = typeof window !== 'undefined' ? window.localStorage.getItem('jwtToken') : null
+        const tasks: Array<Promise<ColonySummary[]>> = [
+          fetch(`${apiUrl}/v1/colonies/public`)
+            .then(r => (r.ok ? r.json() : { colonies: [] }))
+            .then((d: { colonies: any[] }) =>
+              (d.colonies ?? []).map(c => ({
+                id: c.id, name: c.name, visibility: 'public' as const, owner: c.owner ?? '',
+              })),
+            )
+            .catch(() => []),
+        ]
+        if (tokens) {
+          tasks.push(
+            fetch(`${apiUrl}/v1/me/colonies`, {
+              headers: { Authorization: `Bearer ${tokens}` },
+            })
+              .then(r => (r.ok ? r.json() : { colonies: [] }))
+              .then((d: { colonies: any[] }) =>
+                (d.colonies ?? []).map(c => ({
+                  id: c.id, name: c.name, visibility: c.visibility ?? 'private', owner: c.owner ?? '',
+                })),
+              )
+              .catch(() => []),
+          )
+        }
+        const results = await Promise.all(tasks)
+        if (cancelled) return
+        // Dedupe by id; own listing wins so the "private" tag is preserved
+        // when a colony shows in both lists (e.g. user's own public).
+        const merged = new Map<string, ColonySummary>()
+        for (const list of results.reverse()) {
+          for (const c of list) merged.set(c.id, c)
+        }
+        setKnownColonies(Array.from(merged.values()))
+      } catch (err) {
+        console.warn('[pool] colony fetch failed:', err)
+      }
+    }
+    load()
+    const interval = setInterval(load, 30_000)
     return () => {
       cancelled = true
       clearInterval(interval)
@@ -262,7 +335,7 @@ export default function PoolPage() {
                   <div className="mx-auto mb-4 w-10 h-10 rounded-lg bg-muted/60 flex items-center justify-center">
                     <Rocket className="w-5 h-5 text-foreground" />
                   </div>
-                  <h3 className="text-base font-bold tracking-tight mb-1">No agents in the swarm yet</h3>
+                  <h3 className="text-base font-bold tracking-tight mb-1">No agents in SPORE yet</h3>
                   <p className="text-xs text-muted-foreground mb-4 leading-relaxed">
                     Deploy your first agent to start claiming subtasks. Bond USDC, pick a model — it joins the mesh in seconds.
                   </p>
@@ -403,13 +476,38 @@ export default function PoolPage() {
                 No agents match your search.
               </div>
             ) : (
-              <div className="flex flex-col gap-2.5">
-                {filtered.map(agent => (
+              (() => {
+                // Cluster agents by colony. An agent's `colonies` field comes
+                // from the /agent/pool hidratation; we filter to KNOWN colonies
+                // (own + public) so private colonies of other users don't leak
+                // their existence here. Agents with no known-colony membership
+                // fall into "Open Pool" — same default routing target as a
+                // task with no colonyId.
+                const knownIds = new Set(knownColonies.map(c => c.id))
+                const openPool: AgentRecord[] = []
+                const colonyBuckets = new Map<string, AgentRecord[]>()
+                for (const c of knownColonies) colonyBuckets.set(c.id, [])
+
+                for (const agent of filtered) {
+                  const memberOfKnown = (agent.colonies ?? []).filter(id => knownIds.has(id))
+                  if (memberOfKnown.length === 0) {
+                    openPool.push(agent)
+                    continue
+                  }
+                  // An agent in multiple colonies appears in each bucket — the
+                  // pool view is a snapshot of "where this agent is reachable",
+                  // not a unique partition. UI clearly shows the colony header.
+                  for (const cid of memberOfKnown) {
+                    colonyBuckets.get(cid)!.push(agent)
+                  }
+                }
+
+                const renderAgentCard = (agent: AgentRecord) => (
                   <button
-                    key={agent.containerId}
+                    key={`${agent.containerId}-${agent.agentId}`}
                     onClick={() => handleSelect(agent.agentId)}
                     className={cn(
-                      'text-left p-3 rounded-lg cursor-pointer transition-all border min-w-0',
+                      'text-left p-3 rounded-lg cursor-pointer transition-all border min-w-0 w-full',
                       selected?.agentId === agent.agentId
                         ? 'bg-accent border-primary/30 shadow-sm'
                         : 'bg-background/50 border-border/50 hover:border-border hover:bg-accent/50',
@@ -434,8 +532,68 @@ export default function PoolPage() {
                       {agent.model}
                     </div>
                   </button>
-                ))}
-              </div>
+                )
+
+                return (
+                  <div className="flex flex-col gap-5">
+                    {/* Open Pool — agents not in any (visible) colony. Always
+                        rendered first so the default routing target is at the
+                        top of the list. Hidden when empty AND there's at
+                        least one populated colony, to avoid a "0 agents" header
+                        on a clustered-only view. */}
+                    {(openPool.length > 0 || colonyBuckets.size === 0) && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/80 px-1">
+                          <span className="w-1 h-1 rounded-full bg-foreground/40" />
+                          Open Pool
+                          <span className="ml-auto tabular-nums">{openPool.length}</span>
+                        </div>
+                        {openPool.length > 0 ? (
+                          <div className="flex flex-col gap-2.5">
+                            {openPool.map(renderAgentCard)}
+                          </div>
+                        ) : (
+                          <div className="py-3 px-2 text-[11px] text-muted-foreground italic text-center rounded-md border border-dashed border-border/50">
+                            No agents in open pool
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* One section per known colony — each colony is its own
+                        cluster. Empty colonies still render so users can see
+                        their structure (helpful when adding members). */}
+                    {knownColonies.map(c => {
+                      const members = colonyBuckets.get(c.id) ?? []
+                      return (
+                        <div key={c.id} className="space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-muted-foreground/80 px-1">
+                            {c.visibility === 'public' ? (
+                              <Globe className="w-2.5 h-2.5 text-blue-500" />
+                            ) : (
+                              <Lock className="w-2.5 h-2.5 text-muted-foreground" />
+                            )}
+                            <span className="truncate" title={c.name}>
+                              {c.name}
+                            </span>
+                            <span className="ml-auto tabular-nums">{members.length}</span>
+                          </div>
+                          {members.length > 0 ? (
+                            <div className="flex flex-col gap-2.5">
+                              {members.map(renderAgentCard)}
+                            </div>
+                          ) : (
+                            <div className="py-2.5 px-2 text-[10px] text-muted-foreground/70 italic text-center rounded-md border border-dashed border-border/40 flex items-center justify-center gap-1">
+                              <Layers className="w-2.5 h-2.5" />
+                              empty colony
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })()
             )}
           </div>
         </aside>

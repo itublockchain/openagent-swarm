@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { useAccount, useDisconnect, useSignMessage } from 'wagmi'
 import { SiweMessage } from 'siwe'
+import { AUTH_EXPIRED_EVENT } from '../../lib/api'
+import { ENV } from '../../lib/env'
 
 interface AuthContextType {
   jwt: string | null
@@ -27,8 +29,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setMounted(true)
-    const stored = localStorage.getItem('swarm_jwt')
+    const stored = localStorage.getItem('spore_jwt')
     if (stored) setJwt(stored)
+
+    // apiRequest dispatches this when the backend rejects our token (401).
+    // Drop our in-memory JWT so isAuthenticated flips false and WalletGate
+    // reopens with a fresh sign-in prompt — no manual reload needed.
+    const onExpired = () => setJwt(null)
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired)
   }, [])
 
   const signIn = useCallback(async () => {
@@ -44,7 +53,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // 1. Get Nonce
       console.log('Fetching nonce...')
       const nonceRes = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/nonce?t=${Date.now()}`,
+        `${ENV.API_URL}/auth/nonce?t=${Date.now()}`,
         { method: 'GET', cache: 'no-store' }
       )
       const { nonce } = await nonceRes.json()
@@ -54,7 +63,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const message = new SiweMessage({
         domain: window.location.host,
         address,
-        statement: 'Sign in to Swarm Execution Layer',
+        statement: 'Sign in to SPORE Execution Layer',
         uri: window.location.origin,
         version: '1',
         chainId: chain?.id ?? 16602, // Fallback to 0G Galileo Testnet
@@ -69,9 +78,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log('Signature received:', signature)
 
       // 4. Verify
-      console.log('Verifying on backend:', `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/verify`)
+      console.log('Verifying on backend:', `${ENV.API_URL}/auth/verify`)
       const verifyRes = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'}/auth/verify`,
+        `${ENV.API_URL}/auth/verify`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -88,7 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       
       const { token } = resData
       console.log('Verification successful. JWT received.')
-      localStorage.setItem('swarm_jwt', token)
+      localStorage.setItem('spore_jwt', token)
       setJwt(token)
     } catch (err: any) {
       console.error('Auth error detail:', err)
@@ -99,7 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [address, chain, signMessageAsync])
 
   const signOut = useCallback(() => {
-    localStorage.removeItem('swarm_jwt')
+    localStorage.removeItem('spore_jwt')
     setJwt(null)
     disconnect()
   }, [disconnect])

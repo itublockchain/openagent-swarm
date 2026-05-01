@@ -54,6 +54,16 @@ export interface DAGNode {
   peerValidated?: boolean
 }
 
+/**
+ * One step in an agent's transcript — either a tool round-trip or the
+ * final answer. Mirrors backend/agent/src/agentFormat.ts so the frontend
+ * can render the trace from the SUBTASK_DONE broadcast without depending
+ * on the agent package.
+ */
+export type TranscriptStep =
+  | { kind: 'tool_call'; tool: string; args: Record<string, unknown>; output: string; ok: boolean }
+  | { kind: 'final'; text: string }
+
 export interface AXLEvent<T = unknown> {
   type: EventType
   payload: T
@@ -74,4 +84,9 @@ export interface AgentConfig {
    *  by SwarmAgent.assess() to skip subtasks outside the agent's skill
    *  before racing to claim. Empty / undefined → claim everything. */
   systemPrompt?: string
+  /** EOA of the user that deployed this agent. When set, the surplus
+   *  watchdog periodically forwards USDC above stakeAmount back to this
+   *  address (rewards from completed tasks flow back to the owner without
+   *  manual withdraw). Empty → sweep disabled. */
+  ownerAddress?: string
 }

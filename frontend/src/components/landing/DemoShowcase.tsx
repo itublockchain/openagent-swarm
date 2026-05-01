@@ -1,9 +1,9 @@
-import { SwarmTextBackdrop } from './SwarmTextBackdrop'
+import { SporeTextBackdrop } from './SporeTextBackdrop'
 
 export function DemoShowcase() {
   return (
     <section className="relative overflow-hidden px-6 pt-24 md:pt-36 pb-20">
-      <SwarmTextBackdrop
+      <SporeTextBackdrop
         text="AGENTS"
         sizeRatio={0.22}
         maxSize={340}
@@ -15,7 +15,7 @@ export function DemoShowcase() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/demo/demo-web.gif"
-            alt="Swarm Explorer demo"
+            alt="SPORE Explorer demo"
             width={1920}
             height={1080}
             loading="lazy"

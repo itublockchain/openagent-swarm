@@ -51,7 +51,7 @@ export function WalletModal({ onClose, onAuthenticated }: Props) {
         <div className="w-16 h-16 bg-primary/5 rounded-full flex items-center justify-center mb-6 border border-primary/10">
           <ShieldCheck className="w-8 h-8 text-primary" />
         </div>
-        <h2 className="text-2xl font-bold tracking-tight text-foreground">Swarm Gateway</h2>
+        <h2 className="text-2xl font-bold tracking-tight text-foreground">SPORE Gateway</h2>
         <p className="text-sm text-muted-foreground mt-2">
           {isConnected ? 'Verify your identity to proceed' : 'Connect your wallet to get started'}
         </p>
@@ -103,7 +103,7 @@ export function WalletModal({ onClose, onAuthenticated }: Props) {
 
       <div className="mt-12 text-center pt-6 border-t border-border/50">
         <p className="text-[10px] text-muted-foreground uppercase tracking-[0.2em] font-bold opacity-30">
-          Identity Secured by Swarm
+          Identity Secured by SPORE
         </p>
       </div>
     </div>

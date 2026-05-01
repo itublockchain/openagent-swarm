@@ -7,7 +7,7 @@ export type WSEvent = {
 
 type Handler = (event: WSEvent) => void
 
-class SwarmWSClient {
+class SporeWSClient {
   private ws: WebSocket | null = null
   private handlers = new Map<string, Set<Handler>>()
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -20,29 +20,29 @@ class SwarmWSClient {
     this.ws = new WebSocket(url)
 
     this.ws.onopen = () => {
-      console.log('[SwarmWS] connected to', url)
+      console.log('[SporeWS] connected to', url)
     }
 
     this.ws.onmessage = (msg) => {
       try {
         const event = JSON.parse(msg.data) as WSEvent
-        console.log('[SwarmWS] received:', event.type)
+        console.log('[SporeWS] received:', event.type)
         this.handlers.get(event.type)?.forEach(h => h(event))
         this.handlers.get('*')?.forEach(h => h(event))
       } catch (e) {
-        console.error('[SwarmWS] parse error', e)
+        console.error('[SporeWS] parse error', e)
       }
     }
 
     this.ws.onclose = () => {
-      console.log('[SwarmWS] closed, retrying in 3s...')
+      console.log('[SporeWS] closed, retrying in 3s...')
       this.reconnectTimer = setTimeout(() => {
         if (this.url) this.connect(this.url)
       }, 3000)
     }
 
     this.ws.onerror = (e) => {
-      console.error('[SwarmWS] error', e)
+      console.error('[SporeWS] error', e)
       this.ws?.close()
     }
   }
@@ -63,4 +63,4 @@ class SwarmWSClient {
   }
 }
 
-export const wsClient = new SwarmWSClient()
+export const wsClient = new SporeWSClient()

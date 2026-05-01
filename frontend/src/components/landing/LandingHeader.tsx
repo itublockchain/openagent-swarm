@@ -10,7 +10,7 @@ export function LandingHeader() {
       <div className="mx-auto max-w-6xl h-full px-6 flex items-center justify-between">
         <Link href="/" className="flex items-center gap-2 group">
           <Hexagon className="w-5 h-5 text-foreground transition-transform group-hover:rotate-30" />
-          <span className="font-extrabold tracking-tighter text-lg">Swarm</span>
+          <span className="font-extrabold tracking-tighter text-lg">SPORE</span>
         </Link>
 
         <nav className="hidden md:flex items-center gap-8 text-sm text-muted-foreground">

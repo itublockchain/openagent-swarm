@@ -46,10 +46,12 @@ trigger_task.js
 test_task.json
 test_output.log
 
-# Lockfiles
-pnpm-lock.yaml
-package-lock.json
-yarn.lock
+# Lockfiles are deliberately COMMITTED — they pin exact dependency
+# versions so Docker builds and CI install the same tree every time.
+# Apps ship lockfiles; only published libraries omit them. Keep these
+# tracked. (If a teammate adds yarn.lock or package-lock.json by mistake,
+# delete the file rather than re-ignoring it — pnpm is the canonical
+# package manager for this repo.)
 
 # Contracts
 contracts/artifacts/

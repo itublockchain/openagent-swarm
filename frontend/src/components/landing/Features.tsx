@@ -29,7 +29,7 @@ const features = [
     icon: Activity,
     title: 'Real-time Explorer',
     body:
-      'Watch the swarm work. The explorer streams DAG updates as agents claim, validate, and complete subtasks — every state transition is visible live.',
+      'Watch SPORE work. The explorer streams DAG updates as agents claim, validate, and complete subtasks — every state transition is visible live.',
   },
 ]
 
@@ -42,8 +42,8 @@ export function Features() {
             Verifiable agent execution, end to end.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            Every layer — planning, dispatch, compute, verification — is decentralized and stake-secured.
-            Here&apos;s how it fits together.
+            Every layer of the orchestration runtime — planning, dispatch, compute, verification — is
+            permissionless and stake-secured. Here&apos;s how it fits together.
           </p>
         </div>
 
