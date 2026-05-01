@@ -3,8 +3,12 @@ import { IChainPort } from '../../../../shared/ports'
 import DAGRegistryABI from '../../../../contracts/artifacts/src/DAGRegistry.sol/DAGRegistry.json'
 import SwarmEscrowABI from '../../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json'
 import SlashingVaultABI from '../../../../contracts/artifacts/src/SlashingVault.sol/SlashingVault.json'
-import MockERC20ABI from '../../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json'
 import deployments from '../../../../contracts/deployments/og_testnet.json'
+
+// USDC fixed at 6 decimals system-wide. There is no on-chain ERC20 to
+// query — the escrow's agentBalances ledger uses the same scale as the
+// real Base USDC the operator bridges in.
+const USDC_DECIMALS = 6
 
 export class L2Contract implements IChainPort {
   private provider: ethers.JsonRpcProvider
@@ -12,10 +16,7 @@ export class L2Contract implements IChainPort {
   private registry: ethers.Contract
   private escrow: ethers.Contract
   private vault: ethers.Contract
-  private usdc: ethers.Contract
   private escrowAddr: string
-  private usdcDecimals: number | null = null
-  private allowanceEnsured = false
   private txMutex: Promise<void> = Promise.resolve()
 
   constructor(private agentId: string) {
@@ -25,10 +26,6 @@ export class L2Contract implements IChainPort {
     if (!process.env.PRIVATE_KEY) {
       throw new Error('[L2Contract] PRIVATE_KEY env var is required')
     }
-    // staticNetwork stops ethers from auto-firing eth_chainId before every
-    // tx (was contributing ~30-40% of our RPC volume into the shared 50 RPS
-    // testnet cap and triggering -32005 storms). Chain ID is constant per
-    // deployment, no need to keep asking.
     this.provider = new ethers.JsonRpcProvider(
       process.env.OG_RPC_URL,
       undefined,
@@ -39,15 +36,13 @@ export class L2Contract implements IChainPort {
     const dagRegistryAddr = process.env.L2_DAG_REGISTRY_ADDRESS || deployments.DAGRegistry
     this.escrowAddr = process.env.L2_ESCROW_ADDRESS || deployments.SwarmEscrow
     const vaultAddr = process.env.L2_SLASHING_VAULT_ADDRESS || deployments.SlashingVault
-    const usdcAddr = process.env.L2_USDC_ADDRESS || deployments.MockUSDC
 
     this.registry = new ethers.Contract(dagRegistryAddr, DAGRegistryABI.abi, this.wallet)
     this.escrow = new ethers.Contract(this.escrowAddr, SwarmEscrowABI.abi, this.wallet)
     this.vault = new ethers.Contract(vaultAddr, SlashingVaultABI.abi, this.wallet)
-    this.usdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, this.wallet)
 
     console.log(
-      `[L2Contract] addresses — registry=${dagRegistryAddr} escrow=${this.escrowAddr} vault=${vaultAddr} usdc=${usdcAddr}`,
+      `[L2Contract] addresses — registry=${dagRegistryAddr} escrow=${this.escrowAddr} vault=${vaultAddr}`,
     )
   }
 
@@ -151,24 +146,6 @@ export class L2Contract implements IChainPort {
     }
   }
 
-  private async getDecimals(): Promise<number> {
-    if (this.usdcDecimals !== null) return this.usdcDecimals
-    this.usdcDecimals = Number(await this.callWithRetry(() => this.usdc.decimals()))
-    return this.usdcDecimals
-  }
-
-  private async ensureEscrowAllowance(amount: bigint): Promise<void> {
-    if (this.allowanceEnsured) return
-    const current: bigint = await this.callWithRetry(() =>
-      this.usdc.allowance(this.wallet.address, this.escrowAddr),
-    )
-    if (current < amount) {
-      console.log(`[L2Contract] Approving USDC for escrow...`)
-      await this.sendTxWithRetry(this.usdc, 'approve', [this.escrowAddr, ethers.MaxUint256])
-    }
-    this.allowanceEnsured = true
-  }
-
   private formatId(id: string): string {
     return id.startsWith('0x') ? id : ethers.id(id)
   }
@@ -214,17 +191,15 @@ export class L2Contract implements IChainPort {
   }
 
   async stake(taskId: string, amount: string): Promise<string> {
-    const decimals = await this.getDecimals()
-    const stakeAmount = ethers.parseUnits(amount, decimals)
-    await this.ensureEscrowAllowance(stakeAmount)
+    const stakeAmount = ethers.parseUnits(amount, USDC_DECIMALS)
+    // Tokenless escrow checks agentBalances[msg.sender] >= amount on-chain;
+    // no allowance / token transfer to set up.
     const receipt = await this.sendTxWithRetry(this.escrow, 'stake', [this.formatId(taskId), stakeAmount])
     return receipt.hash
   }
 
   async stakeForSubtask(taskId: string, nodeId: string, amount: string): Promise<string> {
-    const decimals = await this.getDecimals()
-    const stakeAmount = ethers.parseUnits(amount, decimals)
-    await this.ensureEscrowAllowance(stakeAmount)
+    const stakeAmount = ethers.parseUnits(amount, USDC_DECIMALS)
     const receipt = await this.sendTxWithRetry(this.escrow, 'stakeForSubtask', [
       this.formatId(taskId),
       this.formatId(nodeId),
@@ -260,17 +235,15 @@ export class L2Contract implements IChainPort {
   }
 
   /**
-   * How many `stakeAmount`-sized stakes the agent's USDC balance can cover.
-   * Returns 0 on read failure (rate-limit retried inside callWithRetry, but
-   * a final failure must not let the caller assume infinite balance —
-   * fail-closed and let the agent skip claiming this round).
+   * How many `stakeAmount`-sized stakes the agent's Escrow ledger balance
+   * can cover. Returns 0 on read failure — fail-closed so the agent
+   * doesn't burn through the stake locked at deploy.
    */
   async getStakeCapacity(stakeAmount: string): Promise<number> {
     try {
-      const decimals = await this.getDecimals()
-      const stakeWei = ethers.parseUnits(stakeAmount, decimals)
+      const stakeWei = ethers.parseUnits(stakeAmount, USDC_DECIMALS)
       if (stakeWei === 0n) return Number.MAX_SAFE_INTEGER
-      const balance: bigint = await this.callWithRetry(() => this.usdc.balanceOf(this.wallet.address))
+      const balance: bigint = await this.callWithRetry(() => this.escrow.agentBalances(this.wallet.address))
       return Number(balance / stakeWei)
     } catch (err) {
       console.warn(`[L2Contract] getStakeCapacity failed:`, err)
@@ -280,14 +253,16 @@ export class L2Contract implements IChainPort {
 
   async getOwnUsdcBalance(): Promise<string> {
     const balance: bigint = await this.callWithRetry(() =>
-      this.usdc.balanceOf(this.wallet.address),
+      this.escrow.agentBalances(this.wallet.address),
     )
     return balance.toString()
   }
 
-  async transferUsdc(to: string, amountWei: string): Promise<string> {
-    const receipt = await this.sendTxWithRetry(this.usdc, 'transfer', [to, BigInt(amountWei)])
-    return receipt.hash as string
+  async transferUsdc(_to: string, _amountWei: string): Promise<string> {
+    // Tokenless model: agents do not hold a token they can transfer.
+    // Backend operator settles balances via Escrow.debitAgent +
+    // Treasury.creditBalance — call the API's withdraw flow instead.
+    throw new Error('transferUsdc is not supported in tokenless escrow — use API withdraw flow')
   }
 
   async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {

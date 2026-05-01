@@ -1,4 +1,4 @@
-import { Wallet, randomBytes, hexlify, parseUnits, solidityPackedKeccak256, id as keccakId } from 'ethers'
+import { Wallet, randomBytes, hexlify, solidityPackedKeccak256, id as keccakId } from 'ethers'
 import { IStoragePort, IComputePort, INetworkPort, IChainPort } from '../../../shared/ports'
 import { EventType, DAGNode, AgentConfig, AXLEvent } from '../../../shared/types'
 import { runAgentLoop } from './agentLoop'
@@ -244,60 +244,18 @@ export class SwarmAgent {
   }
 
   /**
-   * Periodically forward USDC earned above the configured stakeAmount back
-   * to the owner's wallet. The check is balance > stakeWei; when an agent is
-   * mid-task its 10% subtask stake is locked in escrow so balance briefly
-   * dips BELOW stakeWei, naturally preventing a sweep mid-flight. After
-   * settlement the released stake + reward push balance above stakeWei and
-   * the next tick forwards the surplus.
-   *
-   * Disabled when ownerAddress is missing (no recipient) or the chain
-   * adapter doesn't support balance/transfer (Mock).
+   * Surplus auto-payout was a token-era construct: it forwarded any USDC
+   * earned above the stake floor from the agent's wallet to the owner.
+   * In the tokenless model the agent has no transferable token — earnings
+   * accumulate as `agentBalances[agent]` in Escrow and flow back to the
+   * user's Treasury balance via the API's withdraw flow (operator-signed
+   * Escrow.debitAgent + Treasury.creditBalance) when the user explicitly
+   * requests it. So this watchdog is now a no-op and intentionally not
+   * reactivated.
    */
   private startSurplusWatchdog(): void {
-    const owner = this.deps.config.ownerAddress
     const id = this.deps.config.agentId
-    if (!owner) {
-      console.log(`[Agent ${id}] surplus sweep disabled (no ownerAddress)`)
-      return
-    }
-    if (
-      typeof this.deps.chain.getOwnUsdcBalance !== 'function' ||
-      typeof this.deps.chain.transferUsdc !== 'function'
-    ) {
-      console.log(`[Agent ${id}] surplus sweep disabled (chain adapter lacks USDC methods)`)
-      return
-    }
-
-    // mUSDC ships at 18 decimals (default OZ ERC20). If the deployment ever
-    // pins a different value, override via env or extend AgentConfig.
-    const USDC_DECIMALS = 18
-    let stakeWei: bigint
-    try {
-      stakeWei = parseUnits(this.deps.config.stakeAmount || '0', USDC_DECIMALS)
-    } catch (err) {
-      console.warn(`[Agent ${id}] surplus sweep disabled — bad stakeAmount "${this.deps.config.stakeAmount}":`, err)
-      return
-    }
-
-    const SWEEP_INTERVAL_MS = 60_000
-    const tick = async () => {
-      try {
-        const balanceStr = await this.deps.chain.getOwnUsdcBalance!()
-        const balance = BigInt(balanceStr)
-        if (balance <= stakeWei) return
-        const surplus = balance - stakeWei
-        console.log(`[Agent ${id}] sweeping surplus ${surplus.toString()} wei → ${owner}`)
-        const txHash = await this.deps.chain.transferUsdc!(owner, surplus.toString())
-        console.log(`[Agent ${id}] surplus payout tx ${txHash}`)
-      } catch (err) {
-        console.warn(`[Agent ${id}] surplus sweep tick failed:`, err)
-      }
-    }
-
-    const timer = setInterval(tick, SWEEP_INTERVAL_MS)
-    if (typeof timer.unref === 'function') timer.unref()
-    console.log(`[Agent ${id}] surplus sweep running every ${SWEEP_INTERVAL_MS / 1000}s, owner=${owner}, floor=${stakeWei.toString()} wei`)
+    console.log(`[Agent ${id}] surplus sweep disabled — earnings live in Escrow.agentBalances ledger`)
   }
 
   private isBusyWithTimeout(newTaskId: string): boolean {

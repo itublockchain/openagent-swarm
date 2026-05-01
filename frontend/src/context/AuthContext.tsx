@@ -5,7 +5,7 @@ import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi
 import { SiweMessage } from 'siwe'
 import { AUTH_EXPIRED_EVENT } from '../../lib/api'
 import { ENV } from '../../lib/env'
-import { ogTestnet } from '../../lib/wagmi'
+import { paymentChain } from '../../lib/wagmi'
 
 interface AuthContextType {
   jwt: string | null
@@ -52,18 +52,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAuthenticating(true)
 
     try {
-      // 0. Force wallet onto 0G Galileo before signing. The SIWE
-      // message's chainId must match the chain the wallet is actually
-      // on, and every post-login action (deploy/submit/stake) targets
-      // ogTestnet — switching here avoids a second wallet prompt the
-      // moment the user clicks anything.
-      if (chain?.id !== ogTestnet.id) {
-        console.log(`Switching wallet to chainId ${ogTestnet.id}...`)
+      // 0. Force wallet onto Base Sepolia before signing. Deposits
+      // (the only on-chain action the user signs in this app) live on
+      // Base — keeping SIWE on the same chain means no second wallet
+      // prompt when the user clicks "Deposit" right after connecting.
+      if (chain?.id !== paymentChain.id) {
+        console.log(`Switching wallet to chainId ${paymentChain.id}...`)
         try {
-          await switchChainAsync({ chainId: ogTestnet.id })
+          await switchChainAsync({ chainId: paymentChain.id })
         } catch (err: any) {
           if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
-            throw new Error('Add 0G Galileo testnet (chainId 16602, RPC https://evmrpc-testnet.0g.ai) to your wallet, then retry')
+            throw new Error('Add Base Sepolia (chainId 84532) to your wallet, then retry')
           }
           throw err
         }
@@ -85,7 +84,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         statement: 'Sign in to SPORE Execution Layer',
         uri: window.location.origin,
         version: '1',
-        chainId: ogTestnet.id,
+        chainId: paymentChain.id,
         nonce,
       })
 

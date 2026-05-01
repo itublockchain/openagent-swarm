@@ -34,8 +34,14 @@ export const ENV = {
    *  needs it will fail loudly at use time. Required-by-default would
    *  break the whole app if root .env loses this single line. */
   REOWN_PROJECT_ID: optional(process.env.NEXT_PUBLIC_REOWN_PROJECT_ID),
-  /** Optional contract addresses — read by Developer + Profile tabs. */
-  USDC_ADDRESS: optional(process.env.NEXT_PUBLIC_USDC_ADDRESS) as `0x${string}` | undefined,
-  ESCROW_ADDRESS: optional(process.env.NEXT_PUBLIC_ESCROW_ADDRESS) as `0x${string}` | undefined,
-  TREASURY_ADDRESS: optional(process.env.NEXT_PUBLIC_TREASURY_ADDRESS) as `0x${string}` | undefined,
+  /** Real USDC on Base Sepolia (Circle FiatTokenV2). Used by DepositModal
+   *  for `approve` + `deposit` calls. Defaults to Circle's canonical
+   *  testnet USDC if the env var isn't set. */
+  USDC_ADDRESS:
+    (optional(process.env.NEXT_PUBLIC_USDC_ADDRESS) as `0x${string}` | undefined) ??
+    ('0x036CbD53842c5426634e7929541eC2318f3dCF7e' as `0x${string}`),
+  /** USDCGateway address on Base Sepolia. Required for DepositModal —
+   *  if unset, deposit UI shows a config error rather than letting the
+   *  user sign a transfer to nowhere. */
+  GATEWAY_ADDRESS: optional(process.env.NEXT_PUBLIC_GATEWAY_ADDRESS) as `0x${string}` | undefined,
 } as const

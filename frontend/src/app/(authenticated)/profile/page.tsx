@@ -10,9 +10,12 @@ import { ColonyModal, type ColonyModalMode } from '@/components/ColonyModal'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { cn, shortHash } from '@/lib/utils'
 import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
-import { ogTestnet } from '../../../../lib/wagmi'
+import { paymentChain } from '../../../../lib/wagmi'
 import { apiRequest } from '../../../../lib/api'
 import { ENV } from '../../../../lib/env'
+
+// USDC fixed at 6 decimals (Circle Base Sepolia).
+const USDC_DECIMALS = 6
 
 interface AgentRecord {
   agentId: string
@@ -69,25 +72,26 @@ export default function ProfilePage() {
   const [pendingDeployToColony, setPendingDeployToColony] = useState<string | null>(null)
 
   // ---------- Wallet stats ----------
+  // Native ETH on Base Sepolia (the user's gas; we don't show 0G since
+  // they never touch it directly).
   const nativeBalanceQ = useBalance({
     address: address as `0x${string}` | undefined,
-    chainId: ogTestnet.id,
+    chainId: paymentChain.id,
     query: { enabled: !!address },
   })
+  // chainId pin is load-bearing: USDC lives on Base Sepolia. Without
+  // it, wagmi reads from whichever chain the wallet currently sits on
+  // (mainnet/sepolia/etc.) where this address has no contract — so
+  // balanceOf returns 0 and the UI lies about an empty wallet.
   const usdcBalanceQ = useReadContract({
     abi: ERC20_ABI,
     address: usdcAddr,
+    chainId: paymentChain.id,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
     query: { enabled: !!address && !!usdcAddr, refetchInterval: 10_000 },
   })
-  const usdcDecimalsQ = useReadContract({
-    abi: ERC20_ABI,
-    address: usdcAddr,
-    functionName: 'decimals',
-    query: { enabled: !!usdcAddr },
-  })
-  const usdcDecimals = usdcDecimalsQ.data ?? 18
+  const usdcDecimals = USDC_DECIMALS
 
   // ---------- Agents — pulled from /agent/pool, filtered to owner ----------
   const [agents, setAgents] = useState<AgentRecord[]>([])
@@ -118,11 +122,14 @@ export default function ProfilePage() {
   )
 
   // Per-agent USDC balances — batched into a single multicall via wagmi.
+  // Same chainId pin as above: agent wallets hold real USDC on Base Sepolia,
+  // not on whatever chain the user happens to have selected in MetaMask.
   const agentBalanceContracts = myAgents
     .filter(a => a.agentAddress)
     .map(a => ({
       abi: ERC20_ABI,
       address: usdcAddr,
+      chainId: paymentChain.id,
       functionName: 'balanceOf' as const,
       args: [a.agentAddress as `0x${string}`] as const,
     }))

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { ethers } from 'ethers'
 import { apiKeyAuth } from './apiKeyAuth'
-import { getTreasuryClient } from './chain'
+import { getChainClient, USDC_DECIMALS } from './chain'
 import type { KeyStore } from './keystore'
 
 interface RegisterOpts {
@@ -9,45 +9,31 @@ interface RegisterOpts {
 }
 
 /**
- * GET /v1/balance — read user's Treasury balance + daily cap state.
+ * GET /v1/balance — read user's Treasury balance.
  *
- * Reads are pure RPC calls (no signer) so this endpoint stays available
- * even when the operator EOA is rotated / down. Returns decimal strings
- * (not bigint) because JSON doesn't natively support large integers.
+ * Pure RPC read — works even when the operator EOA is rotated / down.
+ * Returns decimal strings (not bigint) because JSON doesn't natively
+ * support large integers. Decimals are fixed at 6 system-wide
+ * (matches Circle USDC on Base Sepolia).
  */
 export async function registerBalanceRoutes(app: FastifyInstance, opts: RegisterOpts) {
   const auth = apiKeyAuth({ keyStore: opts.keyStore })
 
   app.get('/v1/balance', { onRequest: auth }, async (request, reply) => {
     const ctx = request.apiKey!
-    const { readTreasury, readUsdc } = getTreasuryClient()
+    const { readTreasury } = getChainClient()
 
-    let decimals: number
+    let balance: bigint
     try {
-      decimals = Number(await readUsdc.decimals())
+      balance = (await readTreasury.balanceOf(ctx.userAddress)) as bigint
     } catch (err) {
       reply.status(502).send({ error: 'L2 RPC unreachable', code: 'RPC_DOWN' })
       return
     }
 
-    const fmt = (n: bigint) => ethers.formatUnits(n, decimals)
-    const [balance, cap, spentView] = await Promise.all([
-      readTreasury.balanceOf(ctx.userAddress) as Promise<bigint>,
-      readTreasury.dailyCap(ctx.userAddress) as Promise<bigint>,
-      readTreasury.dailySpentView(ctx.userAddress) as Promise<readonly [bigint, bigint]>,
-    ])
-    const [spent, windowStart] = spentView
-
-    const dailyWindowResetsAt = windowStart === 0n
-      ? null
-      : new Date((Number(windowStart) + 86_400) * 1000).toISOString()
-
     reply.send({
-      balance: fmt(balance),
-      daily_cap: fmt(cap),
-      daily_spent: fmt(spent),
-      daily_window_resets_at: dailyWindowResetsAt,
-      decimals,
+      balance: ethers.formatUnits(balance, USDC_DECIMALS),
+      decimals: USDC_DECIMALS,
     })
   })
 }

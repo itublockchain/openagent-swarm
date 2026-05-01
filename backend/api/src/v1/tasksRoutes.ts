@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { ethers } from 'ethers'
 import { z } from 'zod'
 import { apiKeyAuth, requireScope } from './apiKeyAuth'
-import { getTreasuryClient } from './chain'
+import { getChainClient, USDC_DECIMALS } from './chain'
 import type { KeyStore } from './keystore'
 import type { IStoragePort, INetworkPort } from '../../../../shared/ports'
 import { EventType } from '../../../../shared/types'
@@ -72,7 +72,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
     }
     const body = parse.data
 
-    const { readUsdc, readTreasury, writeTreasury, treasuryAddr, operatorAddress } = getTreasuryClient()
+    const { readTreasury, writeTreasury, treasuryAddr, operatorAddress } = getChainClient()
     if (!writeTreasury || !operatorAddress) {
       reply.status(503).send({
         error: 'Operator wallet not configured (PRIVATE_KEY missing)',
@@ -81,18 +81,12 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
       return
     }
 
-    // 1. Resolve decimals + parse budget. Decimals call can fail when
-    //    RPC is flaky — surface as a 502 so SDK retries with backoff.
-    let decimals: number
-    try {
-      decimals = Number(await readUsdc.decimals())
-    } catch {
-      reply.status(502).send({ error: 'L2 RPC unreachable', code: 'RPC_DOWN' })
-      return
-    }
+    // 1. Parse budget. Treasury balances are in USDC base units (6
+    //    decimals) — same scale as the real Base USDC the operator
+    //    receives via the bridge, so no rescale is needed.
     let budgetWei: bigint
     try {
-      budgetWei = ethers.parseUnits(body.budget, decimals)
+      budgetWei = ethers.parseUnits(body.budget, USDC_DECIMALS)
     } catch {
       reply.status(400).send({ error: 'Invalid budget format' })
       return
@@ -130,35 +124,28 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
       reply.status(402).send({
         error: 'Insufficient Treasury balance',
         code: 'INSUFFICIENT_BALANCE',
-        balance: ethers.formatUnits(balance, decimals),
+        balance: ethers.formatUnits(balance, USDC_DECIMALS),
         required: body.budget,
       })
       return
     }
 
-    // 4. Operator signs `spendOnBehalfOf`. Treasury enforces:
-    //    - keyHash bound to user
-    //    - key not frozen
-    //    - balance >= amount
-    //    - daily cap not exceeded
-    //    On revert we surface the contract reason so SDK / dashboard can
-    //    show "daily cap reached" vs "key frozen" distinctly.
+    // 4. Operator signs `spendOnBehalfOf`. Treasury enforces balance
+    //    >= amount; revert reason is surfaced as a stable code below.
     let txHash: string
     try {
       const tx = await writeTreasury.spendOnBehalfOf(
         ctx.userAddress,
         taskIdBytes32,
         budgetWei,
-        ctx.chainKeyHash,
       )
       const receipt = await tx.wait()
       txHash = receipt?.hash ?? tx.hash
     } catch (err: unknown) {
-      // ethers v6 surfaces `shortMessage`/`reason` for require() reverts.
       const e = err as { shortMessage?: string; reason?: string; message?: string }
       const reason = e.shortMessage ?? e.reason ?? e.message ?? 'unknown'
       const code = mapTreasuryRevert(reason)
-      const status = code === 'CAP_EXHAUSTED' || code === 'INSUFFICIENT_BALANCE' ? 402 : 400
+      const status = code === 'INSUFFICIENT_BALANCE' ? 402 : 400
       reply.status(status).send({ error: reason, code })
       return
     }
@@ -171,6 +158,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
     } catch {
       remaining = balance - budgetWei // best-effort
     }
+    const balance_remaining = ethers.formatUnits(remaining, USDC_DECIMALS)
 
     // 5b. Colony scope authz. Done AFTER Treasury spend because the spend
     //     is the irreversible step — once budget moved, we want to actually
@@ -230,7 +218,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
       task_id_bytes32: taskIdBytes32,
       status: 'pending',
       budget_locked: body.budget,
-      balance_remaining: ethers.formatUnits(remaining, decimals),
+      balance_remaining,
       submitted_at: new Date().toISOString(),
       treasury_tx: txHash,
       treasury: treasuryAddr,
@@ -294,9 +282,7 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
 function mapTreasuryRevert(reason: string): string {
   const lower = reason.toLowerCase()
   if (lower.includes('insufficient balance')) return 'INSUFFICIENT_BALANCE'
-  if (lower.includes('daily cap')) return 'CAP_EXHAUSTED'
-  if (lower.includes('key frozen')) return 'KEY_FROZEN'
-  if (lower.includes('key/user mismatch')) return 'KEY_NOT_BOUND'
   if (lower.includes('zero amount')) return 'ZERO_AMOUNT'
+  if (lower.includes('not operator')) return 'OPERATOR_MISCONFIG'
   return 'TX_REVERTED'
 }

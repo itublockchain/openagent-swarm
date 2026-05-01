@@ -1,76 +1,138 @@
 import { ethers } from 'ethers'
+import * as fs from 'fs'
+import * as path from 'path'
 import SwarmTreasuryABI from '../../../../contracts/artifacts/src/SwarmTreasury.sol/SwarmTreasury.json'
-import MockERC20ABI from '../../../../contracts/artifacts/src/MockERC20.sol/MockERC20.json'
-import deployments from '../../../../contracts/deployments/og_testnet.json'
+import SwarmEscrowABI from '../../../../contracts/artifacts/src/SwarmEscrow.sol/SwarmEscrow.json'
+import USDCGatewayABI from '../../../../contracts/artifacts/src/USDCGateway.sol/USDCGateway.json'
+import ogDeployments from '../../../../contracts/deployments/og_testnet.json'
 
 /**
- * Treasury / on-chain glue used by the SDK route handlers. Kept in a
- * separate module so v1/* routes don't have to wire ethers themselves —
- * each route just imports `getTreasuryClient()` and gets a typed bundle
- * back.
+ * Two-chain glue. The swarm runs on 0G Galileo (chainId 16602) but
+ * users pay in real USDC on Base Sepolia (chainId 84532). The API
+ * operator EOA bridges between them: it credits/debits Treasury on
+ * 0G, and matches releases on USDCGateway on Base.
  *
- * Two clients live here:
- *  - readTreasury / readUsdc — public RPC, no signer, used for balance
- *    queries + view calls.
- *  - writeTreasury — signed by the operator EOA (PRIVATE_KEY env). The
- *    only thing we sign for SDK consumers; everything else (createTask,
- *    settlement) flows through Treasury via spendOnBehalfOf.
+ * USDC is fixed at 6 decimals system-wide (matches Circle's testnet
+ * USDC). Treasury balances are stored in the same units — no scaling
+ * happens between chains.
  */
 
-let cached: TreasuryClient | null = null
+export const USDC_DECIMALS = 6
 
-export interface TreasuryClient {
+let cached: ChainClient | null = null
+
+interface BaseDeployments {
+  USDCGateway?: string
+  USDC?: string
+}
+
+export interface ChainClient {
+  // 0G testnet — swarm contracts
+  ogProvider: ethers.JsonRpcProvider
+  ogWallet: ethers.Wallet | null
   treasuryAddr: string
-  usdcAddr: string
-  readProvider: ethers.JsonRpcProvider
+  escrowAddr: string
   readTreasury: ethers.Contract
-  readUsdc: ethers.Contract
-  /** Null if PRIVATE_KEY isn't set — write paths short-circuit with a
-   *  clear 503 response so dev environments without an operator key don't
-   *  crash the server. */
+  readEscrow: ethers.Contract
+  /** Write paths short-circuit with 503 in routes when these are null. */
   writeTreasury: ethers.Contract | null
+  writeEscrow: ethers.Contract | null
+
+  // Base Sepolia — payment gateway only
+  baseProvider: ethers.JsonRpcProvider
+  baseWallet: ethers.Wallet | null
+  gatewayAddr: string
+  baseUsdcAddr: string
+  readGateway: ethers.Contract
+  writeGateway: ethers.Contract | null
+
+  /** Operator EOA address — same key on both chains. Null if PRIVATE_KEY
+   *  isn't set. */
   operatorAddress: string | null
 }
 
-export function getTreasuryClient(): TreasuryClient {
+function loadBaseDeployments(): BaseDeployments {
+  const p = path.resolve(__dirname, '../../../../contracts/deployments/base_sepolia.json')
+  if (!fs.existsSync(p)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf-8')) as BaseDeployments
+  } catch {
+    return {}
+  }
+}
+
+export function getChainClient(): ChainClient {
   if (cached) return cached
-  const rpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai'
-  const treasuryAddr = process.env.L2_TREASURY_ADDRESS || (deployments as any).SwarmTreasury
-  const usdcAddr = process.env.L2_USDC_ADDRESS || (deployments as any).MockUSDC
 
-  if (!treasuryAddr) {
-    throw new Error('[v1/chain] SwarmTreasury address missing — deploy treasury first')
-  }
-  if (!usdcAddr) {
-    throw new Error('[v1/chain] USDC address missing')
-  }
+  // ---- 0G testnet ----
+  const ogRpcUrl = process.env.OG_RPC_URL || 'https://evmrpc-testnet.0g.ai'
+  const treasuryAddr = process.env.L2_TREASURY_ADDRESS || (ogDeployments as any).SwarmTreasury
+  const escrowAddr = process.env.L2_ESCROW_ADDRESS || (ogDeployments as any).SwarmEscrow
+  if (!treasuryAddr) throw new Error('[v1/chain] SwarmTreasury address missing — deploy first')
+  if (!escrowAddr) throw new Error('[v1/chain] SwarmEscrow address missing — deploy first')
 
-  const readProvider = new ethers.JsonRpcProvider(rpcUrl)
-  const readTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, readProvider)
-  const readUsdc = new ethers.Contract(usdcAddr, MockERC20ABI.abi, readProvider)
+  const ogProvider = new ethers.JsonRpcProvider(ogRpcUrl, undefined, { staticNetwork: true })
+  const readTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, ogProvider)
+  const readEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, ogProvider)
 
+  // ---- Base Sepolia ----
+  const baseRpcUrl = process.env.BASE_RPC_URL || 'https://sepolia.base.org'
+  const baseDeployments = loadBaseDeployments()
+  const gatewayAddr = process.env.BASE_GATEWAY_ADDRESS || baseDeployments.USDCGateway || ''
+  const baseUsdcAddr =
+    process.env.BASE_USDC_ADDRESS ||
+    baseDeployments.USDC ||
+    '0x036CbD53842c5426634e7929541eC2318f3dCF7e' // Circle's canonical Base Sepolia USDC
+
+  const baseProvider = new ethers.JsonRpcProvider(baseRpcUrl, undefined, { staticNetwork: true })
+  const readGateway = gatewayAddr
+    ? new ethers.Contract(gatewayAddr, USDCGatewayABI.abi, baseProvider)
+    : (null as any)
+
+  // ---- Signer (same PK both chains) ----
+  let ogWallet: ethers.Wallet | null = null
+  let baseWallet: ethers.Wallet | null = null
   let writeTreasury: ethers.Contract | null = null
+  let writeEscrow: ethers.Contract | null = null
+  let writeGateway: ethers.Contract | null = null
   let operatorAddress: string | null = null
+
   const pk = process.env.PRIVATE_KEY
   if (pk) {
-    const wallet = new ethers.Wallet(pk, readProvider)
-    operatorAddress = wallet.address
-    writeTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, wallet)
+    ogWallet = new ethers.Wallet(pk, ogProvider)
+    baseWallet = new ethers.Wallet(pk, baseProvider)
+    operatorAddress = ogWallet.address
+    writeTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, ogWallet)
+    writeEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, ogWallet)
+    if (gatewayAddr) {
+      writeGateway = new ethers.Contract(gatewayAddr, USDCGatewayABI.abi, baseWallet)
+    }
   }
 
   cached = {
+    ogProvider,
+    ogWallet,
     treasuryAddr,
-    usdcAddr,
-    readProvider,
+    escrowAddr,
     readTreasury,
-    readUsdc,
+    readEscrow,
     writeTreasury,
+    writeEscrow,
+    baseProvider,
+    baseWallet,
+    gatewayAddr,
+    baseUsdcAddr,
+    readGateway,
+    writeGateway,
     operatorAddress,
   }
   return cached
 }
 
-/** Reset the cached client. Useful for tests or after env var changes. */
-export function _resetTreasuryClient(): void {
+/** Back-compat alias. */
+export const getTreasuryClient = getChainClient
+
+/** Reset cached client. Useful for tests / env reloads. */
+export function _resetChainClient(): void {
   cached = null
 }

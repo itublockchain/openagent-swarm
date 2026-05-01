@@ -30,13 +30,18 @@ async function main() {
   const escrow = await ethers.getContractAt('SwarmEscrow', addresses.SwarmEscrow)
   const escrowReg = await escrow.registry()
   const escrowVault = await escrow.vault()
-  const escrowUsdc = await escrow.usdc()
+  const escrowOperator = await escrow.operator()
+  const escrowTreasury = await escrow.treasury()
 
   console.log('Escrow -> Registry:', escrowReg)
   console.log('Escrow -> Vault:', escrowVault)
-  console.log('Escrow -> USDC:', escrowUsdc)
+  console.log('Escrow -> Operator:', escrowOperator)
+  console.log('Escrow -> Treasury:', escrowTreasury)
 
-  const escrowOk = escrowReg === addresses.DAGRegistry && escrowVault === addresses.SlashingVault && escrowUsdc === addresses.MockUSDC
+  const escrowOk =
+    escrowReg === addresses.DAGRegistry &&
+    escrowVault === addresses.SlashingVault &&
+    escrowTreasury === addresses.SwarmTreasury
   console.log('Escrow Connections:', escrowOk ? 'OK' : 'FAILED')
 
   // 3. Check SlashingVault

@@ -4,8 +4,8 @@ import * as path from 'path'
 
 /**
  * Standalone deploy for AgentRegistry. Use this when the rest of the system
- * (MockUSDC / SwarmEscrow / DAGRegistry / SlashingVault) is already deployed
- * and you only want to bolt the public agent registry on top.
+ * (SwarmEscrow / DAGRegistry / SlashingVault) is already deployed and you
+ * only want to bolt the public agent registry on top.
  *
  * Reads the existing contracts/deployments/og_testnet.json, deploys the new
  * contract, and writes the AgentRegistry address back into the same file
