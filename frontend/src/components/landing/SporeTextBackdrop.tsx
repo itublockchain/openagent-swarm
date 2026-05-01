@@ -29,8 +29,10 @@ const VERTEX_SHADER = /* glsl */ `
     vec2 fromMouse = displaced.xy - uMouse;
     float dist = length(fromMouse);
     if (dist < uMouseRadius && dist > 0.0001) {
-      float falloff = 1.0 - dist / uMouseRadius;
-      falloff = pow(falloff, 2.0);
+      // Smoothstep S-curve gives a soft bell: zero slope at both center and edge,
+      // so particles ease in/out instead of snapping at the radius boundary.
+      float t = 1.0 - dist / uMouseRadius;
+      float falloff = smoothstep(0.0, 1.0, t);
       displaced.xy += normalize(fromMouse) * falloff * uMouseStrength;
     }
 
@@ -175,8 +177,8 @@ export function SporeTextBackdrop({
     const uniforms: Record<string, THREE.IUniform> = {
       uTime:          { value: 0 },
       uMouse:         { value: new THREE.Vector2(99999, 99999) },
-      uMouseRadius:   { value: 140 },
-      uMouseStrength: { value: 70 },
+      uMouseRadius:   { value: 170 },
+      uMouseStrength: { value: 26 },
       uPixelRatio:    { value: dpr },
       uPointSize:     { value: pointSize },
       uDriftAmp:      { value: 3.8 },
@@ -234,20 +236,23 @@ export function SporeTextBackdrop({
 
     buildPoints()
 
-    // Mouse: listen on window so the section's pointer-events:none doesn't block us.
+    // Lerped mouse: targetMouse is set instantly from pointer events; the uniform
+    // is eased toward it each frame. Smooths over fast pointer flicks and gives
+    // particles a slight inertia/trail feel instead of snapping to the cursor.
+    const targetMouse = new THREE.Vector2(99999, 99999)
     const onMouseMove = (e: MouseEvent) => {
       const rect = mount.getBoundingClientRect()
       const insideX = e.clientX >= rect.left && e.clientX <= rect.right
       const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom
       if (!insideX || !insideY) {
-        uniforms.uMouse.value.set(99999, 99999)
+        targetMouse.set(99999, 99999)
         return
       }
       const localX = e.clientX - rect.left - rect.width / 2
       const localY = -(e.clientY - rect.top - rect.height / 2)
-      uniforms.uMouse.value.set(localX, localY)
+      targetMouse.set(localX, localY)
     }
-    const onMouseLeave = () => uniforms.uMouse.value.set(99999, 99999)
+    const onMouseLeave = () => targetMouse.set(99999, 99999)
     window.addEventListener('mousemove', onMouseMove, { passive: true })
     window.addEventListener('mouseleave', onMouseLeave)
 
@@ -288,6 +293,11 @@ export function SporeTextBackdrop({
       if (!reduceMotion) {
         uniforms.uTime.value = (performance.now() - start) * 0.001
       }
+      // Ease the shader's mouse uniform toward the real cursor. 0.12 is slow
+      // enough to feel like the field has weight, fast enough not to lag.
+      const m = uniforms.uMouse.value as THREE.Vector2
+      m.x += (targetMouse.x - m.x) * 0.12
+      m.y += (targetMouse.y - m.y) * 0.12
       renderer.render(scene, camera)
     }
     animate()
