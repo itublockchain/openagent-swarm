@@ -240,9 +240,9 @@ function DashboardContent() {
                 committed: box.jury.committed.length,
               }
             : undefined,
-          // Forward the agent's reasoning payload so NodeDetailPanel can
-          // render the trace + final answer when the user clicks the node.
-          // Without these the panel always falls back to the empty state.
+          // Reasoning payload from SUBTASK_DONE — the hook captures these
+          // onto the box, but they only reach NodeDetailPanel if we forward
+          // them onto the flow node's data here.
           result: box.result,
           toolsUsed: box.toolsUsed,
           transcript: box.transcript,
@@ -564,7 +564,9 @@ function DashboardContent() {
 
           {/* Once a task is in flight (or one is loaded from ?taskId), the
               intent input is moot — we collapse it and show a compact dispatch
-              indicator. The "New intent" reset below brings the textarea back. */}
+              indicator. Once every subtask reaches `done` (or finalResult is
+              broadcast), we drop back to the input so the user can dispatch a
+              follow-up intent without first clicking "New intent". */}
           {(() => {
             const isDispatching =
               submitStep === 'preparing' ||
@@ -572,11 +574,27 @@ function DashboardContent() {
               submitStep === 'creating' ||
               submitStep === 'submitting';
             const hasActiveTask = !!taskIdFromUrl;
-            const showLoader = isDispatching || hasActiveTask;
+            const taskComplete =
+              !!dag?.finalResult ||
+              (!!dag && dag.boxes.length > 0 && dag.boxes.every(b => b.status === 'done'));
+            const showLoader = (isDispatching || hasActiveTask) && !taskComplete;
 
             if (!showLoader) {
               return (
                 <>
+                  {/* Completion banner — shown after the active task's DAG
+                      reaches done. Distinguishes "fresh idle" from "previous
+                      task finished, you can dispatch a follow-up". */}
+                  {taskComplete && hasActiveTask && (
+                    <div className="px-4 py-2 border-t border-border bg-green-500/5 flex items-center gap-2 text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                      <span className="text-green-700 dark:text-green-400 font-bold uppercase tracking-wider text-[10px]">
+                        Task completed
+                      </span>
+                      <span className="text-muted-foreground">— dispatch a new intent below</span>
+                    </div>
+                  )}
+
                   {/* Suggested intents — fills textarea, user reviews + dispatches */}
                   <IntentSuggestions
                     onPick={(text) => {
@@ -680,6 +698,8 @@ function DashboardContent() {
               onModelChange={setModel}
               onBudgetChange={setBudget}
               onColonyChange={setSelectedColony}
+              hideModel
+              hideBudget
             />
           </div>
         </div>

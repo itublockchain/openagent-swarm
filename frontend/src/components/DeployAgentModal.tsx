@@ -56,7 +56,8 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<Step>('idle')
   const [errorMsg, setErrorMsg] = useState('')
 
-  const { address: userAddress, isConnected } = useAccount()
+  const { address: userAddress, isConnected, connector } = useAccount()
+  const walletName = connector?.name?.trim() || 'your wallet'
   const currentChainId = useChainId()
   const { switchChainAsync } = useSwitchChain()
   const { writeContractAsync } = useWriteContract()
@@ -297,11 +298,11 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
     step === 'awaiting-active'
   const stepLabel: Record<Step, string> = {
     idle: '',
-    'switching-chain': 'Switch to 0G Galileo (chainId 16602) in your wallet…',
+    'switching-chain': `Switch to 0G Galileo (chainId 16602) in ${walletName}…`,
     preparing: 'Generating agent wallet…',
-    transferring: 'Sign the USDC transfer in your wallet (check MetaMask popup)…',
+    transferring: `Sign the USDC transfer (check ${walletName} popup)…`,
     deploying: 'Spawning Docker container…',
-    'awaiting-active': 'Registering on-chain — waiting for agent to go live in the swarm…',
+    'awaiting-active': 'Registering on-chain — waiting for agent to go live in the SPORE network…',
     done: '✓ Agent live in pool',
     error: errorMsg || 'Error',
   }
