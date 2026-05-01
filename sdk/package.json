@@ -1,0 +1,44 @@
+{
+  "name": "@spore/sdk",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for the SPORE protocol HTTP API.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx examples/smoke.ts",
+    "submit": "tsx examples/submit.ts"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "spore",
+    "sdk",
+    "ai-agents",
+    "swarm",
+    "0g"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.6.3"
+  }
+}

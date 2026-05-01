@@ -240,6 +240,15 @@ function DashboardContent() {
                 committed: box.jury.committed.length,
               }
             : undefined,
+          // Forward the agent's reasoning payload so NodeDetailPanel can
+          // render the trace + final answer when the user clicks the node.
+          // Without these the panel always falls back to the empty state.
+          result: box.result,
+          toolsUsed: box.toolsUsed,
+          transcript: box.transcript,
+          iterations: box.iterations,
+          stopReason: box.stopReason,
+          outputHash: box.outputHash,
         },
       });
 

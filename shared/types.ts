@@ -30,8 +30,19 @@ export enum EventType {
   CHALLENGE         = 'CHALLENGE',
   SLASH_EXECUTED    = 'SLASH_EXECUTED',
   TASK_REOPENED     = 'TASK_REOPENED',
+  /** Last node's output was just submitted on-chain; the planner-keeper has
+   *  not yet judged + markValidatedBatch + settleTask. Workers MUST NOT
+   *  treat this as task completion (no syncTaskCompletion, no busy-state
+   *  reset). UI shows "waiting keeper approval" until DAG_COMPLETED. */
+  DAG_VALIDATING    = 'DAG_VALIDATING',
   DAG_COMPLETED     = 'DAG_COMPLETED',
   TASK_FINALIZED    = 'TASK_FINALIZED',
+  /** Owner added or removed an agent from a colony. Payload: { colonyId,
+   *  agentId, change: 'added'|'removed' }. Lets agents update their local
+   *  myColonies set immediately instead of waiting for the next 30s poll —
+   *  closes the "just added the agent, gave a colony task, agent abstained"
+   *  race that was visible in demos. */
+  COLONY_MEMBERSHIP_CHANGED = 'COLONY_MEMBERSHIP_CHANGED',
 }
 
 export interface DAGNode {

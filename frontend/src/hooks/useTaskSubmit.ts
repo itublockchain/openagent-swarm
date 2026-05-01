@@ -73,9 +73,23 @@ export function useTaskSubmit(onLog?: (line: string) => void) {
       }
 
       // 1. Prepare — storage hash, decimals, escrow address.
+      // CRITICAL: send the EXACT body shape that step 4's /task POST will
+      // send. Backend hashes whatever passes its TaskSchema, and colonyId
+      // is in that schema — so a prepare body that omits colonyId derives
+      // a different taskIdBytes32 than the submit body, the user signs
+      // createTask for the prepare-derived id, and /task can't find that
+      // id on-chain (since the user actually created a different one).
+      // Symptom: createTask "succeeds" but the AXL broadcast 402s with
+      // "Task not found on-chain" — the per-colony submit flow looked
+      // broken end-to-end.
       const prepRes = await apiRequest('/task/prepare', {
         method: 'POST',
-        body: JSON.stringify({ spec: opts.spec, budget: opts.budget, nonce }),
+        body: JSON.stringify({
+          spec: opts.spec,
+          budget: opts.budget,
+          nonce,
+          colonyId: opts.colonyId,
+        }),
       })
       if (!prepRes.ok) {
         const e = await prepRes.json().catch(() => ({}))

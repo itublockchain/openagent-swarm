@@ -113,8 +113,15 @@ export default function ProfilePage() {
     return () => clearInterval(t)
   }, [isConnected, reloadAgents])
 
+  // Hide ERROR-status agents — orphan-sweep marks them when the on-chain
+  // record exists without a local secret (registry redeploy, lost volume),
+  // and the user can't recover them anyway. Showing dead rows just clutters
+  // the pool. Keep pending/running/stopped — those are still actionable.
   const myAgents = agents.filter(
-    a => address && a.ownerAddress?.toLowerCase() === address.toLowerCase(),
+    a =>
+      address &&
+      a.ownerAddress?.toLowerCase() === address.toLowerCase() &&
+      a.status !== 'error',
   )
 
   // Per-agent USDC balances — batched into a single multicall via wagmi.

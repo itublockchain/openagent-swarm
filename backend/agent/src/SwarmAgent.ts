@@ -74,6 +74,30 @@ export class SwarmAgent {
       this.onDAGReady(event)
     })
 
+    // Live membership update — fires when the API's addMember/removeMember
+    // route mutates a colony this agent might belong to. Skips the 30s
+    // poll window so a "create colony, add agent, dispatch task" sequence
+    // doesn't hit the abstain race. Only events that name THIS agent are
+    // relevant (broadcast is fan-out, every agent receives it).
+    this.deps.network.on(EventType.COLONY_MEMBERSHIP_CHANGED, (event) => {
+      const { colonyId, agentId, change } = event.payload as {
+        colonyId?: string
+        agentId?: string
+        change?: 'added' | 'removed'
+      }
+      if (!colonyId || !agentId || agentId !== this.deps.config.agentId) return
+      if (change === 'added') {
+        if (!this.myColonies.has(colonyId)) {
+          this.myColonies.add(colonyId)
+          console.log(`[Agent ${this.deps.config.agentId}] live membership add: ${colonyId}`)
+        }
+      } else if (change === 'removed') {
+        if (this.myColonies.delete(colonyId)) {
+          console.log(`[Agent ${this.deps.config.agentId}] live membership remove: ${colonyId}`)
+        }
+      }
+    })
+
     // --- Synchronization listeners (shared state) ---
     this.deps.network.on(EventType.PLANNER_SELECTED, (event) => {
       const { taskId, agentId } = event.payload as any
@@ -170,21 +194,26 @@ export class SwarmAgent {
       )
     })
 
+    // Keeper handoff: last subtask is on-chain but markValidatedBatch +
+    // settleTask haven't run yet. Only the planner of this task acts on
+    // it (judges + settles); every other agent ignores it so they don't
+    // drop their busy state before the chain is actually settled.
+    this.deps.network.on(EventType.DAG_VALIDATING, async (event) => {
+      const { taskId, lastNodeId, lastOutputHash } = event.payload as any
+      if (!this.plannerFor.has(taskId)) return
+      if (event.agentId === this.deps.config.agentId) return
+      console.log(`[Agent ${this.deps.config.agentId}] KEEPER: DAG_VALIDATING for ${taskId} — judging last node`)
+      await this.validateLastNodeAsPlanner(lastNodeId, lastOutputHash, taskId)
+    })
+
     this.deps.network.on(EventType.DAG_COMPLETED, async (event) => {
-      const { taskId, agentId, lastNodeId, lastOutputHash, needsPlannerValidation, settled } = event.payload as any
+      const { taskId, agentId } = event.payload as any
       console.log(`[Agent ${this.deps.config.agentId}] Received DAG_COMPLETED for ${taskId} from ${agentId || event.agentId}`)
 
-      // Planner keeper sorumluluğu: Başka bir agent son node'u tamamladıysa,
-      // planner olarak son çıktıyı denetle
-      if (needsPlannerValidation && this.plannerFor.has(taskId) && event.agentId !== this.deps.config.agentId) {
-        console.log(`[Agent ${this.deps.config.agentId}] KEEPER: Received last node for validation`)
-        await this.validateLastNodeAsPlanner(lastNodeId, lastOutputHash, taskId)
-        return
-      }
-
+      // DAG_COMPLETED now strictly means: keeper has judged, batch-validated
+      // and settled. Safe to sync chain state and free the agent.
       this.deps.chain.syncTaskCompletion(taskId, agentId || event.agentId)
 
-      // task bitti, boşa çık
       if (this.currentTaskId === taskId) {
         console.log(`[Agent ${this.deps.config.agentId}] Resetting busy state for task ${taskId}`)
         this.currentTaskId = null
@@ -366,6 +395,11 @@ export class SwarmAgent {
   private async runAsPlanner(event: AXLEvent<any>): Promise<void> {
     try {
       const { taskId, spec } = event.payload
+      // Forward the colony scope into DAG_READY so workers can run the
+      // same membership gate that planner-selection enforces — without
+      // it, non-member peers happily claim subtasks in colony-scoped
+      // DAGs (the gate at onTaskSubmitted only filters planner candidates).
+      const colonyId = event.payload?.colonyId
       const agentId = this.deps.config.agentId
       console.log(`[Agent ${agentId}] PLANNER for task ${taskId}`)
 
@@ -406,7 +440,8 @@ export class SwarmAgent {
       await this.deps.network.emit(this.buildEvent(EventType.DAG_READY, {
         nodes,
         taskId,
-        plannerAgentId: agentId
+        plannerAgentId: agentId,
+        colonyId,
       }))
 
       console.log(`[Agent ${agentId}] DAG_READY emitted, ${nodes.length} nodes`)
@@ -438,6 +473,17 @@ export class SwarmAgent {
   private async onDAGReady(event: AXLEvent<any>): Promise<void> {
     try {
       const { nodes, taskId } = event.payload
+
+      // Colony scope (worker side). Mirrors the planner-selection gate in
+      // onTaskSubmitted: a non-member peer that received DAG_READY over AXL
+      // must NOT cache the task or race claimFirstAvailable, otherwise it
+      // claims and earns from a colony-scoped task it has no business in.
+      // Public tasks (no colonyId) bypass this gate.
+      const colonyId = event.payload?.colonyId
+      if (colonyId && !this.myColonies.has(colonyId)) {
+        console.log(`[Agent ${this.deps.config.agentId}] DAG_READY for colony ${colonyId} task ${taskId} — not a member, abstain`)
+        return
+      }
 
       if (this.isBusyWithTimeout(taskId)) {
         return
@@ -839,13 +885,14 @@ export class SwarmAgent {
           // We're the planner-keeper — validate immediately.
           await this.validateLastNodeAsPlanner(node.id, outputHash, taskId)
         } else {
-          // Different agent finished the last node; signal the planner.
+          // Different agent finished the last node; ask the planner to judge
+          // + settle. Use DAG_VALIDATING (NOT DAG_COMPLETED) so peers don't
+          // free their busy state before settlement actually happens.
           console.log(`[Agent ${agentId}] last node done, signaling planner for validation`)
-          await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
+          await this.deps.network.emit(this.buildEvent(EventType.DAG_VALIDATING, {
             taskId,
             lastNodeId: node.id,
             lastOutputHash: outputHash,
-            needsPlannerValidation: true,
           }))
         }
       }
