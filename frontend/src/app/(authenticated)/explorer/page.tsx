@@ -177,7 +177,12 @@ function DashboardContent() {
           agent: box.agentId,
           passCount: box.passes?.length ?? 0,
           jury: box.jury
-            ? { guilty: box.jury.guilty, innocent: box.jury.innocent, voters: box.jury.voters.length }
+            ? {
+                guilty: box.jury.guilty,
+                innocent: box.jury.innocent,
+                voters: box.jury.voters.length,
+                committed: box.jury.committed.length,
+              }
             : undefined,
         },
       });
