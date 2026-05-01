@@ -10,7 +10,11 @@ out/
 # Environment variables
 .env
 .env.*
+.env.prod
+.env.local
+.env.*.local
 !.env.example
+.claude/
 
 # Logs
 npm-debug.log*
