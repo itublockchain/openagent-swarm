@@ -65,6 +65,25 @@ services:
     ports:
       - "7100:7000"
       - "9002:9002"
+    # Generate the ed25519 identity on first boot and persist it in the
+    # axl-keys volume so the node's public key stays stable across
+    # `docker compose down/up`. axl is a git submodule, so we keep this
+    # bootstrap out of the upstream image and apply it via entrypoint
+    # override here. The symlink puts the key where node-config.json
+    # expects it (`PrivateKeyPath: private.pem`, WORKDIR /app).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ ! -f /keys/private.pem ]; then
+          apk add --no-cache openssl >/dev/null
+          openssl genpkey -algorithm ed25519 -out /keys/private.pem
+          echo "[axl-seed] generated new private.pem"
+        fi
+        ln -sf /keys/private.pem /app/private.pem
+        exec ./node -config node-config.json
+    volumes:
+      - axl-keys:/keys
     # Bridge readiness probe. Without this, api/agent boot before AXL's
     # HTTP bridge accepts requests and AxlNetwork.connect() throws on the
     # first /topology fetch — leaving processes inert until manual restart.
@@ -117,3 +136,17 @@ services:
 networks:
   swarm_default:
     name: swarm_default
+
+volumes:
+  # Persists API-side agent secrets (encrypted private keys, container ids)
+  # across `docker compose down/up` so the pool can be reconstructed on the
+  # next boot. Loss of this volume = loss of agent control (on-chain entries
+  # would be marked ERROR by the orphan sweep on next start).
+  agents-data:
+    name: swarm_agents_data
+  # ed25519 identity for axl-seed. Generated on first boot by the
+  # axl-seed entrypoint; loss of this volume = node gets a new
+  # public key and any peers that hard-coded the old one will stop
+  # routing to it.
+  axl-keys:
+    name: swarm_axl_keys

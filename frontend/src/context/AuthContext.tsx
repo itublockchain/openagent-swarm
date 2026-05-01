@@ -1,10 +1,11 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { useAccount, useDisconnect, useSignMessage } from 'wagmi'
+import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi'
 import { SiweMessage } from 'siwe'
 import { AUTH_EXPIRED_EVENT } from '../../lib/api'
 import { ENV } from '../../lib/env'
+import { ogTestnet } from '../../lib/wagmi'
 
 interface AuthContextType {
   jwt: string | null
@@ -22,6 +23,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { address, isConnected, chain } = useAccount()
   const { disconnect } = useDisconnect()
   const { signMessageAsync } = useSignMessage()
+  const { switchChainAsync } = useSwitchChain()
   
   const [jwt, setJwt] = useState<string | null>(null)
   const [isAuthenticating, setIsAuthenticating] = useState(false)
@@ -50,6 +52,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAuthenticating(true)
 
     try {
+      // 0. Force wallet onto 0G Galileo before signing. The SIWE
+      // message's chainId must match the chain the wallet is actually
+      // on, and every post-login action (deploy/submit/stake) targets
+      // ogTestnet — switching here avoids a second wallet prompt the
+      // moment the user clicks anything.
+      if (chain?.id !== ogTestnet.id) {
+        console.log(`Switching wallet to chainId ${ogTestnet.id}...`)
+        try {
+          await switchChainAsync({ chainId: ogTestnet.id })
+        } catch (err: any) {
+          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
+            throw new Error('Add 0G Galileo testnet (chainId 16602, RPC https://evmrpc-testnet.0g.ai) to your wallet, then retry')
+          }
+          throw err
+        }
+      }
+
       // 1. Get Nonce
       console.log('Fetching nonce...')
       const nonceRes = await fetch(
@@ -66,7 +85,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         statement: 'Sign in to SPORE Execution Layer',
         uri: window.location.origin,
         version: '1',
-        chainId: chain?.id ?? 16602, // Fallback to 0G Galileo Testnet
+        chainId: ogTestnet.id,
         nonce,
       })
 
@@ -105,7 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsAuthenticating(false)
     }
-  }, [address, chain, signMessageAsync])
+  }, [address, chain, signMessageAsync, switchChainAsync])
 
   const signOut = useCallback(() => {
     localStorage.removeItem('spore_jwt')

@@ -23,8 +23,14 @@ export function WalletModal({ onClose, onAuthenticated }: Props) {
 
   const [error, setError] = useState<string | null>(null)
 
-  // Find primary connector (MetaMask preferred)
-  const primaryConnector = connectors.find(c => c.id === 'io.metamask.metamask' || c.id === 'metaMaskSDK') || connectors[0]
+  // Pick whichever injected wallet the user actually has. EIP-6963 makes
+  // MetaMask, Rabby, Coinbase etc. each register as a distinct connector,
+  // so we prefer any injected provider over the WalletConnect/SDK fallbacks.
+  // Last resort: connectors[0], so the connect button is never inert.
+  const primaryConnector =
+    connectors.find(c => c.type === 'injected') ||
+    connectors.find(c => c.id !== 'walletConnect' && c.id !== 'metaMaskSDK') ||
+    connectors[0]
 
   const handleAction = async () => {
     setError(null)
@@ -32,7 +38,7 @@ export function WalletModal({ onClose, onAuthenticated }: Props) {
       if (primaryConnector) {
         connect({ connector: primaryConnector })
       } else {
-        setError('No wallet detected. Please install MetaMask.')
+        setError('No wallet detected. Install MetaMask, Rabby, or another EVM wallet and refresh.')
       }
     } else {
       try {
