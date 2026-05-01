@@ -203,7 +203,7 @@ function DashboardContent() {
     
     const newFlowNodes: Node<NodeData>[] = [
       { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: `Active Task: ${dag.taskId.slice(0, 8)}...`, status: 'completed', agent: 'api-server' } },
-      { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: 'distributed-agent' } },
+      { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: dag.plannerId || 'Awaiting...' } },
     ];
     
     const newFlowEdges: Edge[] = [

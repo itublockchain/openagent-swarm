@@ -109,10 +109,10 @@ export default async function createServer(deps: ServerDeps) {
   // "pending" until SUBTASK_DONE events fire again (which they don't,
   // because the task is already over).
   deps.network.on(EventType.DAG_COMPLETED, (event: any) => {
-    const { taskId, settled } = event.payload ?? {}
+    const { taskId, result, settled } = event.payload ?? {}
     if (!taskId || !settled) return
     try {
-      taskIndex.markCompleted(taskId)
+      taskIndex.markCompleted(taskId, undefined, result)
     } catch (err) {
       console.warn(`[server] markCompleted failed for ${taskId}:`, err)
     }
@@ -821,7 +821,7 @@ export default async function createServer(deps: ServerDeps) {
     // matching secret) fall through to a best-effort container stop.
     const secret = deps.manager.getSecretMeta(id);
     if (secret?.ownerAddress &&
-        secret.ownerAddress.toLowerCase() !== user.address.toLowerCase()) {
+      secret.ownerAddress.toLowerCase() !== user.address.toLowerCase()) {
       return reply.status(403).send({ error: 'Only the owner can stop this agent' })
     }
     const result = await deps.manager.stop(id);
@@ -847,8 +847,8 @@ export default async function createServer(deps: ServerDeps) {
       const msg = (err as Error).message;
       const status = msg.includes('Not authorized') ? 403
         : msg.includes('not found') ? 404
-        : msg.includes('Invalid amount') || msg.includes('must be > 0') ? 400
-        : 500;
+          : msg.includes('Invalid amount') || msg.includes('must be > 0') ? 400
+            : 500;
       return reply.status(status).send({ error: msg });
     }
   });
@@ -873,8 +873,8 @@ export default async function createServer(deps: ServerDeps) {
       const msg = (err as Error).message;
       const status = msg.includes('Not authorized') ? 403
         : msg.includes('not found') ? 404
-        : msg.includes('positive decimal') ? 400
-        : 500;
+          : msg.includes('positive decimal') ? 400
+            : 500;
       return reply.status(status).send({ error: msg });
     }
   });

@@ -55,6 +55,8 @@ export interface SubtaskBox {
 
 export interface DAGState {
   taskId: string
+  plannerId?: string
+  finalResult?: string
   boxes: SubtaskBox[]
 }
 
@@ -85,6 +87,7 @@ export function useSporeEvents() {
           if (data && data.dag) {
             setDag({
               taskId: taskIdFromUrl,
+              plannerId: data.plannerId,
               boxes: data.dag.nodes.map((n: any) => ({
                 nodeId: n.id,
                 subtask: n.subtask,
@@ -130,8 +133,10 @@ export function useSporeEvents() {
       console.log('[useSporeEvents] DAG_READY received for task:', taskId);
 
       if (!taskIdFromUrl || matchesActiveTask(taskId)) {
+        const { plannerAgentId } = event.payload as any
         setDag({
           taskId,
+          plannerId: plannerAgentId,
           boxes: nodes.map((n: any) => ({
             nodeId: n.id,
             subtask: n.subtask,
@@ -140,6 +145,13 @@ export function useSporeEvents() {
           })),
         });
         if (!taskIdFromUrl) setTaskId(taskId);
+      }
+    }
+
+    const handleDAGCompleted = (event: WSEvent) => {
+      const { taskId, result, settled } = event.payload as any
+      if (settled && matchesActiveTask(taskId)) {
+        setDag(prev => prev ? { ...prev, finalResult: result } : null)
       }
     }
 
@@ -252,6 +264,7 @@ export function useSporeEvents() {
 
     wsClient.on('*', handleAll)
     wsClient.on(EventType.DAG_READY, handleDAGReady)
+    wsClient.on(EventType.DAG_COMPLETED, handleDAGCompleted)
     wsClient.on(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
     wsClient.on(EventType.SUBTASK_DONE, handleSubtaskDone)
     wsClient.on(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
@@ -265,6 +278,7 @@ export function useSporeEvents() {
     return () => {
       wsClient.off('*', handleAll)
       wsClient.off(EventType.DAG_READY, handleDAGReady)
+      wsClient.off(EventType.DAG_COMPLETED, handleDAGCompleted)
       wsClient.off(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
       wsClient.off(EventType.SUBTASK_DONE, handleSubtaskDone)
       wsClient.off(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
