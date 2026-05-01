@@ -35,6 +35,7 @@ interface UserTask {
   submitted_at: string
   status: 'pending' | 'completed'
   node_count: number
+  final_result: string | null
 }
 
 interface NodeResult {
@@ -539,6 +540,11 @@ export default function ProfilePage() {
                             <span>{new Date(t.submitted_at).toLocaleString()}</span>
                             {t.node_count > 0 && <span>{t.node_count} nodes</span>}
                           </div>
+                          {t.final_result && (
+                            <p className="mt-1.5 text-[11px] text-muted-foreground/80 italic line-clamp-1 border-l-2 border-primary/20 pl-2">
+                              &ldquo;{t.final_result.length > 120 ? t.final_result.slice(0, 117) + '…' : t.final_result}&rdquo;
+                            </p>
+                          )}
                         </div>
                         {isOpen ? (
                           <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />

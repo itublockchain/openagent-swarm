@@ -34,6 +34,12 @@ export interface UserTaskRow {
   /** Optional colony scope this task was routed to. Stored so per-colony
    *  stats (total / completed / pending) survive process restart. */
   colonyId: string | null
+  /** Agent who won the claimPlanner bid and produced the DAG. Set when
+   *  DAG_READY arrives. */
+  plannerId: string | null
+  /** Captured final aggregated result when DAG_COMPLETED(settled=true)
+   *  fires. Shown in task list snippets. */
+  finalResult: string | null
 }
 
 export interface ColonyTaskStats {
@@ -79,16 +85,22 @@ export class TaskIndex {
       // table scan as the index grows.
       this.db.exec(`CREATE INDEX IF NOT EXISTS user_tasks_colony_idx ON user_tasks(colony_id) WHERE colony_id IS NOT NULL`)
     }
+    if (!cols.some(c => c.name === 'final_result')) {
+      this.db.exec(`ALTER TABLE user_tasks ADD COLUMN final_result TEXT`)
+    }
+    if (!cols.some(c => c.name === 'planner_id')) {
+      this.db.exec(`ALTER TABLE user_tasks ADD COLUMN planner_id TEXT`)
+    }
   }
 
   /** Marks a task as completed. Called from server.ts on DAG_COMPLETED with
    *  settled=true. Idempotent — first non-null write wins, later calls are
    *  ignored so a re-broadcast doesn't reset the timestamp. */
-  markCompleted(taskId: string, when?: string): void {
+  markCompleted(taskId: string, when?: string, finalResult?: string): void {
     const ts = when ?? new Date().toISOString()
     this.db
-      .prepare(`UPDATE user_tasks SET completed_at = ? WHERE task_id = ? AND completed_at IS NULL`)
-      .run(ts, taskId)
+      .prepare(`UPDATE user_tasks SET completed_at = ?, final_result = COALESCE(?, final_result) WHERE task_id = ? AND completed_at IS NULL`)
+      .run(ts, finalResult ?? null, taskId)
   }
 
   /** Idempotent on conflict — re-broadcast of the same content-addressed
@@ -96,7 +108,7 @@ export class TaskIndex {
    *  Callers don't supply completedAt — it's filled in later by markCompleted
    *  when DAG_COMPLETED(settled=true) lands. colonyId is optional; null means
    *  "public task, no colony scope". */
-  record(row: Omit<UserTaskRow, 'submittedAt' | 'completedAt' | 'colonyId'> & {
+  record(row: Omit<UserTaskRow, 'submittedAt' | 'completedAt' | 'colonyId' | 'plannerId' | 'finalResult'> & {
     submittedAt?: string
     colonyId?: string | null
   }): void {
@@ -104,8 +116,8 @@ export class TaskIndex {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO user_tasks
-         (task_id, owner, spec, budget, source, submitted_at, model, colony_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (task_id, owner, spec, budget, source, submitted_at, model, colony_id, planner_id, final_result)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       )
       .run(row.taskId, row.owner.toLowerCase(), row.spec, row.budget, row.source, submittedAt, row.model ?? null, row.colonyId ?? null)
   }
@@ -128,7 +140,7 @@ export class TaskIndex {
   listForOwner(owner: string, limit = 100): UserTaskRow[] {
     const rows = this.db
       .prepare(
-        `SELECT task_id, owner, spec, budget, source, submitted_at, model, completed_at, colony_id
+        `SELECT task_id, owner, spec, budget, source, submitted_at, model, completed_at, colony_id, final_result, planner_id
          FROM user_tasks WHERE owner = ?
          ORDER BY submitted_at DESC LIMIT ?`,
       )
@@ -142,6 +154,8 @@ export class TaskIndex {
         model: string | null
         completed_at: string | null
         colony_id: string | null
+        final_result: string | null
+        planner_id: string | null
       }>
 
     return rows.map(r => ({
@@ -154,6 +168,8 @@ export class TaskIndex {
       model: r.model,
       completedAt: r.completed_at,
       colonyId: r.colony_id,
+      finalResult: r.final_result,
+      plannerId: r.planner_id,
     }))
   }
 
