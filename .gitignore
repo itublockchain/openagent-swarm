@@ -10,7 +10,11 @@ out/
 # Environment variables
 .env
 .env.*
+.env.prod
+.env.local
+.env.*.local
 !.env.example
+.claude/
 
 # Logs
 npm-debug.log*
@@ -58,3 +62,12 @@ contracts/artifacts/
 contracts/cache/
 contracts/typechain-types/
 contracts/deployments/
+
+# Persistent host bind-mount for the api service. Holds encrypted agent
+# secrets (agent-secrets.json) + SQLite (api.db). NEVER commit — the file
+# is AES-GCM encrypted under MASTER_KEY but exposing both wastes the
+# encryption boundary. Keep .gitkeep tracked so a fresh checkout still
+# has the directory present (compose creates it implicitly otherwise,
+# but explicit .gitkeep avoids surprises on Windows).
+data/*
+!data/.gitkeep

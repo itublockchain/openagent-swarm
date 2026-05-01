@@ -4,29 +4,26 @@ services:
     build:
       context: .
       dockerfile: backend/api/Dockerfile
-    ports:
-      - "3001:3001"
-    # All env vars are baked into backend/api/Dockerfile so a fresh
-    # checkout works without any local .env. To override individual
-    # values for a non-default deploy (e.g. ngrok URLs, multisig
-    # operator), add them under `environment:` here — compose values
-    # win over Dockerfile ENV at runtime.
-    #
-    # Operator key is interpolated from root .env so the contract
-    # operator can be rotated without rebuilding the image. The image's
-    # baked PRIVATE_KEY is a faucet-grade dev key; if you redeploy
-    # contracts with a different deployer EOA, set PRIVATE_KEY in .env
-    # to that key (same address must be `operator` on Treasury+Gateway,
-    # otherwise BridgeWatcher.creditBalance reverts "not operator").
-    # L2_PRIVATE_KEY mirrors PRIVATE_KEY — both are read by chain.ts /
-    # AgentRunner; keeping them aligned avoids a split-brain wallet.
-    environment:
-      PRIVATE_KEY: ${PRIVATE_KEY}
-      L2_PRIVATE_KEY: ${PRIVATE_KEY}
-      AGENT_PRIVATE_KEY: ${AGENT_PRIVATE_KEY:-${PRIVATE_KEY}}
+    expose:
+      - "3001"
+    # Runtime env precedence (highest first):
+    #   1. compose `environment:` (none below — left for ad-hoc overrides)
+    #   2. `env_file: .env` — every key from the repo-root .env lands here
+    #   3. Dockerfile ENV literals (fresh-checkout defaults)
+    # `required: false` so a clean clone with no .env still boots — the
+    # Dockerfile defaults carry the run.
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - agents-data:/data
+      # Host bind-mount instead of a named volume so `docker compose down -v`
+      # and `docker volume prune` can't wipe the encrypted agent secrets +
+      # api.db. Files live in ./data on the host, survive any compose teardown,
+      # are visible in the file explorer, and can be copied across machines.
+      # If you need to migrate from the legacy `swarm_agents_data` volume:
+      #   docker run --rm -v swarm_agents_data:/src -v "$PWD/data:/dst" alpine cp -a /src/. /dst/
+      - ./data:/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
@@ -51,9 +48,11 @@ services:
     build:
       context: .
       dockerfile: backend/agent/Dockerfile
-    # Same as `api`: all env vars baked into backend/agent/Dockerfile.
-    # Override individual values via `environment:` if you need a
-    # different agent identity / wallet for this baseline service.
+    # Same precedence as `api`: .env wins over Dockerfile ENV defaults.
+    # Optional so a no-.env clone still boots from baked defaults.
+    env_file:
+      - path: .env
+        required: false
     restart: on-failure
     depends_on:
       api:
@@ -69,9 +68,9 @@ services:
     build:
       context: ./axl
       dockerfile: containerfiles/Dockerfile
-    ports:
-      - "7100:7000"
-      - "9002:9002"
+    expose:
+      - "7000"
+      - "9002"
     # Generate the ed25519 identity on first boot and persist it in the
     # axl-keys volume so the node's public key stays stable across
     # `docker compose down/up`. axl is a git submodule, so we keep this
@@ -125,13 +124,29 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-    ports:
-      - "3000:3000"
-    # NEXT_PUBLIC_* are inlined at `next build` from frontend/Dockerfile
-    # ENV. To target a different backend (ngrok, sporeprotocol.xyz),
-    # rebuild with `docker compose build --build-arg` or edit the
-    # Dockerfile values directly — runtime `environment:` won't help
-    # because the bundle is already compiled.
+      # NEXT_PUBLIC_* values get inlined into the JS bundle at `next build`
+      # — they have to land as build args, not runtime env. Compose pulls
+      # `${NEXT_PUBLIC_*}` from the repo-root .env automatically; any var
+      # missing from .env falls through to the ARG default in the Dockerfile,
+      # so a fresh clone with no .env still builds against the local-docker
+      # / 0G-testnet defaults.
+      #
+      # To deploy against a different backend, set the vars in your .env and
+      # run `docker compose build frontend --no-cache`. The --no-cache is
+      # required: docker only invalidates the cache when ARG VALUES change
+      # in the Dockerfile, not when --build-arg or compose args change.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001/ws}
+        NEXT_PUBLIC_NETWORK_ID: ${NEXT_PUBLIC_NETWORK_ID:-16600}
+        NEXT_PUBLIC_REOWN_PROJECT_ID: ${NEXT_PUBLIC_REOWN_PROJECT_ID}
+        NEXT_PUBLIC_USDC_ADDRESS: ${NEXT_PUBLIC_USDC_ADDRESS}
+        NEXT_PUBLIC_ESCROW_ADDRESS: ${NEXT_PUBLIC_ESCROW_ADDRESS}
+        NEXT_PUBLIC_TREASURY_ADDRESS: ${NEXT_PUBLIC_TREASURY_ADDRESS}
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    expose:
+      - "3000"
     depends_on:
       api:
         condition: service_healthy
