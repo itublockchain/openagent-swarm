@@ -84,9 +84,14 @@ export class AgentSecretStore {
     } catch (err) {
       throw new Error(this.diagnosticMessage(dir, `mkdir ${dir} failed: ${(err as Error).message}`))
     }
-    const probe = path.join(dir, `.write-probe-${process.pid}-${Date.now()}`)
+    // Probe with the SAME naming pattern as the real persist target
+    // (a non-dotfile sibling of the real file), not a `.write-probe`
+    // dotfile. Some quirky overlay/FUSE filesystems handle dotfiles
+    // and regular files differently; matching the real pattern
+    // ensures a passing probe means the real write will pass too.
+    const probe = `${this.filePath}.probe-${process.pid}-${Date.now()}`
     try {
-      fs.writeFileSync(probe, 'ok', 'utf-8')
+      this.writeWithRetry(probe, 'ok', dir)
       fs.unlinkSync(probe)
     } catch (err) {
       throw new Error(
@@ -167,26 +172,93 @@ export class AgentSecretStore {
     this.loaded = true
   }
 
+  /**
+   * Write `payload` to `target`, retrying briefly on transient ENOENT.
+   *
+   * Docker Desktop on macOS (and some other FUSE/virtio-fs setups) flap
+   * bind-mount state between syscalls — `stat()` reports the directory
+   * exists, the very next `open(O_CREAT)` returns ENOENT, then a
+   * millisecond later it works fine. The boot-time probe + diagnostic
+   * message confirmed the dir is real and writable as root, so retry is
+   * the right tool here. We re-issue mkdir between attempts in case the
+   * mount snapshot truly lost the dir entry.
+   */
+  private writeWithRetry(target: string, payload: string, dir: string): void {
+    const maxAttempts = 5
+    let lastErr: NodeJS.ErrnoException | null = null
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        fs.mkdirSync(dir, { recursive: true })
+        // openSync+writeSync+fsyncSync+closeSync gives us a tighter
+        // syscall sequence than writeFileSync (which closes before
+        // we can fsync), and an explicit fd makes the failure mode
+        // unambiguous when something deeper is wrong.
+        const fd = fs.openSync(target, 'w')
+        try {
+          fs.writeSync(fd, payload, 0, 'utf-8')
+          fs.fsyncSync(fd)
+        } finally {
+          fs.closeSync(fd)
+        }
+        return
+      } catch (err) {
+        lastErr = err as NodeJS.ErrnoException
+        if (lastErr.code !== 'ENOENT' || attempt === maxAttempts) {
+          throw lastErr
+        }
+        // Sync sleep with exp backoff (1, 2, 4, 8 ms). Persist() is sync
+        // because every caller (save/update/delete) is sync — switching
+        // to async here would propagate to AgentRunner and the route
+        // handlers. The total worst-case wait is 15ms, which is cheaper
+        // than even a single network round-trip the caller is about to
+        // make anyway.
+        const ms = 1 << (attempt - 1)
+        const until = Date.now() + ms
+        while (Date.now() < until) { /* spin */ }
+      }
+    }
+    // Unreachable — loop either returns or throws.
+    throw lastErr ?? new Error('writeWithRetry exhausted')
+  }
+
   private persist(): void {
     const out: Record<string, SerializedSecret> = {}
     for (const [id, secret] of this.cache.entries()) {
       out[id] = this.encrypt(JSON.stringify(secret))
     }
     const dir = path.dirname(this.filePath)
-    try {
-      fs.mkdirSync(dir, { recursive: true })
-    } catch (err) {
-      throw new Error(this.diagnosticMessage(dir, `cannot create ${dir} (${(err as Error).message})`))
-    }
-    // Atomic replace: write to a sibling file then rename, so a crash mid-write
-    // doesn't truncate the store.
+    const payload = JSON.stringify(out, null, 2)
+
+    // Atomic replace: write to a sibling file then rename, so a crash
+    // mid-write doesn't truncate the store.
     const tmp = this.filePath + '.tmp'
     try {
-      fs.writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf-8')
+      this.writeWithRetry(tmp, payload, dir)
+      fs.renameSync(tmp, this.filePath)
+      return
     } catch (err) {
-      throw new Error(this.diagnosticMessage(dir, `cannot write ${tmp} (${(err as Error).message})`))
+      const code = (err as NodeJS.ErrnoException).code
+      // If the .tmp+rename path keeps tripping ENOENT (Docker Desktop
+      // bind-mount issue that won't clear in <15ms), fall back to a
+      // direct write to the destination. We lose strict atomicity —
+      // a crash mid-write here truncates the file — but the
+      // alternative is the user's deploy hard-failing and the new
+      // agent's private key being lost forever. Logged loud so an
+      // operator sees the degradation.
+      if (code !== 'ENOENT') {
+        throw new Error(this.diagnosticMessage(dir, `cannot write ${tmp} (${(err as Error).message})`))
+      }
+      console.warn(
+        `[AgentSecretStore] tmp-write to ${tmp} kept hitting ENOENT after retries; ` +
+        `falling back to direct write of ${this.filePath} (atomicity degraded). ` +
+        `This usually indicates a Docker Desktop / FUSE bind-mount flap on the host volume.`,
+      )
+      try {
+        this.writeWithRetry(this.filePath, payload, dir)
+      } catch (err2) {
+        throw new Error(this.diagnosticMessage(dir, `direct write to ${this.filePath} also failed (${(err2 as Error).message})`))
+      }
     }
-    fs.renameSync(tmp, this.filePath)
   }
 
   save(secret: AgentSecret): void {
