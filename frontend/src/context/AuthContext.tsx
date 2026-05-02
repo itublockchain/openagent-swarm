@@ -1,7 +1,7 @@
 'use client'
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import { useAccount, useDisconnect, useSignMessage, useSwitchChain } from 'wagmi'
+import { useAccount, useDisconnect, useSignMessage } from 'wagmi'
 import { SiweMessage } from 'siwe'
 import { AUTH_EXPIRED_EVENT } from '../../lib/api'
 import { ENV } from '../../lib/env'
@@ -23,8 +23,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { address, isConnected, chain } = useAccount()
   const { disconnect } = useDisconnect()
   const { signMessageAsync } = useSignMessage()
-  const { switchChainAsync } = useSwitchChain()
-  
+
+
   const [jwt, setJwt] = useState<string | null>(null)
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [mounted, setMounted] = useState(false)
@@ -52,21 +52,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsAuthenticating(true)
 
     try {
-      // 0. Force wallet onto Base Sepolia before signing. Deposits
-      // (the only on-chain action the user signs in this app) live on
-      // Base — keeping SIWE on the same chain means no second wallet
-      // prompt when the user clicks "Deposit" right after connecting.
-      if (chain?.id !== paymentChain.id) {
-        console.log(`Switching wallet to chainId ${paymentChain.id}...`)
-        try {
-          await switchChainAsync({ chainId: paymentChain.id })
-        } catch (err: any) {
-          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
-            throw new Error('Add Base Sepolia (chainId 84532) to your wallet, then retry')
-          }
-          throw err
-        }
-      }
+      // SIWE chainId is now derived from whatever chain the wallet is
+      // connected to. With Circle CCTP V2, deposits can originate on
+      // Eth Sepolia / Arb Sepolia / Base Sepolia — pinning SIWE to one
+      // chain forced an extra wallet switch. The backend's siwe verify
+      // doesn't constrain chainId, so this is safe.
+      const siweChainId = chain?.id ?? paymentChain.id
 
       // 1. Get Nonce
       console.log('Fetching nonce...')
@@ -84,7 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         statement: 'Sign in to SPORE Execution Layer',
         uri: window.location.origin,
         version: '1',
-        chainId: paymentChain.id,
+        chainId: siweChainId,
         nonce,
       })
 
@@ -123,7 +114,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsAuthenticating(false)
     }
-  }, [address, chain, signMessageAsync, switchChainAsync])
+  }, [address, chain, signMessageAsync])
 
   const signOut = useCallback(() => {
     localStorage.removeItem('spore_jwt')

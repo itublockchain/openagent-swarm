@@ -24,7 +24,9 @@ import { registerBalanceRoutes } from './v1/balanceRoutes'
 import { registerAgentsRoutes } from './v1/agentsRoutes'
 import { registerProfileRoutes } from './v1/profileRoutes'
 import { registerWithdrawRoutes } from './v1/withdrawRoutes'
+import { registerCctpRoutes } from './v1/cctpRoutes'
 import { BridgeWatcher } from './BridgeWatcher'
+import { CCTPRelayer } from './CCTPRelayer'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
 const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
@@ -932,12 +934,21 @@ export default async function createServer(deps: ServerDeps) {
   // flat USDC fee from their Treasury balance.
   await registerWithdrawRoutes(fastify, { requireAuth })
 
-  // BridgeWatcher mirrors USDCGateway.Deposited (Base) → Treasury.creditBalance
-  // (0G). Boots in the background — failure to start is logged but does
-  // not block server startup; the watcher itself is robust to
-  // disconnects/restarts.
+  // BridgeWatcher mirrors USDCGateway.Deposited AND CCTPDepositReceiver.Deposited
+  // (Base) → Treasury.creditBalance (0G). Boots in the background — failure to
+  // start is logged but does not block server startup; the watcher itself is
+  // robust to disconnects/restarts.
   const bridgeWatcher = new BridgeWatcher()
   bridgeWatcher.start().catch(err => console.error('[server] BridgeWatcher start failed:', err))
+
+  // CCTPRelayer drives Circle CCTP V2 cross-chain USDC deposits: source-chain
+  // burn → Iris attestation → MessageTransmitterV2.receiveMessage on Base →
+  // CCTPDepositReceiver hook emits Deposited → BridgeWatcher credits 0G.
+  // We pass the BridgeWatcher reference so /v1/cctp/status can flip "relayed"
+  // → "credited" based on the watcher's processedKeys set.
+  const cctpRelayer = new CCTPRelayer(bridgeWatcher)
+  cctpRelayer.start().catch(err => console.error('[server] CCTPRelayer start failed:', err))
+  await registerCctpRoutes(fastify, { requireAuth, relayer: cctpRelayer })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
   await registerProfileRoutes(fastify, {

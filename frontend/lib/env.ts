@@ -44,4 +44,8 @@ export const ENV = {
    *  if unset, deposit UI shows a config error rather than letting the
    *  user sign a transfer to nowhere. */
   GATEWAY_ADDRESS: optional(process.env.NEXT_PUBLIC_GATEWAY_ADDRESS) as `0x${string}` | undefined,
+  /** CCTPDepositReceiver address on Base Sepolia. The CCTP path uses
+   *  this as the `mintRecipient` argument to depositForBurnWithHook. */
+  CCTP_RECEIVER_ADDRESS:
+    optional(process.env.NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS) as `0x${string}` | undefined,
 } as const

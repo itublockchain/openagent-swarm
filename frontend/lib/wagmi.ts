@@ -1,12 +1,12 @@
 import { http, createConfig } from 'wagmi'
-import { baseSepolia, mainnet, sepolia } from 'wagmi/chains'
+import { baseSepolia, sepolia, arbitrumSepolia } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors'
 
-// Base Sepolia is the payment chain — users deposit real USDC here, and
-// SIWE auth signs against this chainId so the connected wallet doesn't
-// need to keep hopping. The swarm itself runs on 0G Galileo testnet
-// but users never touch that chain directly; the API operator handles
-// all 0G-side signing.
+// Base Sepolia is where USDC custody lands (USDCGateway + CCTPDepositReceiver).
+// Users may deposit from any CCTP-supported source chain (sepolia,
+// arbitrumSepolia today) and the bridge converges to Base. SIWE auth signs on
+// whatever chain the user is connected to — the chain is decoupled from
+// custody so users don't have to chain-hop just to sign in.
 export const paymentChain = baseSepolia
 
 // 0G testnet chain definition is kept for reference (and for any internal
@@ -25,13 +25,13 @@ export const ogTestnet = {
 } as const
 
 export const config = createConfig({
-  chains: [baseSepolia, mainnet, sepolia],
+  chains: [baseSepolia, sepolia, arbitrumSepolia],
   connectors: [
     injected(),
   ],
   transports: {
     [baseSepolia.id]: http(),
-    [mainnet.id]: http(),
     [sepolia.id]: http(),
+    [arbitrumSepolia.id]: http(),
   },
 })
