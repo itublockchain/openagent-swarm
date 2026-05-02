@@ -47,7 +47,7 @@ function DashboardContent() {
     "Ready to generate and deploy DAG."
   ]);
 
-  const { dag, events, taskIdFromUrl } = useSporeEvents();
+  const { dag, events, taskIdFromUrl, accessDenied } = useSporeEvents();
 
   // Resizable right panel: min = 380px (initial size), max = 50vw.
   // Inline width is only applied at md+ — below that the panel stacks full-width.
@@ -449,7 +449,30 @@ function DashboardContent() {
               <Background color="#888" gap={20} />
               <Controls className="fill-foreground" />
             </ReactFlow>
-            <CanvasEmptyState visible={nodes.length === 0 && submitStep === 'idle' && !taskIdFromUrl} />
+            <CanvasEmptyState visible={nodes.length === 0 && submitStep === 'idle' && !taskIdFromUrl && !accessDenied} />
+
+            {/* Unauthorized deep-link state — shown when the connected wallet
+                isn't the task owner (or no wallet is connected). The backend
+                refuses both REST and WS reads for this case; the UI surfaces
+                that as an explicit "private task" message instead of an
+                indefinite empty canvas. */}
+            {accessDenied && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/80 backdrop-blur-sm">
+                <div className="max-w-md text-center px-6">
+                  <div className="text-xs font-mono uppercase tracking-widest text-red-500 mb-2">403 — Private task</div>
+                  <h2 className="text-lg font-bold mb-2">This task is owner-restricted</h2>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Only the wallet that submitted this task can view its DAG and results. Connect the owner wallet, or dispatch your own intent to start a new task.
+                  </p>
+                  <button
+                    onClick={() => router.replace('/explorer')}
+                    className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider border border-border rounded-md hover:bg-muted transition-colors"
+                  >
+                    Back to explorer
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Status legend */}
             {nodes.length > 0 && (

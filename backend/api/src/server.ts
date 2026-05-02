@@ -590,9 +590,25 @@ export default async function createServer(deps: ServerDeps) {
   });
 
   // GET /task/:taskId
-  // Now fetches only from storage. Live state is reconstructed by frontend via WebSocket.
+  // Owner-scoped: only the wallet that submitted the task may read its DAG /
+  // results. Anyone hitting a deep link without auth (or with a non-owner
+  // wallet) gets a 403 and the explorer flips into the "unauthorized" empty
+  // state. Live state is reconstructed by frontend via WebSocket.
   fastify.get('/task/:taskId', async (request, reply) => {
+    const user = requireAuth(request, reply)
+    if (!user) return
     const { taskId } = request.params as any;
+    const owner = resolveTaskOwner(taskId)
+    if (!owner) {
+      // Unknown task — return 404 instead of 403 so we don't leak the
+      // existence of arbitrary taskIds via timing/error-code probes.
+      reply.code(404)
+      return { error: 'Task not found', taskId }
+    }
+    if (owner !== user.address.toLowerCase()) {
+      reply.code(403)
+      return { error: 'Forbidden — not the task owner', code: 'FORBIDDEN' }
+    }
     let task: unknown = null
     try {
       task = await deps.storage.fetch(taskId);
@@ -768,9 +784,22 @@ export default async function createServer(deps: ServerDeps) {
    * GET /result/:taskId
    * Returns the aggregated subtask results for a completed task.
    * Results are collected from SUBTASK_DONE events broadcast by agents.
+   * Owner-scoped — same gate as /task/:taskId so the legacy endpoint
+   * doesn't sidestep the privacy model.
    */
   fastify.get('/result/:taskId', async (request, reply) => {
+    const user = requireAuth(request, reply)
+    if (!user) return
     const { taskId } = request.params as any;
+    const owner = resolveTaskOwner(taskId)
+    if (!owner) {
+      reply.code(404)
+      return { error: 'Task not found', taskId }
+    }
+    if (owner !== user.address.toLowerCase()) {
+      reply.code(403)
+      return { error: 'Forbidden — not the task owner', code: 'FORBIDDEN' }
+    }
     const result = taskResultsView(taskId);
     if (!result) {
       reply.code(404)
@@ -972,6 +1001,21 @@ export default async function createServer(deps: ServerDeps) {
       }
       if (!msg || typeof msg !== 'object') return
       if (msg.type === 'subscribe' && typeof msg.taskId === 'string') {
+        // Privacy gate: a task is visible only to its submitter. Anonymous
+        // sockets can't subscribe to anything; authenticated sockets can
+        // only subscribe to their own tasks. Unknown owner is treated as
+        // forbidden too — without this, a probe could distinguish "task
+        // doesn't exist" from "task isn't yours" via the rejection reason.
+        const owner = resolveTaskOwner(msg.taskId)
+        if (!owner || owner !== userAddress) {
+          send({
+            type: 'subscribe_rejected',
+            payload: { taskId: msg.taskId, reason: 'forbidden' },
+            timestamp: Date.now(),
+            agentId: 'api-server',
+          })
+          return
+        }
         subscribedTaskIds.add(msg.taskId)
       } else if (msg.type === 'unsubscribe' && typeof msg.taskId === 'string') {
         subscribedTaskIds.delete(msg.taskId)

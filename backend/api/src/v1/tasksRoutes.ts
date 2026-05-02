@@ -41,6 +41,32 @@ interface RegisterOpts {
 }
 
 /**
+ * Owner gate shared by GET /v1/tasks/:id and /v1/tasks/:id/result. A task
+ * is visible only to the wallet that submitted it. Returns true on allow,
+ * false (and writes the response) on deny — caller just bails on false.
+ *
+ * Unknown task → 404 (don't leak existence via 403/404 timing); known but
+ * non-owner → 403 FORBIDDEN.
+ */
+function gateTaskOwner(
+  taskIndex: TaskIndex,
+  taskId: string,
+  callerAddress: string,
+  reply: any,
+): boolean {
+  const owner = taskIndex.getOwner(taskId)
+  if (!owner) {
+    reply.status(404).send({ error: 'Task not found', code: 'NOT_FOUND' })
+    return false
+  }
+  if (owner !== callerAddress.toLowerCase()) {
+    reply.status(403).send({ error: 'Forbidden — not the task owner', code: 'FORBIDDEN' })
+    return false
+  }
+  return true
+}
+
+/**
  * Match server.ts: a specHash that already looks like a 0x-prefixed 32-byte
  * hex passes through; otherwise we keccak the storage hash to get bytes32.
  */
@@ -229,6 +255,8 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
   // GET /v1/tasks/:id
   app.get<{ Params: { id: string } }>('/v1/tasks/:id', { onRequest: [auth, readGate] }, async (request, reply) => {
     const { id } = request.params
+    const ctx = request.apiKey!
+    if (!gateTaskOwner(taskIndex, id, ctx.userAddress, reply)) return
     const stored = await storage.fetch(id).catch(() => null)
     if (!stored) {
       reply.status(404).send({ error: 'Task not found' })
@@ -254,6 +282,8 @@ export async function registerTasksRoutes(app: FastifyInstance, opts: RegisterOp
     { onRequest: [auth, readGate] },
     async (request, reply) => {
       const { id } = request.params
+      const ctx = request.apiKey!
+      if (!gateTaskOwner(taskIndex, id, ctx.userAddress, reply)) return
       const result = taskResults.get(id)
       if (!result) {
         reply.status(404).send({

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { wsClient, WSEvent } from '../lib/ws'
 import { EventType, TranscriptStep } from '../../../shared/types'
 import { ENV } from '../../lib/env'
+import { apiRequest } from '../../lib/api'
 import { useAuth } from '../context/AuthContext'
 
 export type SubtaskStatus = 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
@@ -76,6 +77,10 @@ export function useSporeEvents() {
 
   const [dag, setDag] = useState<DAGState | null>(null)
   const [events, setEvents] = useState<WSEvent[]>([])
+  // True when the deep-linked taskId belongs to someone else (or doesn't
+  // exist). Surfaced by the explorer page as a "you don't have access"
+  // empty state instead of leaving the canvas blank as if loading.
+  const [accessDenied, setAccessDenied] = useState(false)
 
   // taskId URL'e yaz
   const setTaskId = useCallback((taskId: string) => {
@@ -86,39 +91,57 @@ export function useSporeEvents() {
 
   // --- Initial State Fetch ---
   useEffect(() => {
-    if (taskIdFromUrl && !dag) {
-      const fetchState = async () => {
-        try {
-          const res = await fetch(`${ENV.API_URL}/task/${taskIdFromUrl}`)
-          const data = await res.json()
-          if (data && data.dag) {
-            setDag({
-              taskId: taskIdFromUrl,
-              plannerId: data.plannerId,
-              boxes: data.dag.nodes.map((n: any) => ({
-                nodeId: n.id,
-                subtask: n.subtask,
-                status: n.status || 'idle',
-                agentId: n.agentId,
-                outputHash: n.outputHash,
-                passes: [],
-                // Reasoning payload from the API's persisted SUBTASK_DONE row.
-                // Lets the per-node detail panel repaint after refresh
-                // instead of waiting for a (never-coming) live event.
-                result: n.result,
-                toolsUsed: n.toolsUsed,
-                transcript: n.transcript,
-                iterations: n.iterations,
-                stopReason: n.stopReason,
-              }))
-            })
-          }
-        } catch (err) {
-          console.error('[useSporeEvents] Failed to fetch task state:', err)
-        }
-      }
-      fetchState()
+    if (!taskIdFromUrl) {
+      setAccessDenied(false)
+      return
     }
+    if (dag) return
+    // /task/:id is owner-gated server-side; apiRequest stamps the JWT
+    // automatically so the backend can verify the caller. 401/403/404
+    // all collapse to "no access for this viewer" — the explorer paints
+    // an unauthorized empty state and waits for the user to navigate
+    // away (or sign in as the owner).
+    const fetchState = async () => {
+      try {
+        const res = await apiRequest(`/task/${taskIdFromUrl}`)
+        if (res.status === 401 || res.status === 403 || res.status === 404) {
+          setAccessDenied(true)
+          setDag(null)
+          return
+        }
+        if (!res.ok) {
+          console.error('[useSporeEvents] task fetch non-OK:', res.status)
+          return
+        }
+        const data = await res.json()
+        if (data && data.dag) {
+          setAccessDenied(false)
+          setDag({
+            taskId: taskIdFromUrl,
+            plannerId: data.plannerId,
+            boxes: data.dag.nodes.map((n: any) => ({
+              nodeId: n.id,
+              subtask: n.subtask,
+              status: n.status || 'idle',
+              agentId: n.agentId,
+              outputHash: n.outputHash,
+              passes: [],
+              // Reasoning payload from the API's persisted SUBTASK_DONE row.
+              // Lets the per-node detail panel repaint after refresh
+              // instead of waiting for a (never-coming) live event.
+              result: n.result,
+              toolsUsed: n.toolsUsed,
+              transcript: n.transcript,
+              iterations: n.iterations,
+              stopReason: n.stopReason,
+            }))
+          })
+        }
+      } catch (err) {
+        console.error('[useSporeEvents] Failed to fetch task state:', err)
+      }
+    }
+    fetchState()
   }, [taskIdFromUrl, dag])
 
   useEffect(() => {
@@ -134,6 +157,18 @@ export function useSporeEvents() {
     const handleAll = (event: WSEvent) => {
       console.log('[useSporeEvents] Incoming event:', event.type, event.payload);
       setEvents(prev => [event, ...prev].slice(0, 50))
+    }
+
+    // Server says we're not allowed to watch this task. Mirrors the REST
+    // 403 path so a user who landed via deep link sees the same "no
+    // access" state regardless of whether they had a stale fetch result
+    // cached or not.
+    const handleSubscribeRejected = (event: WSEvent) => {
+      const { taskId } = event.payload as any
+      if (taskId === taskIdFromUrl) {
+        setAccessDenied(true)
+        setDag(null)
+      }
     }
 
     // Backend already scopes per-user / per-subscription, so any taskId
@@ -312,6 +347,7 @@ export function useSporeEvents() {
     }
 
     wsClient.on('*', handleAll)
+    wsClient.on('subscribe_rejected', handleSubscribeRejected)
     wsClient.on(EventType.DAG_READY, handleDAGReady)
     wsClient.on(EventType.DAG_VALIDATING, handleDAGValidating)
     wsClient.on(EventType.DAG_COMPLETED, handleDAGCompleted)
@@ -327,6 +363,7 @@ export function useSporeEvents() {
 
     return () => {
       wsClient.off('*', handleAll)
+      wsClient.off('subscribe_rejected', handleSubscribeRejected)
       wsClient.off(EventType.DAG_READY, handleDAGReady)
       wsClient.off(EventType.DAG_VALIDATING, handleDAGValidating)
       wsClient.off(EventType.DAG_COMPLETED, handleDAGCompleted)
@@ -349,5 +386,5 @@ export function useSporeEvents() {
     }
   }, [taskIdFromUrl, setTaskId, jwt, address])
 
-  return { dag, events, taskIdFromUrl }
+  return { dag, events, taskIdFromUrl, accessDenied }
 }
