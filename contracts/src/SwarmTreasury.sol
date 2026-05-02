@@ -40,34 +40,9 @@ contract SwarmTreasury is Ownable, ReentrancyGuard, Pausable {
     /// BridgeWatcher service mirrors USDCGateway.Deposited events here.
     mapping(address => uint256) public balanceOf;
 
-    /// Per-key freeze flag. Set by the key's bound owner; respected on spend.
-    mapping(bytes32 => bool) public frozenKey;
-
-    /// keyHash → owning user. Set once via `bindKey`. Prevents anyone but
-    /// the binding user from freezing a hash they happen to know.
-    mapping(bytes32 => address) public keyOwner;
-
-    /// Per-user 24h sliding spend cap. 0 = unlimited (operator can spend up
-    /// to the user's full balance). Users SHOULD set this to bound the blast
-    /// radius if a key leaks.
-    mapping(address => uint256) public dailyCap;
-    mapping(address => uint256) public dailyWindowStart;
-    mapping(address => uint256) public dailySpent;
-
-    uint256 public constant DAILY_WINDOW = 1 days;
-
-    /// Cumulative gas-fee USDC pulled from each user across all
-    /// `deductGas` calls. Useful for analytics; doesn't gate anything.
-    mapping(address => uint256) public gasSpent;
-
-    event Deposited(address indexed user, uint256 amount, uint256 newBalance);
-    event Withdrew(address indexed user, uint256 amount, uint256 newBalance);
-    event SpentOnBehalf(address indexed user, bytes32 indexed taskId, uint256 amount, bytes32 indexed keyHash);
-    event GasDeducted(address indexed user, uint256 amount, bytes32 indexed keyHash);
-    event KeyBound(bytes32 indexed keyHash, address indexed owner);
-    event KeyFrozen(bytes32 indexed keyHash);
-    event KeyUnfrozen(bytes32 indexed keyHash);
-    event DailyCapSet(address indexed user, uint256 cap);
+    event Credited(address indexed user, uint256 amount, uint256 newBalance);
+    event Debited(address indexed user, uint256 amount, uint256 newBalance);
+    event SpentOnBehalf(address indexed user, bytes32 indexed taskId, uint256 amount);
     event OperatorChanged(address indexed prevOperator, address indexed newOperator);
 
     modifier onlyOperator() {
@@ -111,37 +86,6 @@ contract SwarmTreasury is Ownable, ReentrancyGuard, Pausable {
     // ============================================================
     // Operator — spends user balances against the Escrow
     // ============================================================
-
-    /**
-     * @notice Pull gas-fee USDC from `user`'s pre-funded balance into the
-     *         operator wallet. Operator-only; the SDK service uses this
-     *         to bill the gas it just paid for a chain tx made on behalf
-     *         of the user (e.g. SporeCoordinator.submitTask). Distinct
-     *         from `spendOnBehalfOf` — this path doesn't touch Escrow,
-     *         it's a direct transfer to the operator's pool.
-     *
-     *         Same key-binding + freeze checks as spendOnBehalfOf so a
-     *         compromised key can't be used to drain the user's gas
-     *         budget. Daily-cap is NOT applied here; gas billing should
-     *         not be rate-limited by the user's task-spend cap.
-     */
-    function deductGas(
-        address user,
-        uint256 amount,
-        bytes32 keyHash
-    ) external onlyOperator nonReentrant whenNotPaused {
-        require(amount > 0, "zero amount");
-        require(!frozenKey[keyHash], "key frozen");
-        require(keyOwner[keyHash] == user, "key/user mismatch");
-        uint256 bal = balanceOf[user];
-        require(bal >= amount, "insufficient balance");
-
-        balanceOf[user] = bal - amount;
-        gasSpent[user] += amount;
-        usdc.safeTransfer(operator, amount);
-
-        emit GasDeducted(user, amount, keyHash);
-    }
 
     function spendOnBehalfOf(
         address user,
