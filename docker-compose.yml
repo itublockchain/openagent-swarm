@@ -4,8 +4,8 @@ services:
     build:
       context: .
       dockerfile: backend/api/Dockerfile
-    ports:
-      - "3001:3001"
+    expose:
+      - "3001"
     # Runtime env precedence (highest first):
     #   1. compose `environment:` (none below — left for ad-hoc overrides)
     #   2. `env_file: .env` — every key from the repo-root .env lands here
@@ -17,13 +17,7 @@ services:
         required: false
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Host bind-mount instead of a named volume so `docker compose down -v`
-      # and `docker volume prune` can't wipe the encrypted agent secrets +
-      # api.db. Files live in ./data on the host, survive any compose teardown,
-      # are visible in the file explorer, and can be copied across machines.
-      # If you need to migrate from the legacy `swarm_agents_data` volume:
-      #   docker run --rm -v swarm_agents_data:/src -v "$PWD/data:/dst" alpine cp -a /src/. /dst/
-      - ./data:/data
+      - spore_data:/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
@@ -154,8 +148,8 @@ services:
         NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS: ${NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS}
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-    ports:
-      - "3000:3000"
+    expose:
+      - "3000"
     depends_on:
       api:
         condition: service_healthy
@@ -181,3 +175,6 @@ volumes:
   # routing to it.
   axl-keys:
     name: swarm_axl_keys
+
+  spore_data:
+    name: spore_api_data
