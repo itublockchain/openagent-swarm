@@ -367,17 +367,22 @@ function DashboardContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intentParam, taskIdFromUrl, walletAddress]); // added walletAddress as dependency
 
-  // Sync logs from events. Dedup happens inside `entryFromEvent` against
-  // a persistent ref so AXL fan-outs (every agent racing for the planner
-  // role broadcasts PLANNER_SELECTED, every disqualified agent emits
-  // AGENT_PASSED) collapse into a single timeline row instead of N
-  // near-identical lines.
+  // Sync logs from events. Processes the entire events array to ensure
+  // historical events (from a page refresh) are all captured, while
+  // `seenLogIdsRef` ensures we don't duplicate lines during live updates.
   useEffect(() => {
     if (events.length === 0) return;
-    const latest = events[0];
-    const { entry } = entryFromEvent(latest, seenLogIdsRef.current);
-    if (!entry) return;
-    setLogs(prev => [...prev, entry].slice(-100));
+
+    const newEntries: LogEntry[] = [];
+    // Process from oldest to newest so the terminal chronological order is preserved
+    [...events].reverse().forEach(ev => {
+      const { entry } = entryFromEvent(ev, seenLogIdsRef.current);
+      if (entry) newEntries.push(entry);
+    });
+
+    if (newEntries.length > 0) {
+      setLogs(prev => [...prev, ...newEntries].slice(-100));
+    }
   }, [events]);
 
   return (

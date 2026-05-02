@@ -118,7 +118,7 @@ export function useSporeEvents() {
           setAccessDenied(false)
           setDag({
             taskId: taskIdFromUrl,
-            plannerId: data.plannerId,
+            plannerId: data.plannerId || data.dag.plannerAgentId,
             boxes: data.dag.nodes.map((n: any) => ({
               nodeId: n.id,
               subtask: n.subtask,
@@ -136,6 +136,12 @@ export function useSporeEvents() {
               stopReason: n.stopReason,
             }))
           })
+        }
+        if (Array.isArray(data.events)) {
+          // Replay history into the local events state. LogsPanel/explorer
+          // will pick these up and format them into terminal rows.
+          // Reverse so latest is index 0 for the UI's .reverse().map() logic.
+          setEvents(data.events.reverse())
         }
       } catch (err) {
         console.error('[useSporeEvents] Failed to fetch task state:', err)
