@@ -1,8 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { useAccount, useBalance, useReadContract, useReadContracts } from 'wagmi'
-import { Wallet, Bot, ListChecks, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
+import { useAccount, useReadContracts } from 'wagmi'
+import { Bot, ListChecks, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
 import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { AgentActionModal, type ActionMode } from '@/components/AgentActionModal'
@@ -71,26 +71,6 @@ export default function ProfilePage() {
   // re-open the colony modal so the user immediately sees the new member.
   const [pendingDeployToColony, setPendingDeployToColony] = useState<string | null>(null)
 
-  // ---------- Wallet stats ----------
-  // Native ETH on Base Sepolia (the user's gas; we don't show 0G since
-  // they never touch it directly).
-  const nativeBalanceQ = useBalance({
-    address: address as `0x${string}` | undefined,
-    chainId: paymentChain.id,
-    query: { enabled: !!address },
-  })
-  // chainId pin is load-bearing: USDC lives on Base Sepolia. Without
-  // it, wagmi reads from whichever chain the wallet currently sits on
-  // (mainnet/sepolia/etc.) where this address has no contract — so
-  // balanceOf returns 0 and the UI lies about an empty wallet.
-  const usdcBalanceQ = useReadContract({
-    abi: ERC20_ABI,
-    address: usdcAddr,
-    chainId: paymentChain.id,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: !!address && !!usdcAddr, refetchInterval: 10_000 },
-  })
   const usdcDecimals = USDC_DECIMALS
 
   // ---------- Agents — pulled from /agent/pool, filtered to owner ----------
@@ -312,37 +292,9 @@ export default function ProfilePage() {
           <header className="space-y-1">
             <h1 className="text-2xl font-bold tracking-tight">Profile</h1>
             <p className="text-sm text-muted-foreground">
-              Your wallet, agents you&apos;ve deployed, and tasks you&apos;ve submitted.
+              Agents you&apos;ve deployed, colonies, and tasks you&apos;ve submitted.
             </p>
           </header>
-
-          {/* Wallet card */}
-          <section className="rounded-xl border border-border bg-card p-5 space-y-3">
-            <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-              <Wallet className="w-3 h-3" />
-              Connected wallet
-            </div>
-            {address ? (
-              <>
-                <div className="font-mono text-sm break-all">
-                  <CopyableId value={address} head={10} tail={8} />
-                </div>
-                <div className="grid grid-cols-2 gap-3 pt-2">
-                  <Stat
-                    label="Native (gas)"
-                    value={
-                      nativeBalanceQ.data
-                        ? `${formatUnits(nativeBalanceQ.data.value, nativeBalanceQ.data.decimals)} ${nativeBalanceQ.data.symbol}`
-                        : '—'
-                    }
-                  />
-                  <Stat label="mUSDC" value={`${fmtUsdc(usdcBalanceQ.data as bigint | undefined)} USDC`} />
-                </div>
-              </>
-            ) : (
-              <div className="text-sm text-muted-foreground">No wallet connected.</div>
-            )}
-          </section>
 
           {/* Agents */}
           <section className="space-y-3">
@@ -759,15 +711,6 @@ export default function ProfilePage() {
 // ============================================================
 // Sub-components + helpers
 // ============================================================
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md bg-muted/40 border border-border/60 px-3 py-2">
-      <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">{label}</div>
-      <div className="text-base font-semibold tabular-nums mt-0.5">{value}</div>
-    </div>
-  )
-}
 
 /**
  * Compact prev/next pager. Hidden entirely when totalPages <= 1 so an

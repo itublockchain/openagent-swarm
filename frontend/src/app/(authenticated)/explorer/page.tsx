@@ -9,6 +9,7 @@ import TaskNode, { NodeData } from '@/components/flow/task-node';
 import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
+import { entryFromEvent, makeEntry, type LogEntry } from '@/components/flow/logEntry';
 import { PromptConfigRow, type ModelId } from '@/components/flow/PromptConfigRow';
 import { Send, Loader2, Plus } from 'lucide-react';
 import { CopyableId } from '@/components/ui/copyable-id';
@@ -42,10 +43,15 @@ function DashboardContent() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   const [submitStep, setSubmitStep] = useState<SubmitStep>('idle');
-  const [logs, setLogs] = useState<string[]>([
-    "Waiting for user intent...",
-    "Ready to generate and deploy DAG."
+  const [logs, setLogs] = useState<LogEntry[]>(() => [
+    makeEntry('system', 'Waiting for user intent…'),
+    makeEntry('system', 'Ready to generate and deploy DAG.'),
   ]);
+  // Stable across renders — `entryFromEvent` mutates this set in place to
+  // remember which dedup ids we've already shown so re-broadcasts of the
+  // same logical event (e.g. PLANNER_SELECTED fan-out across the swarm)
+  // don't repeatedly stamp the panel with near-identical rows.
+  const seenLogIdsRef = useRef<Set<string>>(new Set());
 
   const { dag, events, taskIdFromUrl, accessDenied } = useSporeEvents();
 
@@ -130,11 +136,11 @@ function DashboardContent() {
       done ? 'done' as const : active ? 'active' as const : 'pending' as const;
 
     return [
-      { key: 'spec',     label: 'Spec',     state: stepOf(!!dag || !!taskIdFromUrl, !!taskIdFromUrl && !dag) },
-      { key: 'plan',     label: 'Plan',     state: stepOf(!!dag, !taskIdFromUrl ? false : !dag) },
-      { key: 'claim',    label: 'Claim',    state: stepOf(hasValidate || allDone, !!dag && !hasValidate && hasClaim) },
+      { key: 'spec', label: 'Spec', state: stepOf(!!dag || !!taskIdFromUrl, !!taskIdFromUrl && !dag) },
+      { key: 'plan', label: 'Plan', state: stepOf(!!dag, !taskIdFromUrl ? false : !dag) },
+      { key: 'claim', label: 'Claim', state: stepOf(hasValidate || allDone, !!dag && !hasValidate && hasClaim) },
       { key: 'validate', label: 'Validate', state: stepOf(allDone, hasValidate && !allDone) },
-      { key: 'settle',   label: 'Settle',   state: stepOf(false, allDone) },
+      { key: 'settle', label: 'Settle', state: stepOf(false, allDone) },
     ];
   })();
   const { address: walletAddress } = useAccount();
@@ -235,12 +241,12 @@ function DashboardContent() {
 
     const currentY = 250;
     const spacingY = 100;
-    
+
     const newFlowNodes: Node<NodeData>[] = [
       { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: `Active Task: ${dag.taskId.slice(0, 8)}...`, status: 'completed', agent: 'api-server' } },
       { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: dag.plannerId || 'Awaiting...' } },
     ];
-    
+
     const newFlowEdges: Edge[] = [
       { id: 'e1-2', source: '1', target: '2', animated: true }
     ];
@@ -269,11 +275,11 @@ function DashboardContent() {
           passCount: box.passes?.length ?? 0,
           jury: box.jury
             ? {
-                guilty: box.jury.guilty,
-                innocent: box.jury.innocent,
-                voters: box.jury.voters.length,
-                committed: box.jury.committed.length,
-              }
+              guilty: box.jury.guilty,
+              innocent: box.jury.innocent,
+              voters: box.jury.voters.length,
+              committed: box.jury.committed.length,
+            }
             : undefined,
           // Reasoning payload from SUBTASK_DONE — the hook captures these
           // onto the box, but they only reach NodeDetailPanel if we forward
@@ -304,14 +310,14 @@ function DashboardContent() {
   // and broadcasts to AXL. No wallet popup, no on-chain user txs.
   const submitRealDAG = async (intent: string) => {
     if (!walletAddress) {
-      setLogs(prev => [...prev, `[ERROR] No wallet connected. Connect first.`]);
+      setLogs(prev => [...prev, makeEntry('error', 'No wallet connected. Connect first.')]);
       return;
     }
 
     const budgetStr = String(budget);
     const submissionNonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     setSubmitStep('submitting');
-    setLogs(prev => [...prev, `[USER] Submitting spec: ${intent} (budget=${budgetStr} USDC)`]);
+    setLogs(prev => [...prev, makeEntry('user', `Submitting spec: ${intent} (budget=${budgetStr} USDC)`)]);
 
     try {
       const submitRes = await apiRequest('/task', {
@@ -332,7 +338,7 @@ function DashboardContent() {
         throw new Error(`submit failed: ${detail.error ?? submitRes.status}`);
       }
       const data = await submitRes.json();
-      setLogs(prev => [...prev, `[API] Treasury debited budget=${budgetStr} USDC tx=${(data.treasuryTxHash ?? '').slice(0, 12)}`]);
+      setLogs(prev => [...prev, makeEntry('api', `Treasury debited ${budgetStr} USDC · tx ${(data.treasuryTxHash ?? '').slice(0, 12)}`)]);
 
       const params = new URLSearchParams(searchParams.toString());
       params.set('taskId', data.taskId);
@@ -340,11 +346,11 @@ function DashboardContent() {
       router.replace(`?${params.toString()}`);
 
       setSubmitStep('done');
-      setLogs(prev => [...prev, `[API] Task ${data.taskId.slice(0, 8)} broadcast to AXL. Awaiting DAG...`]);
+      setLogs(prev => [...prev, makeEntry('api', `Task ${data.taskId.slice(0, 8)}… broadcast to AXL. Awaiting DAG…`)]);
     } catch (err: any) {
       setSubmitStep('error');
       const msg = err?.shortMessage || err?.message || String(err);
-      setLogs(prev => [...prev, `[ERROR] (step=${submitStep}) ${msg}`]);
+      setLogs(prev => [...prev, makeEntry('error', `(step=${submitStep}) ${msg}`)]);
     }
   };
 
@@ -358,14 +364,20 @@ function DashboardContent() {
       submittedIntentRef.current = true;
       submitRealDAG(intentParam);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [intentParam, taskIdFromUrl, walletAddress]); // added walletAddress as dependency
 
-  // Sync logs from events
+  // Sync logs from events. Dedup happens inside `entryFromEvent` against
+  // a persistent ref so AXL fan-outs (every agent racing for the planner
+  // role broadcasts PLANNER_SELECTED, every disqualified agent emits
+  // AGENT_PASSED) collapse into a single timeline row instead of N
+  // near-identical lines.
   useEffect(() => {
     if (events.length === 0) return;
     const latest = events[0];
-    setLogs(prev => [...prev, `[${new Date(latest.timestamp).toLocaleTimeString()}] ${latest.type}`].slice(-100));
+    const { entry } = entryFromEvent(latest, seenLogIdsRef.current);
+    if (!entry) return;
+    setLogs(prev => [...prev, entry].slice(-100));
   }, [events]);
 
   return (
@@ -374,7 +386,7 @@ function DashboardContent() {
 
       {/* Main Content Split */}
       <div className="flex flex-1 overflow-hidden flex-col md:flex-row">
-        
+
         {/* Left: SPORE Intelligence Flow (React Flow) */}
         <div className="flex-1 flex flex-col border-r border-border bg-muted/5 min-w-0">
           <div className="h-9 px-4 border-b border-border bg-background/85 backdrop-blur flex items-center gap-3 text-[10px] font-mono uppercase tracking-widest text-muted-foreground shrink-0">
@@ -501,7 +513,13 @@ function DashboardContent() {
             className="hidden md:block absolute top-0 bottom-0 -left-0.5 w-1 cursor-col-resize hover:bg-primary/40 active:bg-primary/60 transition-colors z-20"
           />
 
-          <LogsPanel logs={logs} onClear={() => setLogs([])} />
+          <LogsPanel
+            entries={logs}
+            onClear={() => {
+              setLogs([]);
+              seenLogIdsRef.current.clear();
+            }}
+          />
 
           {/* Pending-intent banner — shown when an ?intent= came from the landing
               CTA but the wallet isn't connected yet. Once the user connects, the
@@ -606,8 +624,8 @@ function DashboardContent() {
 
             const dispatchLabel =
               submitStep === 'submitting' ? 'Broadcasting to SPORE…'
-              : dag ? 'DAG live — awaiting subtasks'
-              : 'Awaiting DAG from planner…';
+                : dag ? 'DAG live — awaiting subtasks'
+                  : 'Awaiting DAG from planner…';
 
             const handleNewIntent = () => {
               const params = new URLSearchParams(searchParams.toString());
@@ -647,13 +665,24 @@ function DashboardContent() {
               </div>
             )
           })()}
-          </div>
+          <PromptConfigRow
+            model={model}
+            budget={budget}
+            colonyId={selectedColony}
+            colonies={colonies}
+            onModelChange={setModel}
+            onBudgetChange={setBudget}
+            onColonyChange={setSelectedColony}
+            hideModel
+            maxBudget={treasuryBalance != null ? Math.floor(treasuryBalance) : undefined}
+          />
         </div>
+      </div>
 
       <DeployAgentModal
-        isOpen={isDeployOpen} 
+        isOpen={isDeployOpen}
         onClose={() => setIsDeployOpen(false)}
-        onSuccess={() => {}}
+        onSuccess={() => { }}
       />
     </div>
   );
