@@ -5,6 +5,8 @@
   "SlashingVault": "0x42449309acA9620525A90dFaBB9aaB8c699b68b9",
   "AgentRegistry": "0xa20914AA64664a1D414593A398764018F1f72e3B",
   "SwarmTreasury": "0xcAa459ec1dF4004CeBA5712A6A01F013d9B00a74",
+  "SporeGasTreasury": "0x3Df8A82f47008550cdCae54D5AFA3F51d532C9fd",
+  "SporeCoordinator": "0x4B212c974C238ef6EB37b46C6698dDb7c20a79d0",
   "network": "og_testnet",
-  "deployedAt": "2026-05-01T00:48:07.533Z"
+  "deployedAt": "2026-05-02T01:17:39.303Z"
 }

@@ -24,6 +24,7 @@ import { registerTasksRoutes } from './v1/tasksRoutes'
 import { registerBalanceRoutes } from './v1/balanceRoutes'
 import { registerAgentsRoutes } from './v1/agentsRoutes'
 import { registerProfileRoutes } from './v1/profileRoutes'
+import { registerSwarmRoutes } from './v1/swarmRoutes'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
 const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
@@ -977,6 +978,13 @@ export default async function createServer(deps: ServerDeps) {
   })
   await registerBalanceRoutes(fastify, { keyStore })
   await registerAgentsRoutes(fastify, { keyStore, manager: deps.manager })
+
+  // Multi-agent SDK relay endpoints — see backend/api/src/v1/swarmRoutes.ts.
+  // Routes use the same storage port the rest of the API uses, so every
+  // DAG payload + node output lands in 0G Storage; root hashes flow
+  // on-chain. Gas billing pulls a flat USDC fee from the API key's
+  // SwarmTreasury balance per call.
+  await registerSwarmRoutes(fastify, { keyStore, storage: deps.storage })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
   await registerProfileRoutes(fastify, {
