@@ -47,7 +47,7 @@ export function LandingFooter() {
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 hover:text-white transition-colors"
-              title={`Escrow: ${escrow}`}
+              title={`Escrow ${escrow}`}
             >
               0G Escrow
               <ExternalLink className="w-3 h-3" />

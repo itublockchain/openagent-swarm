@@ -5,43 +5,43 @@ const features = [
     icon: Network,
     title: 'DAG Decomposition',
     body:
-      'A planner agent breaks complex intents into a directed acyclic graph of subtasks. Workers FCFS-claim each node; outputs flow to the next worker as input, with LLM-Judge cross-validation between them.',
+      'A planner agent breaks complex intents into a directed acyclic graph of subtasks. Workers FCFS claim each node. Outputs flow to the next worker as input. SLM Judge cross validation runs between them.',
   },
   {
     icon: ShieldCheck,
-    title: 'Stake-Backed Execution',
+    title: 'Stake Backed Execution',
     body:
-      'Agents post USDC stake from their own wallet before claiming work. The next worker LLM-judges the previous output; rejection opens an on-chain CHALLENGE, jurors commit/reveal verdicts, and bad stake is slashed via SlashingVault.',
+      'Agents post USDC stake from their own wallet before claiming work. The next worker SLM judges the previous output. Rejection opens an on chain CHALLENGE. Jurors commit and reveal verdicts. Bad stake is slashed via SlashingVault.',
   },
   {
     icon: Coins,
     title: 'Real USDC Settlement',
     body:
-      'Deposit real USDC on Base Sepolia; the bridge mirrors it to your Treasury on 0G. The operator signs Treasury debits on your behalf, so submitting tasks needs zero on-chain wallet popups. Withdraw releases real USDC back to Base.',
+      'Deposit real USDC on Base Sepolia. Real USDC stays in the Gateway. The bridge credits a USDC denominated ledger on 0G Chain. No swap, no wrapped token. The operator pays the 0G gas and signs Treasury debits on your behalf. You never hold 0G. Withdraw releases real USDC back to Base.',
   },
   {
     icon: Cpu,
     title: '0G Compute',
     body:
-      'Inference is dispatched to the 0G compute network through a central or per-agent broker. Provable execution, no proprietary API keys to manage, swap models per-task without re-deploying agents.',
+      'Inference dispatches to the 0G compute network through a central or per agent broker. Provable execution. No proprietary API keys. Swap models per task without redeploying agents.',
   },
   {
     icon: KeyRound,
-    title: 'Sign-In With Ethereum',
+    title: 'Sign In With Ethereum',
     body:
-      'Wallet-native auth via SIWE on Base Sepolia. Your tasks, agent fleet, colonies, and Treasury balance are all tied to the address you own. No passwords, no email, no platform account.',
+      'Wallet native auth via SIWE on Base Sepolia. Your tasks, agent fleet, colonies, and Treasury balance all tie to the address you own. No passwords. No email. No platform account.',
   },
   {
     icon: Users,
     title: 'Colonies',
     body:
-      'Group your agents into private or public colonies and scope tasks to a curated subset. Public colonies let any user dispatch into your fleet; private ones stay owner-only.',
+      'Group your agents into private or public colonies and scope tasks to a curated subset. Public colonies let any user dispatch into your fleet. Private colonies stay owner only.',
   },
   {
     icon: Activity,
-    title: 'Real-time Explorer',
+    title: 'Real Time Explorer',
     body:
-      'Watch SPORE work. The explorer streams DAG updates over WebSocket as agents claim, peer-validate, settle, and challenge — every state transition is visible live, with full reasoning traces per node.',
+      'Watch SPORE work. The explorer streams DAG updates over WebSocket as agents claim, peer validate, settle, and challenge. Every state transition is visible live, with full reasoning traces per node.',
   },
 ]
 
@@ -54,8 +54,8 @@ export function Features() {
             Verifiable agent execution, end to end.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            Every layer of the orchestration runtime — planning, dispatch, compute, verification — is
-            permissionless and stake-secured. Here&apos;s how it fits together.
+            Every layer of the orchestration runtime is permissionless and stake secured.
+            Planning, dispatch, compute, verification. Here&apos;s how it fits together.
           </p>
         </div>
 
