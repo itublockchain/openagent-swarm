@@ -79,6 +79,16 @@ export interface ChainClient {
   writeTreasury: ethers.Contract | null
   writeEscrow: ethers.Contract | null
 
+  // Sporeise gas Treasury — separate ledger for SDK-managed runs so the
+  // operator config of the legacy SwarmTreasury doesn't block billing.
+  // When `L2_SPORE_GAS_TREASURY_ADDRESS` is unset, falls back to the
+  // main `treasury*` handles above (legacy single-treasury behaviour).
+  // Same Treasury contract type — just a separate deployment whose
+  // `operator()` matches the API PRIVATE_KEY, so debits actually land.
+  gasTreasuryAddr: string
+  readGasTreasury: ethers.Contract
+  writeGasTreasury: ethers.Contract | null
+
   // Base Sepolia — payment gateway + CCTP receiver
   baseProvider: ethers.JsonRpcProvider
   baseWallet: ethers.Wallet | null
@@ -132,6 +142,15 @@ export function getChainClient(): ChainClient {
   const readTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, ogProvider)
   const readEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, ogProvider)
 
+  // Sporeise gas Treasury override. When env points at a separate
+  // SwarmTreasury-shape contract, sporeise debits land there instead
+  // of the main Treasury — useful when the main Treasury's `operator`
+  // doesn't match our PRIVATE_KEY and rotation isn't an option.
+  const gasTreasuryAddr = process.env.L2_SPORE_GAS_TREASURY_ADDRESS || treasuryAddr
+  const readGasTreasury = gasTreasuryAddr === treasuryAddr
+    ? readTreasury
+    : new ethers.Contract(gasTreasuryAddr, SwarmTreasuryABI.abi, ogProvider)
+
   // ---- Base Sepolia ----
   const baseRpcUrl = process.env.BASE_RPC_URL || 'https://sepolia.base.org'
   const baseDeployments = loadBaseDeployments()
@@ -172,6 +191,7 @@ export function getChainClient(): ChainClient {
   let ogWallet: ethers.Wallet | null = null
   let baseWallet: ethers.Wallet | null = null
   let writeTreasury: ethers.Contract | null = null
+  let writeGasTreasury: ethers.Contract | null = null
   let writeEscrow: ethers.Contract | null = null
   let writeGateway: ethers.Contract | null = null
   let writeMessageTransmitter: ethers.Contract | null = null
@@ -184,6 +204,9 @@ export function getChainClient(): ChainClient {
     baseWallet = new ethers.Wallet(pk, baseProvider)
     operatorAddress = ogWallet.address
     writeTreasury = new ethers.Contract(treasuryAddr, SwarmTreasuryABI.abi, ogWallet)
+    writeGasTreasury = gasTreasuryAddr === treasuryAddr
+      ? writeTreasury
+      : new ethers.Contract(gasTreasuryAddr, SwarmTreasuryABI.abi, ogWallet)
     writeEscrow = new ethers.Contract(escrowAddr, SwarmEscrowABI.abi, ogWallet)
     if (gatewayAddr) {
       writeGateway = new ethers.Contract(gatewayAddr, USDCGatewayABI.abi, baseWallet)
@@ -213,6 +236,9 @@ export function getChainClient(): ChainClient {
     readEscrow,
     writeTreasury,
     writeEscrow,
+    gasTreasuryAddr,
+    readGasTreasury,
+    writeGasTreasury,
     baseProvider,
     baseWallet,
     gatewayAddr,

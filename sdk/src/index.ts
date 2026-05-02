@@ -20,6 +20,35 @@ export { SporeClient, type SporeClientOptions } from './client'
 export { SporeAPIError, SporeTimeoutError } from './errors'
 export type { FetchLike } from './transport'
 
+// Managed mode — pair `Spore` with `LangChainAgent` to run multi-agent
+// workflows on the Spore protocol with a single API key. See
+// examples/langchain.ts for an end-to-end demo.
+export {
+  Spore,
+  LangChainAgent,
+} from './swarm'
+export type {
+  SporeOptions,
+  SporeLogger,
+  SporeEvent,
+  SporeEventHandler,
+  RunOptions,
+  RunResult,
+  WebSocketCtor,
+  WebSocketLike,
+  LangChainAgentOptions,
+  LangChainRunnable,
+  LangChainChatModel,
+  PlanInput,
+  PlanResult,
+  ExecuteInput,
+  ExecuteResult,
+  JudgeInput,
+  JudgeResult,
+  SporeiseAgentInfo,
+  SporeiseAgentSpec,
+} from './swarm'
+
 export type {
   // Tasks
   SubmitTaskInput,
