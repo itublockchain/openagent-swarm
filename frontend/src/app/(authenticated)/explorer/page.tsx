@@ -558,8 +558,21 @@ function DashboardContent() {
                     }}
                   />
 
-                  {/* Prompt Area */}
-                  <div className="p-4 border-t border-border bg-background">
+                  {/* Prompt Area — config row sits above the textarea so the
+                      user sees their budget cap (= live Treasury balance)
+                      before composing the intent, not after sending. */}
+                  <div className="p-4 border-t border-border bg-background space-y-3">
+                    <PromptConfigRow
+                      model={model}
+                      budget={budget}
+                      colonyId={selectedColony}
+                      colonies={colonies}
+                      onModelChange={setModel}
+                      onBudgetChange={setBudget}
+                      onColonyChange={setSelectedColony}
+                      hideModel
+                      maxBudget={treasuryBalance ?? undefined}
+                    />
                     <div className="relative group">
                       <textarea
                         ref={textareaRef}
@@ -634,17 +647,6 @@ function DashboardContent() {
               </div>
             )
           })()}
-            <PromptConfigRow
-              model={model}
-              budget={budget}
-              colonyId={selectedColony}
-              colonies={colonies}
-              onModelChange={setModel}
-              onBudgetChange={setBudget}
-              onColonyChange={setSelectedColony}
-              hideModel
-              maxBudget={treasuryBalance != null ? Math.floor(treasuryBalance) : undefined}
-            />
           </div>
         </div>
 

@@ -57,15 +57,20 @@ export function PromptConfigRow({
   // Float maxBudget down to a positive integer so a fractional balance like
   // 4.97 USDC doesn't surface as `max=4.97` (browser quirks vary).
   const effectiveMax = Math.max(1, Math.floor(maxBudget))
+  // Display the *real* balance (with decimals) next to the budget input —
+  // the floor is an input-only constraint, not user-visible truth.
+  const displayMax = Number.isFinite(maxBudget)
+    ? (Math.round(maxBudget * 100) / 100).toString()
+    : effectiveMax.toString()
   return (
-    <div className="mt-3 flex items-center justify-between px-1">
+    <div className="flex items-center justify-between gap-2 flex-wrap">
       <div className="flex items-center gap-2 flex-wrap">
         {!hideModel && (
-          <div className="relative inline-flex items-center h-6 rounded border border-border bg-muted hover:border-foreground/30 focus-within:border-foreground/30">
+          <div className="relative inline-flex items-center h-7 rounded-md border border-border bg-muted/50 hover:border-foreground/30 focus-within:border-foreground/30 transition-colors">
             <select
               value={model}
               onChange={e => onModelChange(e.target.value as ModelId)}
-              className="appearance-none h-full bg-transparent pl-2 pr-5 text-[10px] leading-none text-foreground/80 focus:outline-none cursor-pointer"
+              className="appearance-none h-full bg-transparent pl-2 pr-5 text-[11px] leading-none text-foreground/85 focus:outline-none cursor-pointer font-mono"
             >
               {MODELS.map(m => (
                 <option key={m.id} value={m.id}>{m.label}</option>
@@ -77,9 +82,12 @@ export function PromptConfigRow({
 
         {!hideBudget && (
           <div
-            className="inline-flex items-center h-6 rounded border border-border bg-muted focus-within:border-foreground/30"
-            title={`Budget capped at ${effectiveMax} USDC (your Treasury balance).`}
+            className="inline-flex items-center h-7 rounded-md border border-border bg-muted/50 focus-within:border-foreground/40 divide-x divide-border overflow-hidden font-mono transition-colors"
+            title={`Budget capped at ${effectiveMax} USDC (your Treasury balance: ${displayMax} USDC).`}
           >
+            <span className="px-2 h-full flex items-center text-[10px] uppercase tracking-widest text-muted-foreground">
+              Budget
+            </span>
             <input
               type="number"
               min={1}
@@ -90,9 +98,11 @@ export function PromptConfigRow({
                 const n = Number(e.target.value)
                 if (Number.isFinite(n)) onBudgetChange(Math.max(1, Math.min(effectiveMax, Math.floor(n))))
               }}
-              className="w-12 h-full bg-transparent px-1.5 text-[10px] leading-none text-right text-foreground/80 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              className="w-12 h-full bg-transparent px-1.5 text-[11px] leading-none text-right text-foreground tabular-nums focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
-            <span className="pr-1.5 text-[10px] leading-none text-muted-foreground">/ {effectiveMax} USDC</span>
+            <span className="px-2 h-full flex items-center text-[10px] leading-none text-muted-foreground tabular-nums">
+              / {displayMax} USDC
+            </span>
           </div>
         )}
 
@@ -100,11 +110,11 @@ export function PromptConfigRow({
             row tidy for newcomers, surfaces immediately once they create
             one in profile/page. "Public" route = colonyId null = any agent. */}
         {colonies.length > 0 && (
-          <div className="relative inline-flex items-center h-6 rounded border border-border bg-muted hover:border-foreground/30 focus-within:border-foreground/30">
+          <div className="relative inline-flex items-center h-7 rounded-md border border-border bg-muted/50 hover:border-foreground/30 focus-within:border-foreground/30 transition-colors">
             <select
               value={colonyId ?? ''}
               onChange={e => onColonyChange(e.target.value || null)}
-              className="appearance-none h-full bg-transparent pl-2 pr-5 text-[10px] leading-none text-foreground/80 focus:outline-none cursor-pointer max-w-[140px]"
+              className="appearance-none h-full bg-transparent pl-2 pr-5 text-[11px] leading-none text-foreground/85 focus:outline-none cursor-pointer max-w-[140px] font-mono"
               title="Restrict task to a colony of agents"
             >
               <option value="">Public (any agent)</option>
@@ -116,9 +126,11 @@ export function PromptConfigRow({
           </div>
         )}
       </div>
-      <span className="text-[10px] text-muted-foreground italic">
-        {hint ?? 'Press Enter to dispatch'}
-      </span>
+      {hint && (
+        <span className="text-[10px] text-muted-foreground italic font-mono">
+          {hint}
+        </span>
+      )}
     </div>
   )
 }
