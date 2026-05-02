@@ -69,6 +69,15 @@ export class TaskStateStore {
         PRIMARY KEY (task_id, node_id)
       );
       CREATE INDEX IF NOT EXISTS task_dag_nodes_task_idx ON task_dag_nodes(task_id);
+
+      CREATE TABLE IF NOT EXISTS task_events (
+        task_id        TEXT NOT NULL,
+        event_type     TEXT NOT NULL,
+        payload_json   TEXT NOT NULL,
+        timestamp      INTEGER NOT NULL,
+        PRIMARY KEY (task_id, event_type, timestamp)
+      );
+      CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events(task_id);
     `)
   }
 
@@ -172,6 +181,35 @@ export class TaskStateStore {
         tools,
         now,
       )
+  }
+
+  // ------------------------------------------------------------------
+  // Event Log — persists the timeline for refresh-safe terminal output
+  // ------------------------------------------------------------------
+
+  recordEvent(taskId: string, type: string, payload: any): void {
+    const ts = Date.now()
+    const pJson = JSON.stringify(payload)
+    try {
+      this.db
+        .prepare(`INSERT INTO task_events (task_id, event_type, payload_json, timestamp) VALUES (?, ?, ?, ?)`)
+        .run(taskId, type, pJson, ts)
+    } catch (err) {
+      // Ignore unique constraint collisions for identical events arriving via
+      // both RPC and AXL shims.
+    }
+  }
+
+  getEvents(taskId: string): Array<{ type: string; payload: any; timestamp: number }> {
+    const rows = this.db
+      .prepare(`SELECT event_type, payload_json, timestamp FROM task_events WHERE task_id = ? ORDER BY timestamp ASC`)
+      .all(taskId) as Array<{ event_type: string; payload_json: string; timestamp: number }>
+    
+    return rows.map(r => ({
+      type: r.event_type,
+      payload: JSON.parse(r.payload_json),
+      timestamp: r.timestamp
+    }))
   }
 
   // ------------------------------------------------------------------

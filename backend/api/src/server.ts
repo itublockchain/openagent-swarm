@@ -149,6 +149,15 @@ export default async function createServer(deps: ServerDeps) {
     }
   })
 
+  // Global event log — records every broadcasted event to the DB so
+  // terminal output can be replayed after a refresh or restart.
+  deps.network.on('*', (event: any) => {
+    const taskId = event.payload?.taskId
+    if (taskId) {
+      taskState.recordEvent(taskId, event.type, event.payload)
+    }
+  })
+
   // JWT helpers — declared early so all routes can use them
   function verifyJWT(token: string): { address: string; chainId: number } | null {
     try {
@@ -691,6 +700,8 @@ export default async function createServer(deps: ServerDeps) {
       dag: dagNodes.length > 0
         ? { nodes: dagNodes, plannerAgentId: plannerByTask.get(taskId) }
         : null,
+      // Historical event log for replaying terminal output in the explorer.
+      events: taskState.getEvents(taskId),
     };
   });
 
