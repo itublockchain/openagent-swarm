@@ -184,6 +184,13 @@ export class BridgeWatcher {
       throw new Error('writeTreasury missing — operator wallet went away after start')
     }
 
+    // Mark + persist BEFORE submitting the credit tx. If we crash between
+    // submit and confirmation, on restart we'll see the key already
+    // recorded and won't re-credit. The trade-off — losing a deposit if
+    // the tx never lands — is acceptable; double-crediting isn't.
+    this.processedKeys.add(key)
+    this.persistState()
+
     try {
       const tx = await client.writeTreasury.creditBalance(user, amount)
       const receipt = await tx.wait()
@@ -191,8 +198,10 @@ export class BridgeWatcher {
       console.log(
         `[BridgeWatcher] ${label}: credited ${ethers.formatUnits(amount, USDC_DECIMALS)} USDC to ${user} (base tx ${event.transactionHash.slice(0, 12)}, og tx ${ogTxHash.slice(0, 12)})`,
       )
-      this.processedKeys.add(key)
     } catch (err) {
+      // Submission failed outright — safe to retry next tick, so release the key.
+      this.processedKeys.delete(key)
+      this.persistState()
       console.error(`[BridgeWatcher] creditBalance failed for ${key}:`, err)
       throw err
     }
@@ -238,10 +247,10 @@ export class BridgeWatcher {
       }
       const state: PersistedState = {
         lastProcessedBlockByContract: this.lastProcessedBlockByContract,
-        // Cap the persisted set so it doesn't grow unbounded. Keys older
-        // than the current cursor minus 1000 blocks can't be re-emitted
-        // by the catch-up scan, so dropping them is safe.
-        processedKeys: [...this.processedKeys].slice(-2000),
+        // Cap the set so it doesn't grow unbounded. The catch-up scan
+        // only re-reads REORG_OVERLAP_BLOCKS worth of history, so keys
+        // far older than that can't reappear. 50k gives generous headroom.
+        processedKeys: [...this.processedKeys].slice(-50_000),
       }
       fs.writeFileSync(this.statePath, JSON.stringify(state, null, 2))
     } catch (err) {
