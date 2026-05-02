@@ -29,7 +29,7 @@ const config: HardhatUserConfig = {
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
     },
     base_sepolia: {
-      url: process.env.L2_RPC_URL || "https://sepolia.base.org",
+      url: process.env.BASE_RPC_URL || "https://sepolia.base.org",
       chainId: 84532,
       accounts: PRIVATE_KEY ? [PRIVATE_KEY] : [],
     },

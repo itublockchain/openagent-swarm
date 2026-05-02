@@ -1,11 +1,14 @@
 /**
- * Minimal ABI fragments for the on-chain pieces the user-side flow touches:
- *   - MockERC20: approve, allowance, decimals, balanceOf
- *   - SporeEscrow: createTask, tasks (read-only)
+ * Minimal ABI fragments for the only on-chain pieces the user-side flow
+ * touches now:
+ *   - ERC20 (real USDC on Base Sepolia): approve, balanceOf, decimals
+ *   - USDCGateway (Base Sepolia): deposit
  *
- * Addresses come from NEXT_PUBLIC_* env vars; they default to nothing so a
- * misconfigured frontend fails loudly rather than silently writing to a
- * wrong contract.
+ * Everything else (Treasury, Escrow, AgentRegistry, DAGRegistry,
+ * SlashingVault) lives on 0G and is signed by the API operator — the
+ * browser never holds those ABIs.
+ *
+ * Addresses come from NEXT_PUBLIC_* env vars in lib/env.ts.
  */
 
 export const ERC20_ABI = [
@@ -38,16 +41,6 @@ export const ERC20_ABI = [
   },
   {
     type: 'function',
-    name: 'transfer',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'to', type: 'address' },
-      { name: 'amount', type: 'uint256' },
-    ],
-    outputs: [{ type: 'bool' }],
-  },
-  {
-    type: 'function',
     name: 'decimals',
     stateMutability: 'view',
     inputs: [],
@@ -55,119 +48,12 @@ export const ERC20_ABI = [
   },
 ] as const
 
-export const SPORE_ESCROW_ABI = [
-  {
-    type: 'function',
-    name: 'createTask',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'taskId', type: 'bytes32' },
-      { name: 'budget', type: 'uint256' },
-    ],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'tasks',
-    stateMutability: 'view',
-    inputs: [{ name: '', type: 'bytes32' }],
-    outputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'budget', type: 'uint256' },
-      { name: 'stakedTotal', type: 'uint256' },
-      { name: 'finalized', type: 'bool' },
-    ],
-  },
-] as const
-
-/**
- * SwarmTreasury — Phase 1.5+ contract holding pre-funded user balances
- * for the SDK API-key flow. The webapp Developer tab uses these methods
- * to deposit/withdraw, set the daily cap, and bind keyHashes to the
- * connected wallet.
- *
- * Operator-only methods (`spendOnBehalfOf`, `setOperator`, `pause`)
- * intentionally omitted — frontend never calls those.
- */
-export const SWARM_TREASURY_ABI = [
-  {
-    type: 'function',
-    name: 'balanceOf',
-    stateMutability: 'view',
-    inputs: [{ name: 'user', type: 'address' }],
-    outputs: [{ type: 'uint256' }],
-  },
-  {
-    type: 'function',
-    name: 'dailyCap',
-    stateMutability: 'view',
-    inputs: [{ name: 'user', type: 'address' }],
-    outputs: [{ type: 'uint256' }],
-  },
-  {
-    type: 'function',
-    name: 'dailySpentView',
-    stateMutability: 'view',
-    inputs: [{ name: 'user', type: 'address' }],
-    outputs: [
-      { name: 'spent', type: 'uint256' },
-      { name: 'windowStart', type: 'uint256' },
-    ],
-  },
-  {
-    type: 'function',
-    name: 'keyOwner',
-    stateMutability: 'view',
-    inputs: [{ name: 'keyHash', type: 'bytes32' }],
-    outputs: [{ type: 'address' }],
-  },
-  {
-    type: 'function',
-    name: 'frozenKey',
-    stateMutability: 'view',
-    inputs: [{ name: 'keyHash', type: 'bytes32' }],
-    outputs: [{ type: 'bool' }],
-  },
+export const USDC_GATEWAY_ABI = [
   {
     type: 'function',
     name: 'deposit',
     stateMutability: 'nonpayable',
     inputs: [{ name: 'amount', type: 'uint256' }],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'withdraw',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'amount', type: 'uint256' }],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'setDailyCap',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'cap', type: 'uint256' }],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'bindKey',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'keyHash', type: 'bytes32' }],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'freezeKey',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'keyHash', type: 'bytes32' }],
-    outputs: [],
-  },
-  {
-    type: 'function',
-    name: 'unfreezeKey',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'keyHash', type: 'bytes32' }],
     outputs: [],
   },
 ] as const
@@ -176,6 +62,5 @@ import { ENV } from '../../lib/env'
 
 export const CONTRACT_ADDRESSES = {
   usdc: ENV.USDC_ADDRESS,
-  escrow: ENV.ESCROW_ADDRESS,
-  treasury: ENV.TREASURY_ADDRESS,
+  gateway: ENV.GATEWAY_ADDRESS,
 }

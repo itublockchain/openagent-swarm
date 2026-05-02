@@ -4,9 +4,8 @@ import React, { useState, useEffect, Suspense, useRef, useCallback } from 'react
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, Edge, Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useAccount, useWriteContract, useChainId, useSwitchChain } from 'wagmi';
-import { waitForTransactionReceipt, readContract } from '@wagmi/core';
-import TaskNode, { NodeData } from '@/components/flow/task-node';                                                       
+import { useAccount } from 'wagmi';
+import TaskNode, { NodeData } from '@/components/flow/task-node';
 import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
@@ -18,15 +17,13 @@ import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
 import { apiRequest } from '../../../../lib/api';
 import { ENV } from '../../../../lib/env';
-import { config as wagmiConfig, ogTestnet } from '../../../../lib/wagmi';
-import { ERC20_ABI, SPORE_ESCROW_ABI } from '@/lib/contracts';
 import { cn } from '@/lib/utils';
 
 const nodeTypes = {
   task: TaskNode,
 };
 
-type SubmitStep = 'idle' | 'preparing' | 'approving' | 'creating' | 'submitting' | 'done' | 'error';
+type SubmitStep = 'idle' | 'submitting' | 'done' | 'error';
 
 function DashboardContent() {
   const router = useRouter();
@@ -141,9 +138,47 @@ function DashboardContent() {
     ];
   })();
   const { address: walletAddress } = useAccount();
-  const currentChainId = useChainId();
-  const { switchChainAsync } = useSwitchChain();
-  const { writeContractAsync } = useWriteContract();
+
+  // Live Treasury balance — drives the budget input's max so the user can
+  // never type a value the backend would reject with 402. Refreshes on
+  // the same cadence as the header pill (12s) so deposits land in the cap
+  // a tick after BridgeWatcher mirrors them. Null until the first /v1/me
+  // /balance read returns; PromptConfigRow falls back to its default 1000
+  // cap until then so the field isn't pinned to 1 during initial load.
+  const [treasuryBalance, setTreasuryBalance] = useState<number | null>(null);
+  useEffect(() => {
+    if (!walletAddress) {
+      setTreasuryBalance(null)
+      return
+    }
+    let cancelled = false
+    const load = async () => {
+      try {
+        const res = await apiRequest('/v1/me/balance')
+        if (!res.ok) return
+        const data = (await res.json()) as { balance: string }
+        const n = Number(data.balance)
+        if (!cancelled && Number.isFinite(n)) setTreasuryBalance(n)
+      } catch {
+        // Transient — keep last known value.
+      }
+    }
+    load()
+    const t = setInterval(load, 12_000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [walletAddress])
+
+  // Clamp budget to current balance whenever balance changes (e.g. after
+  // a withdrawal). Without this, a stale 50-USDC budget would persist
+  // after the wallet's Treasury drops to 10, and submit would 402.
+  useEffect(() => {
+    if (treasuryBalance == null) return
+    const cap = Math.max(1, Math.floor(treasuryBalance))
+    setBudget(b => Math.min(b, cap))
+  }, [treasuryBalance])
 
   // Fetch the user's own colonies + all public colonies so the explorer
   // dropdown surfaces both: own (any visibility) and public (others'
@@ -264,11 +299,9 @@ function DashboardContent() {
     setEdges(newFlowEdges);
   }, [dag, setNodes, setEdges]);
 
-  // User-signed task submission flow:
-  //   1. /task/prepare → backend uploads spec to storage, returns taskIdBytes32 + budgetWei
-  //   2. wagmi: USDC.approve(escrow, budget) — skipped if existing allowance is sufficient
-  //   3. wagmi: SporeEscrow.createTask(taskIdBytes32, budget) — user funds the escrow
-  //   4. /task → backend verifies on-chain task exists, broadcasts to AXL mesh
+  // Backend-relayed task submission. The browser only proves SIWE
+  // identity; the API operator signs `Treasury.spendOnBehalfOf` on 0G
+  // and broadcasts to AXL. No wallet popup, no on-chain user txs.
   const submitRealDAG = async (intent: string) => {
     if (!walletAddress) {
       setLogs(prev => [...prev, `[ERROR] No wallet connected. Connect first.`]);
@@ -276,130 +309,29 @@ function DashboardContent() {
     }
 
     const budgetStr = String(budget);
-    // Fresh nonce per submission so identical specs don't collide on the
-    // content-addressed taskId (would revert with "Task already exists").
     const submissionNonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setSubmitStep('preparing');
-    setLogs(prev => [...prev, `[USER] Submitting spec: ${intent} (model=${model}, budget=${budgetStr} USDC)`]);
+    setSubmitStep('submitting');
+    setLogs(prev => [...prev, `[USER] Submitting spec: ${intent} (budget=${budgetStr} USDC)`]);
 
     try {
-      // 0. Switch wallet to 0G Galileo if it's on a different chain.
-      if (currentChainId !== ogTestnet.id) {
-        setLogs(prev => [...prev, `[L2] Switching wallet to chainId ${ogTestnet.id}...`]);
-        try {
-          await switchChainAsync({ chainId: ogTestnet.id });
-        } catch (err: any) {
-          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
-            throw new Error('Add 0G Galileo testnet (chainId 16602, RPC https://evmrpc-testnet.0g.ai) to your wallet, then retry');
-          }
-          throw err;
-        }
-      }
-
-      // 1. Prepare
-      const prepRes = await apiRequest('/task/prepare', {
-        method: 'POST',
-        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce, colonyId: selectedColony ?? undefined }),
-      });
-      if (!prepRes.ok) throw new Error(`prepare failed: ${prepRes.status}`);
-      const prep = await prepRes.json() as {
-        specHash: string;
-        taskIdBytes32: `0x${string}`;
-        budgetWei: string;
-        decimals: number;
-        escrowAddress: `0x${string}`;
-        usdcAddress: `0x${string}`;
-      };
-      setLogs(prev => [...prev, `[L2] Prepared task ${prep.taskIdBytes32.slice(0, 12)}... budget=${budgetStr} mUSDC`]);
-      const budgetWei = BigInt(prep.budgetWei);
-
-      // 2. Approve USDC if allowance is insufficient.
-      const allowance = await readContract(wagmiConfig, {
-        address: prep.usdcAddress,
-        abi: ERC20_ABI,
-        functionName: 'allowance',
-        args: [walletAddress, prep.escrowAddress],
-      }) as bigint;
-
-      // 0G testnet RPC sometimes lags ~30s before propagating receipts.
-      // Bump timeout (default ~60s) and slow polling so we don't see
-      // "Transaction may not be processed on a block yet" too eagerly.
-      const RECEIPT_OPTS = { timeout: 180_000, pollingInterval: 3_000 } as const;
-
-      if (allowance < budgetWei) {
-        setSubmitStep('approving');
-        setLogs(prev => [...prev, `[L2] Approving USDC (current allowance ${allowance.toString()})...`]);
-        const approveHash = await writeContractAsync({
-          address: prep.usdcAddress,
-          abi: ERC20_ABI,
-          functionName: 'approve',
-          args: [prep.escrowAddress, budgetWei],
-          chainId: ogTestnet.id,
-        });
-        setLogs(prev => [...prev, `[L2] approve tx: ${approveHash}`]);
-        await waitForTransactionReceipt(wagmiConfig, { hash: approveHash, ...RECEIPT_OPTS });
-        setLogs(prev => [...prev, `[L2] approve confirmed`]);
-      } else {
-        setLogs(prev => [...prev, `[L2] allowance sufficient, skipping approve`]);
-      }
-
-      // 3. createTask — but only if the escrow doesn't already have this task.
-      // Specs are content-addressed, so resubmitting the same spec yields the
-      // same taskId; the contract would revert with "Task already exists".
-      // Detect upfront and skip straight to the AXL broadcast in that case.
-      setSubmitStep('creating');
-      const existing = (await readContract(wagmiConfig, {
-        address: prep.escrowAddress,
-        abi: SPORE_ESCROW_ABI,
-        functionName: 'tasks',
-        args: [prep.taskIdBytes32],
-      })) as readonly [`0x${string}`, bigint, bigint, boolean];
-      const existingOwner = existing[0];
-
-      if (existingOwner !== '0x0000000000000000000000000000000000000000') {
-        setLogs(prev => [...prev, `[L2] Task already on-chain (owner=${existingOwner.slice(0, 6)}…${existingOwner.slice(-4)}), skipping createTask`]);
-      } else {
-        setLogs(prev => [...prev, `[L2] Creating task on-chain...`]);
-        const createHash = await writeContractAsync({
-          address: prep.escrowAddress,
-          abi: SPORE_ESCROW_ABI,
-          functionName: 'createTask',
-          args: [prep.taskIdBytes32, budgetWei],
-          chainId: ogTestnet.id,
-        });
-        setLogs(prev => [...prev, `[L2] createTask tx: ${createHash}`]);
-        try {
-          await waitForTransactionReceipt(wagmiConfig, { hash: createHash, ...RECEIPT_OPTS });
-        } catch (err: any) {
-          // Receipt fetch can time out on a slow RPC even though the tx
-          // landed. Verify on-chain state directly before giving up.
-          const verify = (await readContract(wagmiConfig, {
-            address: prep.escrowAddress,
-            abi: SPORE_ESCROW_ABI,
-            functionName: 'tasks',
-            args: [prep.taskIdBytes32],
-          })) as readonly [`0x${string}`, bigint, bigint, boolean];
-          if (verify[0] === '0x0000000000000000000000000000000000000000') {
-            throw err; // really not on-chain
-          }
-          setLogs(prev => [...prev, `[L2] createTask receipt timed out, but task IS on-chain — continuing`]);
-        }
-        setLogs(prev => [...prev, `[L2] createTask confirmed`]);
-      }
-
-      // 4. Broadcast to AXL — backend re-uploads the same body to 0G storage
-      // (content-addressed → same hash) then verifies the task exists on-chain.
-      // Same nonce as /prepare so the storage hash matches.
-      setSubmitStep('submitting');
       const submitRes = await apiRequest('/task', {
         method: 'POST',
-        body: JSON.stringify({ spec: intent, budget: budgetStr, nonce: submissionNonce, colonyId: selectedColony ?? undefined }),
+        body: JSON.stringify({
+          spec: intent,
+          budget: budgetStr,
+          nonce: submissionNonce,
+          colonyId: selectedColony ?? undefined,
+        }),
       });
       if (!submitRes.ok) {
         const detail = await submitRes.json().catch(() => ({}));
+        if (submitRes.status === 402 && detail.code === 'INSUFFICIENT_BALANCE') {
+          throw new Error(`Insufficient Treasury balance — deposit ${detail.required} USDC first (current: ${detail.balance})`);
+        }
         throw new Error(`submit failed: ${detail.error ?? submitRes.status}`);
       }
       const data = await submitRes.json();
+      setLogs(prev => [...prev, `[API] Treasury debited budget=${budgetStr} USDC tx=${(data.treasuryTxHash ?? '').slice(0, 12)}`]);
 
       const params = new URLSearchParams(searchParams.toString());
       params.set('taskId', data.taskId);
@@ -568,11 +500,7 @@ function DashboardContent() {
               broadcast), we drop back to the input so the user can dispatch a
               follow-up intent without first clicking "New intent". */}
           {(() => {
-            const isDispatching =
-              submitStep === 'preparing' ||
-              submitStep === 'approving' ||
-              submitStep === 'creating' ||
-              submitStep === 'submitting';
+            const isDispatching = submitStep === 'submitting';
             const hasActiveTask = !!taskIdFromUrl;
             const taskComplete =
               !!dag?.finalResult ||
@@ -633,11 +561,6 @@ function DashboardContent() {
                       >
                         <Send className="w-4 h-4" />
                       </button>
-                      {submitStep === 'error' && (
-                        <div className="absolute -top-2 left-3 bg-background px-2 text-[10px] font-bold uppercase tracking-wider text-red-500">
-                          ⚠ Error — see logs
-                        </div>
-                      )}
                     </div>
                   </div>
                 </>
@@ -645,10 +568,7 @@ function DashboardContent() {
             }
 
             const dispatchLabel =
-              submitStep === 'preparing' ? 'Preparing spec…'
-              : submitStep === 'approving' ? 'Approving USDC…'
-              : submitStep === 'creating' ? 'Creating task on-chain…'
-              : submitStep === 'submitting' ? 'Broadcasting to SPORE…'
+              submitStep === 'submitting' ? 'Broadcasting to SPORE…'
               : dag ? 'DAG live — awaiting subtasks'
               : 'Awaiting DAG from planner…';
 
@@ -699,7 +619,7 @@ function DashboardContent() {
               onBudgetChange={setBudget}
               onColonyChange={setSelectedColony}
               hideModel
-              hideBudget
+              maxBudget={treasuryBalance != null ? Math.floor(treasuryBalance) : undefined}
             />
           </div>
         </div>

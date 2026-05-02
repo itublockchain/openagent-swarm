@@ -95,16 +95,26 @@ ENV AXL_NETWORK_ID=swarm-devnet \
     AXL_URL=http://localhost:9002 \
     AXL_PRIVATE_KEY=c92b8d017e34839e4a3d2189c6b4685b8fd8ef2d28c2f2f1542e50d8e3e95ac5202233f04023712b7fadf3b978d929dbbc9716ffa13962654d615261852f7e59
 
-# L2 deployed contract addresses (mirror contracts/deployments/og_testnet.json)
-ENV L2_RPC_URL=https://evmrpc-testnet.0g.ai \
-    L2_USDC_ADDRESS=0xcbF0cC20e36daf2689EA61632dA68B7fe9C22342 \
-    L2_ESCROW_ADDRESS=0x94fb6508EcfDa3FE6D2A8ed6c8d01fb81a237d48 \
-    L2_DAG_REGISTRY_ADDRESS=0x2f840678647791bA8764FD1aA9132706DFa46983 \
-    L2_SLASHING_VAULT_ADDRESS=0x42449309acA9620525A90dFaBB9aaB8c699b68b9 \
-    L2_AGENT_REGISTRY_ADDRESS=0xa20914AA64664a1D414593A398764018F1f72e3B \
-    L2_TREASURY_ADDRESS=0xcAa459ec1dF4004CeBA5712A6A01F013d9B00a74 \
+# L2 / 0G contract addresses are loaded at runtime from
+# contracts/deployments/og_testnet.json (and base_sepolia.json) — the
+# baked deploy file IS the source of truth. Override individual
+# addresses at runtime via L2_*_ADDRESS / BASE_*_ADDRESS env vars on
+# the docker-compose service if you need to point at a non-default
+# deployment.
+ENV OG_RPC_URL=https://evmrpc-testnet.0g.ai \
     L2_REQUIRED_CONFIRMATIONS=1 \
-    L2_TX_TIMEOUT_MS=30000
+    L2_TX_TIMEOUT_MS=30000 \
+    BASE_RPC_URL=https://base-sepolia-rpc.publicnode.com \
+    BASE_USDC_ADDRESS=0x036CbD53842c5426634e7929541eC2318f3dCF7e \
+    BASE_GATEWAY_ADDRESS=0x409e4d7af7fc0641c8f070c79d13ecb94d91e443 \
+    BRIDGE_STATE_DIR=/data
+
+# New tokenless 0G contract addresses (override static-imported og_testnet.json).
+ENV L2_TREASURY_ADDRESS=0x36b79557d2E364C84989b92EBcD74FD06ed6Bbbc \
+    L2_ESCROW_ADDRESS=0x7384557b02Cc2D3dAbCa4458aaED28276Ba5345A \
+    L2_DAG_REGISTRY_ADDRESS=0xb187cf541B337ac08D588C47C3073D5220fAC7BD \
+    L2_SLASHING_VAULT_ADDRESS=0xd950E64a5e6c214957DdDD1eb0C267BA7423d5AD \
+    L2_AGENT_REGISTRY_ADDRESS=0x3A90Ee31AB3D13682480F35F29b950dBa21aDe3e
 
 # 0G Compute relay
 ENV ZG_COMPUTE_RPC_URL=https://evmrpc-testnet.0g.ai \

@@ -32,6 +32,12 @@ type Props = {
   /** Hide the per-task USDC budget input — explorer routes through a fixed
    *  budget chosen elsewhere. */
   hideBudget?: boolean
+  /** Hard cap on the budget input. Defaults to 1000 USDC. The explorer
+   *  passes the user's current Treasury balance here so the user can't
+   *  type a number the backend would reject with 402 — the API already
+   *  enforces this server-side, but a UI cap makes the "deposit first"
+   *  hint redundant by keeping every submission within reach. */
+  maxBudget?: number
 }
 
 export function PromptConfigRow({
@@ -45,7 +51,12 @@ export function PromptConfigRow({
   hint,
   hideModel,
   hideBudget,
+  maxBudget = 1000,
 }: Props) {
+  // Effective cap can't drop below 1 (HTML number input rejects min > max).
+  // Float maxBudget down to a positive integer so a fractional balance like
+  // 4.97 USDC doesn't surface as `max=4.97` (browser quirks vary).
+  const effectiveMax = Math.max(1, Math.floor(maxBudget))
   return (
     <div className="mt-3 flex items-center justify-between px-1">
       <div className="flex items-center gap-2 flex-wrap">
@@ -65,20 +76,23 @@ export function PromptConfigRow({
         )}
 
         {!hideBudget && (
-          <div className="inline-flex items-center h-6 rounded border border-border bg-muted focus-within:border-foreground/30">
+          <div
+            className="inline-flex items-center h-6 rounded border border-border bg-muted focus-within:border-foreground/30"
+            title={`Budget capped at ${effectiveMax} USDC (your Treasury balance).`}
+          >
             <input
               type="number"
               min={1}
-              max={1000}
+              max={effectiveMax}
               step={1}
               value={budget}
               onChange={e => {
                 const n = Number(e.target.value)
-                if (Number.isFinite(n)) onBudgetChange(Math.max(1, Math.min(1000, Math.floor(n))))
+                if (Number.isFinite(n)) onBudgetChange(Math.max(1, Math.min(effectiveMax, Math.floor(n))))
               }}
-              className="w-10 h-full bg-transparent px-1.5 text-[10px] leading-none text-right text-foreground/80 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              className="w-12 h-full bg-transparent px-1.5 text-[10px] leading-none text-right text-foreground/80 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
             />
-            <span className="pr-1.5 text-[10px] leading-none text-muted-foreground">USDC</span>
+            <span className="pr-1.5 text-[10px] leading-none text-muted-foreground">/ {effectiveMax} USDC</span>
           </div>
         )}
 

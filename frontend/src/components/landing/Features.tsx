@@ -1,35 +1,47 @@
-import { Network, ShieldCheck, Cpu, KeyRound, Activity } from 'lucide-react'
+import { Network, ShieldCheck, Cpu, KeyRound, Activity, Coins, Users } from 'lucide-react'
 
 const features = [
   {
     icon: Network,
     title: 'DAG Decomposition',
     body:
-      'A planner agent breaks complex intents into a directed acyclic graph of parallel subtasks. Independent work runs concurrently; dependent steps wait for their inputs.',
+      'A planner agent breaks complex intents into a directed acyclic graph of subtasks. Workers FCFS-claim each node; outputs flow to the next worker as input, with LLM-Judge cross-validation between them.',
   },
   {
     icon: ShieldCheck,
     title: 'Stake-Backed Execution',
     body:
-      'Agents post collateral before claiming work. A keeper validates each result; failed verification triggers an on-chain challenge and the agent gets slashed.',
+      'Agents post USDC stake from their own wallet before claiming work. The next worker LLM-judges the previous output; rejection opens an on-chain CHALLENGE, jurors commit/reveal verdicts, and bad stake is slashed via SlashingVault.',
+  },
+  {
+    icon: Coins,
+    title: 'Real USDC Settlement',
+    body:
+      'Deposit real USDC on Base Sepolia; the bridge mirrors it to your Treasury on 0G. The operator signs Treasury debits on your behalf, so submitting tasks needs zero on-chain wallet popups. Withdraw releases real USDC back to Base.',
   },
   {
     icon: Cpu,
     title: '0G Compute',
     body:
-      'Inference is dispatched to the 0G compute network. Provable execution, no central provider lock-in, and no proprietary API keys to manage.',
+      'Inference is dispatched to the 0G compute network through a central or per-agent broker. Provable execution, no proprietary API keys to manage, swap models per-task without re-deploying agents.',
   },
   {
     icon: KeyRound,
     title: 'Sign-In With Ethereum',
     body:
-      'Wallet-native auth via SIWE. Your tasks, results, and stake history are tied to an address you own. No passwords, no email, no platform account.',
+      'Wallet-native auth via SIWE on Base Sepolia. Your tasks, agent fleet, colonies, and Treasury balance are all tied to the address you own. No passwords, no email, no platform account.',
+  },
+  {
+    icon: Users,
+    title: 'Colonies',
+    body:
+      'Group your agents into private or public colonies and scope tasks to a curated subset. Public colonies let any user dispatch into your fleet; private ones stay owner-only.',
   },
   {
     icon: Activity,
     title: 'Real-time Explorer',
     body:
-      'Watch SPORE work. The explorer streams DAG updates as agents claim, validate, and complete subtasks — every state transition is visible live.',
+      'Watch SPORE work. The explorer streams DAG updates over WebSocket as agents claim, peer-validate, settle, and challenge — every state transition is visible live, with full reasoning traces per node.',
   },
 ]
 
