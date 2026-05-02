@@ -4,15 +4,22 @@ import { ethers } from 'ethers'
 import { getChainClient, USDC_DECIMALS } from './v1/chain'
 
 /**
- * Watches USDCGateway.Deposited events on Base Sepolia and mirrors them
- * into SwarmTreasury.balanceOf on 0G. The operator EOA holds the keys
- * for both writes — getChainClient() owns the wallets.
+ * Watches `Deposited` events on Base Sepolia from BOTH the legacy
+ * USDCGateway (direct deposits) and the CCTPDepositReceiver (cross-chain
+ * USDC mints relayed in via Circle CCTP V2). Both contracts emit the
+ * exact same event signature, so a single ABI parses both — what differs
+ * is which contract address the event came from. We mirror each into
+ * SwarmTreasury.balanceOf on 0G.
  *
- * Idempotency: every processed event is keyed by `${txHash}:${logIndex}`
- * and persisted to disk. On boot we scan from `lastProcessedBlock - 5`
- * (a small overlap to catch reorgs / missed events) up to the current
- * head, then switch to a real-time `provider.on('block')` poll for
- * incremental events. We don't use eth_subscribe because the Base
+ * Idempotency: every processed event is keyed by
+ *   `${contractAddress}:${txHash}:${logIndex}`
+ * and persisted to disk. Per-contract block cursors so adding a new
+ * watch source (e.g., another receiver in the future) doesn't reset
+ * the others. Old single-cursor state is auto-migrated on first load.
+ *
+ * On boot we scan from `lastProcessedBlock - 5` (a small overlap to
+ * catch reorgs / missed events) up to the current head, then poll every
+ * 12s for incremental events. eth_subscribe is avoided because the Base
  * Sepolia public RPC sometimes drops it; polling is robust and the
  * trickle of deposit events doesn't justify the complexity.
  */
@@ -22,17 +29,29 @@ const STATE_FILE = 'bridge-watcher.json'
 const POLL_INTERVAL_MS = 12_000 // Base block time ~2s; 12s = 6 blocks behind, fine for UX
 const REORG_OVERLAP_BLOCKS = 5
 
+type WatchSource = {
+  label: string
+  address: string
+  contract: ethers.Contract
+  fallbackStartBlock: number
+}
+
 interface PersistedState {
-  lastProcessedBlock: number
+  /** address (lowercase) → last processed block. */
+  lastProcessedBlockByContract: Record<string, number>
+  /** `${address}:${txHash}:${logIndex}` */
   processedKeys: string[]
+  /** Legacy single-cursor field — migrated on load. */
+  lastProcessedBlock?: number
 }
 
 export class BridgeWatcher {
-  private lastProcessedBlock = 0
+  private lastProcessedBlockByContract: Record<string, number> = {}
   private processedKeys = new Set<string>()
   private timer: NodeJS.Timeout | null = null
   private statePath: string
   private inFlight = false
+  private sources: WatchSource[] = []
 
   constructor() {
     this.statePath = path.join(STATE_DIR, STATE_FILE)
@@ -43,37 +62,57 @@ export class BridgeWatcher {
    *  is a no-op while the first poll is in flight. */
   async start(): Promise<void> {
     const client = getChainClient()
-    if (!client.gatewayAddr || !client.readGateway) {
-      console.warn('[BridgeWatcher] gateway address missing — bridge disabled')
-      return
-    }
     if (!client.writeTreasury) {
       console.warn('[BridgeWatcher] PRIVATE_KEY missing — bridge disabled (read-only)')
       return
     }
 
-    this.loadState()
+    const head = await client.baseProvider.getBlockNumber().catch(() => 0)
 
-    // First-time boot: start at the gateway's current head instead of
-    // scanning unbounded history. Any pre-existing deposits would have
-    // been credited already; restart-time backfill is the only thing
-    // we need to handle here.
-    if (this.lastProcessedBlock === 0) {
-      try {
-        const head = await client.baseProvider.getBlockNumber()
-        this.lastProcessedBlock = Math.max(0, head - 1)
-        console.log(`[BridgeWatcher] First-run init: starting at block ${this.lastProcessedBlock}`)
-        this.persistState()
-      } catch (err) {
-        console.error('[BridgeWatcher] failed to read base head; will retry on next tick:', err)
-      }
+    if (client.gatewayAddr && client.readGateway) {
+      this.sources.push({
+        label: 'USDCGateway',
+        address: client.gatewayAddr.toLowerCase(),
+        contract: client.readGateway,
+        fallbackStartBlock: Math.max(0, head - 1),
+      })
+    }
+    if (client.cctpReceiverAddr && client.readCctpReceiver) {
+      this.sources.push({
+        label: 'CCTPDepositReceiver',
+        address: client.cctpReceiverAddr.toLowerCase(),
+        contract: client.readCctpReceiver,
+        // Receiver was deployed at a known block — start there so we
+        // don't miss any mints that landed before this watcher booted.
+        fallbackStartBlock: client.cctpReceiverDeployBlock || Math.max(0, head - 1),
+      })
     }
 
+    if (this.sources.length === 0) {
+      console.warn('[BridgeWatcher] no watch sources configured — bridge disabled')
+      return
+    }
+
+    this.loadState()
+
+    // First-time init per source: pin the cursor so we don't scan
+    // unbounded history. Existing entries are kept as-is.
+    for (const src of this.sources) {
+      if (this.lastProcessedBlockByContract[src.address] == null) {
+        this.lastProcessedBlockByContract[src.address] = src.fallbackStartBlock
+        console.log(
+          `[BridgeWatcher] First-run init for ${src.label} @ ${src.address}: starting at block ${src.fallbackStartBlock}`,
+        )
+      }
+    }
+    this.persistState()
+
     console.log(
-      `[BridgeWatcher] starting; gateway=${client.gatewayAddr} treasury=${client.treasuryAddr} fromBlock=${this.lastProcessedBlock}`,
+      `[BridgeWatcher] starting; sources=[${this.sources
+        .map(s => `${s.label}@${s.address.slice(0, 10)}…(block ${this.lastProcessedBlockByContract[s.address]})`)
+        .join(', ')}] treasury=${client.treasuryAddr}`,
     )
 
-    // Run an initial catch-up immediately, then poll on interval.
     await this.tick().catch(err => console.error('[BridgeWatcher] initial tick failed:', err))
     this.timer = setInterval(() => {
       this.tick().catch(err => console.error('[BridgeWatcher] tick failed:', err))
@@ -88,31 +127,48 @@ export class BridgeWatcher {
     }
   }
 
+  /** Look up whether a specific deposit event was already credited.
+   *  Used by /v1/cctp/status to surface the final 0G credit step. */
+  hasProcessed(contractAddress: string, txHash: string): boolean {
+    const addr = contractAddress.toLowerCase()
+    for (const key of this.processedKeys) {
+      if (key.startsWith(`${addr}:${txHash.toLowerCase()}:`)) return true
+    }
+    return false
+  }
+
   private async tick(): Promise<void> {
     if (this.inFlight) return
     this.inFlight = true
     try {
       const client = getChainClient()
       const head = await client.baseProvider.getBlockNumber()
-      const fromBlock = Math.max(0, this.lastProcessedBlock - REORG_OVERLAP_BLOCKS)
-      const toBlock = head
-      if (fromBlock > toBlock) return
 
-      const filter = client.readGateway.filters.Deposited()
-      const events = await client.readGateway.queryFilter(filter, fromBlock, toBlock)
-      for (const event of events) {
-        await this.processEvent(event as ethers.EventLog)
+      for (const src of this.sources) {
+        const cursor = this.lastProcessedBlockByContract[src.address] ?? src.fallbackStartBlock
+        const fromBlock = Math.max(0, cursor - REORG_OVERLAP_BLOCKS)
+        const toBlock = head
+        if (fromBlock > toBlock) continue
+
+        const filter = src.contract.filters.Deposited()
+        const events = await src.contract.queryFilter(filter, fromBlock, toBlock)
+        for (const event of events) {
+          await this.processEvent(src.label, src.address, event as ethers.EventLog)
+        }
+        this.lastProcessedBlockByContract[src.address] = toBlock
       }
-      // Advance the cursor only after we successfully processed everything.
-      this.lastProcessedBlock = toBlock
       this.persistState()
     } finally {
       this.inFlight = false
     }
   }
 
-  private async processEvent(event: ethers.EventLog): Promise<void> {
-    const key = `${event.transactionHash}:${event.index}`
+  private async processEvent(
+    label: string,
+    contractAddress: string,
+    event: ethers.EventLog,
+  ): Promise<void> {
+    const key = `${contractAddress}:${event.transactionHash.toLowerCase()}:${event.index}`
     if (this.processedKeys.has(key)) return
 
     const args = event.args ?? ([] as any)
@@ -133,13 +189,11 @@ export class BridgeWatcher {
       const receipt = await tx.wait()
       const ogTxHash = receipt?.hash ?? tx.hash
       console.log(
-        `[BridgeWatcher] Credited ${ethers.formatUnits(amount, USDC_DECIMALS)} USDC to ${user} (base tx ${event.transactionHash.slice(0, 12)}, og tx ${ogTxHash.slice(0, 12)})`,
+        `[BridgeWatcher] ${label}: credited ${ethers.formatUnits(amount, USDC_DECIMALS)} USDC to ${user} (base tx ${event.transactionHash.slice(0, 12)}, og tx ${ogTxHash.slice(0, 12)})`,
       )
       this.processedKeys.add(key)
     } catch (err) {
       console.error(`[BridgeWatcher] creditBalance failed for ${key}:`, err)
-      // Don't add to processedKeys — next tick will retry. Re-throw so the
-      // caller logs `tick failed` but doesn't advance lastProcessedBlock.
       throw err
     }
   }
@@ -149,10 +203,28 @@ export class BridgeWatcher {
       if (!fs.existsSync(this.statePath)) return
       const raw = fs.readFileSync(this.statePath, 'utf-8')
       const parsed = JSON.parse(raw) as PersistedState
-      this.lastProcessedBlock = parsed.lastProcessedBlock || 0
+
+      this.lastProcessedBlockByContract = parsed.lastProcessedBlockByContract || {}
       this.processedKeys = new Set(parsed.processedKeys || [])
+
+      // Migrate legacy single-cursor field. The pre-CCTP watcher had a
+      // single `lastProcessedBlock` that always referred to the gateway —
+      // map it onto the gateway address and drop the old field.
+      if (parsed.lastProcessedBlock != null && Object.keys(this.lastProcessedBlockByContract).length === 0) {
+        const client = getChainClient()
+        if (client.gatewayAddr) {
+          const addr = client.gatewayAddr.toLowerCase()
+          this.lastProcessedBlockByContract[addr] = parsed.lastProcessedBlock
+          console.log(`[BridgeWatcher] migrated legacy cursor → ${addr}@${parsed.lastProcessedBlock}`)
+        }
+      }
+
+      // Migrate legacy dedupe keys (no contract address prefix). They
+      // can't be retroactively classified, so we just keep them — old
+      // events won't re-emit anyway since the cursor has moved past them.
+
       console.log(
-        `[BridgeWatcher] state loaded: lastBlock=${this.lastProcessedBlock} processedKeys=${this.processedKeys.size}`,
+        `[BridgeWatcher] state loaded: cursors=${JSON.stringify(this.lastProcessedBlockByContract)} processedKeys=${this.processedKeys.size}`,
       )
     } catch (err) {
       console.warn('[BridgeWatcher] failed to load state, starting fresh:', err)
@@ -165,7 +237,7 @@ export class BridgeWatcher {
         fs.mkdirSync(STATE_DIR, { recursive: true })
       }
       const state: PersistedState = {
-        lastProcessedBlock: this.lastProcessedBlock,
+        lastProcessedBlockByContract: this.lastProcessedBlockByContract,
         // Cap the persisted set so it doesn't grow unbounded. Keys older
         // than the current cursor minus 1000 blocks can't be re-emitted
         // by the catch-up scan, so dropping them is safe.

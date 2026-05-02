@@ -63,4 +63,5 @@ import { ENV } from '../../lib/env'
 export const CONTRACT_ADDRESSES = {
   usdc: ENV.USDC_ADDRESS,
   gateway: ENV.GATEWAY_ADDRESS,
+  cctpReceiver: ENV.CCTP_RECEIVER_ADDRESS,
 }

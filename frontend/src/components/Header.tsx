@@ -6,14 +6,14 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { useSearchParams } from 'next/navigation'
 import { ArrowDownToLine, ArrowUpFromLine, Copy, Check, LogOut, Rocket, Wallet } from 'lucide-react'
-import { useChainId, useReadContract, useSwitchChain } from 'wagmi'
+import { useChainId, useReadContract } from 'wagmi'
 import { ThemeToggle } from './theme-toggle'
 import { useAuth } from '../hooks/useAuth'
 import { WalletModal } from './WalletModal'
 import { DepositModal } from './DepositModal'
 import { WithdrawModal } from './WithdrawModal'
 import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
-import { paymentChain } from '../../lib/wagmi'
+import { CCTP_SOURCE_CHAINS, BASE_SEPOLIA_CHAIN_ID } from '@/lib/cctp'
 import { apiRequest } from '../../lib/api'
 
 const USDC_DECIMALS = 6
@@ -45,22 +45,25 @@ function WalletPill({
   onWithdraw: () => void
 }) {
   const chainId = useChainId()
-  const { switchChainAsync } = useSwitchChain()
   const [copied, setCopied] = useState(false)
-  const onCorrectChain = chainId === paymentChain.id
 
-  // Real wallet USDC on Base Sepolia. Pinned to paymentChain.id so it
-  // reads from Base regardless of which chain the wallet is currently
-  // selected on — without the pin, `balanceOf` runs against e.g. mainnet
-  // where this address has no contract and quietly returns 0.
-  const usdcAddr = CONTRACT_ADDRESSES.usdc
+  // Resolve the USDC contract on whatever chain the wallet is connected to.
+  // Base Sepolia uses the env-configured USDC; other CCTP-supported chains
+  // use the addresses pinned in lib/cctp. On unsupported chains we hide
+  // the wallet USDC line (showing 0 from a missing contract is misleading).
+  const sourceCfg = chainId === BASE_SEPOLIA_CHAIN_ID
+    ? { usdc: CONTRACT_ADDRESSES.usdc, name: 'Base Sepolia' }
+    : CCTP_SOURCE_CHAINS[chainId]
+      ? { usdc: CCTP_SOURCE_CHAINS[chainId].usdc, name: CCTP_SOURCE_CHAINS[chainId].name }
+      : null
+
   const walletUsdcQ = useReadContract({
     abi: ERC20_ABI,
-    address: usdcAddr,
-    chainId: paymentChain.id,
+    address: sourceCfg?.usdc,
+    chainId,
     functionName: 'balanceOf',
-    args: [address],
-    query: { enabled: !!usdcAddr, refetchInterval: 12_000 },
+    args: address ? [address] : undefined,
+    query: { enabled: !!sourceCfg?.usdc && !!address, refetchInterval: 12_000 },
   })
   const walletUsdc = fmtUsdcRaw(walletUsdcQ.data as bigint | undefined)
 
@@ -76,21 +79,16 @@ function WalletPill({
 
   return (
     <div className="hidden sm:flex items-stretch border border-border rounded-md bg-muted/50 text-xs font-mono divide-x divide-border overflow-hidden">
-      {onCorrectChain ? (
-        <div className="px-2 py-1.5 flex items-center gap-1.5 text-muted-foreground">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-          <span className="hidden md:inline">Base Sepolia</span>
-        </div>
-      ) : (
-        <button
-          onClick={() => switchChainAsync({ chainId: paymentChain.id }).catch(() => {})}
-          className="px-2 py-1.5 flex items-center gap-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
-          title="Switch to Base Sepolia"
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-          <span className="hidden md:inline">Wrong network</span>
-        </button>
-      )}
+      {/* Connected chain badge. With CCTP V2, every supported chain is
+          a valid source — no "wrong network" state. Unsupported chains
+          render in amber so the user knows deposits won't work. */}
+      <div
+        className={`px-2 py-1.5 flex items-center gap-1.5 ${sourceCfg ? 'text-muted-foreground' : 'text-amber-500'}`}
+        title={sourceCfg ? `Connected: ${sourceCfg.name}` : 'Switch to a supported chain in the deposit modal'}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${sourceCfg ? 'bg-green-500' : 'bg-amber-500'}`} />
+        <span className="hidden md:inline">{sourceCfg?.name ?? `chain ${chainId}`}</span>
+      </div>
 
       {/* Two stacked balances: in-app Treasury (what every action spends
           from) and the user's raw wallet USDC on Base Sepolia. Showing
