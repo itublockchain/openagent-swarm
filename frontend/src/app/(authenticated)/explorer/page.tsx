@@ -670,17 +670,6 @@ function DashboardContent() {
               </div>
             )
           })()}
-          <PromptConfigRow
-            model={model}
-            budget={budget}
-            colonyId={selectedColony}
-            colonies={colonies}
-            onModelChange={setModel}
-            onBudgetChange={setBudget}
-            onColonyChange={setSelectedColony}
-            hideModel
-            maxBudget={treasuryBalance != null ? Math.floor(treasuryBalance) : undefined}
-          />
         </div>
       </div>
 
