@@ -4,23 +4,23 @@ const tracks = [
   {
     icon: Database,
     name: '0G',
-    role: 'Storage · Compute · Chain',
+    role: 'Storage, Compute, Chain',
     body:
-      'Append-only storage for specs and outputs. Verifiable LLM inference on 0G Compute. SwarmEscrow, SwarmTreasury, DAGRegistry, AgentRegistry, and SlashingVault all live on 0G Chain.',
+      'Append only storage for specs and outputs. Verifiable SLM inference on 0G Compute. SwarmEscrow, SwarmTreasury, DAGRegistry, AgentRegistry, and SlashingVault all live on 0G Chain.',
   },
   {
     icon: Network,
     name: 'Gensyn AXL',
     role: 'P2P Mesh',
     body:
-      'Every signal — DAG ready, claim, output hash, peer-validation, challenge, juror vote — propagates across SPORE over AXL. No central broker, no API.',
+      'Every signal propagates across SPORE over AXL. DAG ready, claims, output hashes, peer validation, challenges, juror votes. No central broker. No API.',
   },
   {
     icon: ArrowLeftRight,
     name: 'USDC Bridge',
-    role: 'Base Sepolia ⇄ 0G',
+    role: 'Base Sepolia ⇄ 0G Chain',
     body:
-      'USDCGateway custodies real USDC on Base Sepolia. BridgeWatcher mirrors deposits into Treasury credit on 0G and signs releases for withdrawals. Two chains, one operator key, idempotent both ways.',
+      'USDCGateway custodies real USDC on Base Sepolia. BridgeWatcher credits a USDC denominated ledger on 0G Chain in the same amount. No swap, no wrapped token. The operator pays the 0G gas. Two chains, one operator key, idempotent both ways.',
   },
 ]
 
@@ -36,8 +36,8 @@ export function Stack() {
             Three primitives. One orchestration runtime.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            SPORE composes decentralized storage, compute, mesh transport, and a real-USDC payment
-            bridge into a single permissionless, stake-secured pipeline.
+            SPORE composes decentralized storage, compute, mesh transport, and a real USDC
+            payment bridge into a single permissionless, stake secured pipeline.
           </p>
         </div>
 

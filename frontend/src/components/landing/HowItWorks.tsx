@@ -4,37 +4,37 @@ const phases = [
   {
     icon: Wallet,
     label: 'Deposit',
-    title: 'Real USDC in. Treasury credited.',
+    title: 'Real USDC in. Ledger credited.',
     body:
-      'Sign one transaction on Base Sepolia. The bridge watches the Gateway for your Deposited event and mirrors it as Treasury balance on 0G — what every agent and task spends from.',
+      'Sign one transaction on Base Sepolia. Real USDC stays in the Gateway. The bridge credits a USDC denominated ledger entry on 0G Chain. No swap. No wrapped token. No 0G in your wallet. Tasks spend from this ledger.',
     steps: [
-      'User calls USDCGateway.deposit on Base Sepolia (one approve + one deposit).',
-      'BridgeWatcher sees the on-chain event and credits SwarmTreasury.balanceOf on 0G.',
-      'User signs the intent via SIWE; the API operator signs Treasury.spendOnBehalfOf so no 0G wallet popup is ever needed.',
+      'User calls USDCGateway.deposit on Base Sepolia. One approve, one deposit. Real USDC sits in the Gateway.',
+      'BridgeWatcher sees the on chain event. The operator credits SwarmTreasury.balanceOf on 0G Chain in the same USDC amount. Pure accounting, no token transfer.',
+      'User signs the intent via SIWE off chain. The API operator pays the 0G gas and signs Treasury.spendOnBehalfOf. The user never holds 0G.',
     ],
   },
   {
     icon: GitBranch,
     label: 'Execute',
-    title: 'Agents race for work, in parallel.',
+    title: 'Agents race for work. In parallel.',
     body:
-      'A planner wins an FCFS auction, decomposes the intent into a DAG, and seals it on 0G. Workers FCFS-claim each subtask, stake against it, and the next worker in line audits the previous output through an LLM-Judge before continuing.',
+      'A planner wins an FCFS auction. It decomposes the intent into a DAG and seals it on 0G. Workers FCFS claim each subtask and stake against it. The next worker in line audits the previous output through an SLM Judge before continuing.',
     steps: [
-      'Planner builds the DAG on 0G Compute and registers it in DAGRegistry.',
-      'Per-subtask FCFS claiming — workers lock USDC stake from their agent wallet to win a node, write outputs to 0G Storage, broadcast the hash over Gensyn AXL.',
-      'Next worker runs an LLM-Judge on 0G Compute. Bad output → on-chain challenge → stake slashed via SlashingVault → node re-auctioned. SPORE self-heals.',
+      'Planner builds the DAG on 0G Compute. It registers the DAG in DAGRegistry.',
+      'Per subtask FCFS claiming. Workers lock USDC stake from their agent wallet to win a node, write outputs to 0G Storage, broadcast the hash over Gensyn AXL.',
+      'Next worker runs an SLM Judge on 0G Compute. Bad output triggers an on chain challenge. Stake gets slashed via SlashingVault. The node is re auctioned. SPORE self heals.',
     ],
   },
   {
     icon: Coins,
     label: 'Settle',
-    title: 'Validate batch. Pay everyone in one tx.',
+    title: 'Validate the batch. Pay everyone in one tx.',
     body:
-      'When the last node lands, the planner-keeper validates the whole DAG on-chain in a single batch and SwarmEscrow pays the planner plus every honest worker. Withdraw any time — the operator releases real USDC back to your Base Sepolia wallet.',
+      'When the last node lands, the planner keeper validates the whole DAG on chain in a single batch. SwarmEscrow pays the planner plus every honest worker. Withdraw any time. The operator releases real USDC back to your Base Sepolia wallet.',
     steps: [
-      'Planner-keeper LLM-Judges the final output, then calls markValidatedBatch + settleTask on 0G.',
-      'SwarmEscrow splits the locked budget across the planner and every node\'s claimant; slashed stake from any challenged node is forfeited.',
-      'Withdraw debits Treasury on 0G and releases real USDC on Base Sepolia via USDCGateway — single request, idempotent.',
+      'Planner keeper SLM judges the final output, then calls markValidatedBatch and settleTask on 0G.',
+      "SwarmEscrow splits the locked budget across the planner and every node's claimant. Slashed stake from any challenged node is forfeited.",
+      'Withdraw debits Treasury on 0G and releases real USDC on Base Sepolia via USDCGateway. Single request, idempotent.',
     ],
   },
 ]
@@ -45,12 +45,12 @@ export function HowItWorks() {
       <div className="mx-auto max-w-6xl">
         <div className="max-w-2xl mb-14 mx-auto text-center">
           <h2 className="text-3xl md:text-4xl font-extrabold tracking-tighter">
-            Permissionless claims. Stake-backed audits. Self-organizing settlement.
+            Permissionless claims. Stake backed audits. Self organizing settlement.
           </h2>
           <p className="mt-4 text-muted-foreground leading-relaxed">
-            The runtime orchestrates itself — planning, dispatching, auditing, and settling
-            without a coordinator. Each phase is enforced by USDC stake on 0G and
-            verified through 0G Storage, 0G Compute, and Gensyn AXL.
+            The runtime orchestrates itself. Planning, dispatch, audit, settlement.
+            No coordinator. Each phase is enforced by USDC stake on 0G and verified
+            through 0G Storage, 0G Compute, and Gensyn AXL.
           </p>
         </div>
 
@@ -62,7 +62,7 @@ export function HowItWorks() {
             >
               <div className="flex items-center justify-between mb-4">
                 <span className="font-mono text-[10px] text-muted-foreground tracking-widest uppercase">
-                  Phase 0{i + 1} · {label}
+                  Phase 0{i + 1}, {label}
                 </span>
                 <div className="w-10 h-10 rounded-lg bg-muted/60 flex items-center justify-center">
                   <Icon className="w-5 h-5 text-foreground" />

@@ -31,7 +31,7 @@ export function LandingPrompt() {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Describe a task for SPORE..."
+          placeholder="Describe a task for SPORE."
           rows={1}
           className="w-full resize-none bg-transparent px-5 py-5 pr-16 text-base text-foreground placeholder:text-muted-foreground focus:outline-none min-h-[64px] max-h-[200px]"
           aria-label="Task prompt"

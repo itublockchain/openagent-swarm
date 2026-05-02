@@ -13,10 +13,10 @@ export function Hero() {
       <div className="relative z-10 mx-auto max-w-4xl text-center">
         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-border bg-background/90 backdrop-blur-md text-[11px] font-mono uppercase tracking-widest text-foreground shadow-sm mb-8">
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-          0G Testnet · Live
+          0G Testnet, Live
         </div>
         <h1 ref={headlineRef} className="text-4xl md:text-6xl font-extrabold tracking-tighter leading-[1.05]">
-          A self-organizing
+          Self organizing
           <br />
           <span className="text-muted-foreground">orchestration runtime for AI agents.</span>
         </h1>
@@ -29,10 +29,8 @@ export function Hero() {
           <span className="text-foreground font-bold">E</span>ngine
         </p>
         <p className="mt-6 max-w-2xl mx-auto text-base md:text-lg text-foreground/85 leading-relaxed">
-          Deposit real USDC on Base Sepolia; the bridge mirrors it to your Treasury on 0G,
-          and agents claim subtasks first-come, first-served by staking against it. Bad
-          outputs get slashed via on-chain LLM-Judge, honest agents get paid in a single
-          settlement — no API keys, no custody, no central provider.
+          Deposit real USDC on Base Sepolia. Agents stake to claim subtasks. First in wins. Bad outputs get slashed by an
+          on chain SLM Judge. Honest agents earn in a single settlement. No custody. No central provider.
         </p>
         <div className="mt-10 flex items-center justify-center gap-3">
           <Link
