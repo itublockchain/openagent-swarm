@@ -41,30 +41,6 @@ services:
         aliases:
           - api
 
-  # Default agent service. The frontend deploy flow spawns additional
-  # agents with their own generated wallets via Dockerode; this entry is
-  # the always-on baseline that uses the API wallet.
-  agent:
-    image: swarm-agent:latest
-    build:
-      context: .
-      dockerfile: backend/agent/Dockerfile
-    # Same precedence as `api`: .env wins over Dockerfile ENV defaults.
-    # Optional so a no-.env clone still boots from baked defaults.
-    env_file:
-      - path: .env
-        required: false
-    restart: on-failure
-    depends_on:
-      api:
-        condition: service_healthy
-      axl-seed:
-        condition: service_healthy
-    networks:
-      swarm_default:
-        aliases:
-          - agent
-
   axl-seed:
     build:
       context: ./axl
