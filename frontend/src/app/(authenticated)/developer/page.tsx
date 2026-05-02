@@ -138,7 +138,7 @@ export default function DeveloperPage() {
     setConfirmState({
       isOpen: true,
       title: 'Revoke API Key',
-      message: `Are you sure you want to revoke key "${k.name ?? k.prefix}"? Any application using this key will lose access immediately.`,
+      message: `Are you sure you want to revoke key "${k.name ?? k.prefix.replace(/…$/, '')}"? Any application using this key will lose access immediately.`,
       isDestructive: true,
       confirmText: 'Revoke Key',
       onConfirm: async () => {
@@ -272,8 +272,8 @@ export default function DeveloperPage() {
                 <li key={k.id} className="py-3 flex items-center justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2 text-sm font-medium">
-                      <span>{k.name || '(unnamed)'}</span>
-                      <CopyableId value={k.prefix} head={6} tail={4} />
+                      {k.name && <span>{k.name}</span>}
+                      <CopyableId value={k.prefix.replace(/…$/, '')} head={20} tail={0} />
                     </div>
                     <div className="mt-1 text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
                       {k.scopes.map(s => (
