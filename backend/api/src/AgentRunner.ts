@@ -737,7 +737,13 @@ export class AgentManager {
         stakeAmount: ethers.formatUnits(a.stakeAmount, USDC_DECIMALS),
         status,
         deployedAt: Number(a.deployedAt) * 1000,
-        ownerAddress: a.owner,
+        // a.owner is the operator wallet (msg.sender at register()), not the
+        // end user. The real user ownership lives in the local secret store
+        // (set from auth at /agent/prepare). Fall through to a.owner only
+        // when we lost the secret, so authorization-style filters still get
+        // *some* address — never expose the operator wallet as if it were
+        // the deployer.
+        ownerAddress: secret?.ownerAddress ?? a.owner,
       })
       if (secret) seenLocal.add(secret.agentId)
     }
