@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { wsClient, WSEvent } from '../lib/ws'
 import { EventType, TranscriptStep } from '../../../shared/types'
 import { ENV } from '../../lib/env'
+import { useAuth } from '../context/AuthContext'
 
 export type SubtaskStatus = 'idle' | 'claimed' | 'pending' | 'done' | 'failed'
 
@@ -68,6 +69,7 @@ export interface DAGState {
 export function useSporeEvents() {
   const searchParams = useSearchParams()
   const router = useRouter()
+  const { jwt, address } = useAuth()
 
   // URL'den taskId al
   const taskIdFromUrl = searchParams.get('taskId')
@@ -121,16 +123,27 @@ export function useSporeEvents() {
 
   useEffect(() => {
     const apiUrl = ENV.WS_URL
-    wsClient.connect(apiUrl)
+    wsClient.connect(apiUrl, { token: jwt })
+    // Subscribing to a deep-linked taskId is required when the viewer
+    // doesn't own it (anonymous browser, or a different wallet). Owners
+    // get their own task events automatically via the JWT-scoped channel.
+    if (taskIdFromUrl) {
+      wsClient.subscribe(taskIdFromUrl)
+    }
 
     const handleAll = (event: WSEvent) => {
       console.log('[useSporeEvents] Incoming event:', event.type, event.payload);
       setEvents(prev => [event, ...prev].slice(0, 50))
     }
 
+    // Backend already scopes per-user / per-subscription, so any taskId
+    // we receive is one we're entitled to see. We still gate updates to
+    // the local `dag` state on "is this the task currently displayed in
+    // this tab" so multi-tab usage (own task in tab A, watching another
+    // in tab B) doesn't clobber B's box state with A's events.
     const matchesActiveTask = (taskId: string): boolean => {
       if (!taskIdFromUrl) return true
-      return taskId.startsWith(taskIdFromUrl) || taskIdFromUrl.startsWith(taskId)
+      return taskId === taskIdFromUrl
     }
 
     const updateBox = (nodeId: string, taskId: string, patch: (b: SubtaskBox) => SubtaskBox) => {
@@ -142,23 +155,38 @@ export function useSporeEvents() {
     }
 
     const handleDAGReady = (event: WSEvent) => {
-      const { nodes, taskId } = event.payload as any
+      const { nodes, taskId, plannerAgentId, submittedBy } = event.payload as any
       console.log('[useSporeEvents] DAG_READY received for task:', taskId);
 
-      if (!taskIdFromUrl || matchesActiveTask(taskId)) {
-        const { plannerAgentId } = event.payload as any
-        setDag({
-          taskId,
-          plannerId: plannerAgentId,
-          boxes: nodes.map((n: any) => ({
-            nodeId: n.id,
-            subtask: n.subtask,
-            status: 'idle',
-            passes: [],
-          })),
-        });
-        if (!taskIdFromUrl) setTaskId(taskId);
-      }
+      // Replace the dag in two cases:
+      //   1. This tab is already pinned to that taskId (URL match).
+      //   2. URL is empty AND the connected wallet submitted this task
+      //      — the user just kicked one off and the URL hasn't been
+      //      stamped yet; auto-pin to it.
+      // Ownership is checked client-side too (defense in depth — the
+      // backend already filters, but with subscribe(), other tasks can
+      // arrive on this socket; without this guard a deep-link viewer
+      // would also have its empty-state replaced by the watched task).
+      const isCurrent = taskIdFromUrl && taskId === taskIdFromUrl
+      const isOwnFreshTask =
+        !taskIdFromUrl &&
+        typeof submittedBy === 'string' &&
+        address &&
+        submittedBy.toLowerCase() === address.toLowerCase()
+
+      if (!isCurrent && !isOwnFreshTask) return
+
+      setDag({
+        taskId,
+        plannerId: plannerAgentId,
+        boxes: nodes.map((n: any) => ({
+          nodeId: n.id,
+          subtask: n.subtask,
+          status: 'idle',
+          passes: [],
+        })),
+      });
+      if (!taskIdFromUrl) setTaskId(taskId);
     }
 
     // Last subtask submitted on-chain but keeper hasn't validated/settled
@@ -311,8 +339,15 @@ export function useSporeEvents() {
       wsClient.off(EventType.JUROR_VOTED, handleJurorVoted)
       wsClient.off(EventType.CHALLENGE, handleChallenge)
       wsClient.off(EventType.TASK_REOPENED, handleTaskReopened)
+      // Drop the watch when navigating away from a deep-linked task so
+      // the backend stops streaming us events we no longer care about.
+      // Owner-routed events (no explicit subscribe) keep flowing — they
+      // depend on the JWT, not on this set.
+      if (taskIdFromUrl) {
+        wsClient.unsubscribe(taskIdFromUrl)
+      }
     }
-  }, [taskIdFromUrl, setTaskId])
+  }, [taskIdFromUrl, setTaskId, jwt, address])
 
   return { dag, events, taskIdFromUrl }
 }

@@ -137,6 +137,16 @@ export class TaskIndex {
     return { total: r.total, completed: r.completed, pending: r.total - r.completed }
   }
 
+  /** Reverse lookup: which address submitted this task. Returns lowercase
+   *  to match the stored form. Used by the WS bridge to scope events
+   *  to their submitter so other connected users don't see them. */
+  getOwner(taskId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT owner FROM user_tasks WHERE task_id = ?`)
+      .get(taskId) as { owner: string } | undefined
+    return row ? row.owner : null
+  }
+
   listForOwner(owner: string, limit = 100): UserTaskRow[] {
     const rows = this.db
       .prepare(

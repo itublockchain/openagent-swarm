@@ -852,11 +852,67 @@ export default async function createServer(deps: ServerDeps) {
     }
   });
 
-  // WebSocket handler for event streaming
-  // This bridges AXL mesh events to the browser dashboard
+  // ─── WebSocket per-task ownership cache ──────────────────────────
+  // Lower-cased EOA → set of taskIds derived from TASK_SUBMITTED so WS
+  // scoping doesn't hit SQLite for every forwarded event. Populated from
+  // the AXL TASK_SUBMITTED handler (event.payload.submittedBy is set by
+  // both /task and /v1/tasks). For tasks submitted before this process
+  // started, the WS handler falls back to taskIndex.getOwner().
+  const taskOwners = new Map<string, string>()
+
+  deps.network.on(EventType.TASK_SUBMITTED, (event: any) => {
+    const taskId = event.payload?.taskId
+    const submittedBy = event.payload?.submittedBy
+    if (typeof taskId === 'string' && typeof submittedBy === 'string') {
+      taskOwners.set(taskId, submittedBy.toLowerCase())
+    }
+  })
+
+  /**
+   * Resolve the owner of a taskId for WS event scoping. Process cache first
+   * (populated when TASK_SUBMITTED flowed through this instance), SQLite
+   * fall-back for older tasks. Result cached so subsequent events for the
+   * same task short-circuit. Returns null when unknown — caller decides
+   * whether to broadcast or drop.
+   */
+  function resolveTaskOwner(taskId: string): string | null {
+    const cached = taskOwners.get(taskId)
+    if (cached) return cached
+    const fromIndex = taskIndex.getOwner(taskId)
+    if (fromIndex) {
+      taskOwners.set(taskId, fromIndex)
+      return fromIndex
+    }
+    return null
+  }
+
+  // WebSocket handler for event streaming.
+  // Bridges AXL mesh events to the browser dashboard, but scopes them per
+  // user so one submitter's events don't paint over every other connected
+  // dashboard. JWT in `?token=` identifies the socket's owner; clients
+  // subscribe to additional taskIds via `{type:'subscribe', taskId}` to
+  // follow tasks they don't own (deep-link viewers, anonymous browsers).
   fastify.get('/ws', { websocket: true }, (connection: any, req) => {
     const socket = connection.socket || connection;
-    console.log('[WS] Client connected to P2P Event Bus');
+
+    // Token comes via query string because the browser WebSocket API
+    // can't set Authorization headers. Anonymous (missing/invalid token)
+    // is allowed — they just don't auto-receive personal events; they
+    // must explicitly `subscribe` to anything they want to watch.
+    let userAddress: string | null = null
+    try {
+      const url = new URL(req.url ?? '/ws', 'http://localhost')
+      const token = url.searchParams.get('token')
+      if (token) {
+        const decoded = verifyJWT(token)
+        if (decoded?.address) userAddress = decoded.address.toLowerCase()
+      }
+    } catch (err) {
+      console.warn('[WS] token parse failed:', err)
+    }
+
+    const subscribedTaskIds = new Set<string>()
+    console.log(`[WS] Client connected (user=${userAddress ?? 'anonymous'})`)
 
     const handlers: Map<string, (event: any) => void> = new Map();
 
@@ -870,21 +926,57 @@ export default async function createServer(deps: ServerDeps) {
       }
     };
 
+    /**
+     * Returns true when `event` should be delivered to this socket.
+     * Events without a taskId are global (agent registry, colony
+     * membership, etc.) and broadcast to everyone. Events with a taskId
+     * go ONLY to the submitter or to clients that explicitly subscribed
+     * to that task.
+     */
+    const shouldDeliver = (event: any): boolean => {
+      const taskId = event?.payload?.taskId
+      if (typeof taskId !== 'string' || taskId.length === 0) return true
+      if (subscribedTaskIds.has(taskId)) return true
+      // TASK_SUBMITTED carries submittedBy directly — use it before the
+      // taskOwners cache catches up (the network.on handler above runs
+      // in the same tick but order isn't guaranteed across fastify and
+      // our local map writes).
+      const direct = event.payload?.submittedBy
+      if (typeof direct === 'string' && userAddress &&
+          direct.toLowerCase() === userAddress) return true
+      const owner = resolveTaskOwner(taskId)
+      return owner !== null && owner === userAddress
+    }
+
     Object.values(EventType).forEach(type => {
       const handler = (event: any) => {
         const now = Date.now();
         const diff = Math.abs(now - (event.timestamp || 0));
-
-        if (diff < 60000) { // 60 seconds tolerance
-          console.log(`[WS] OK: Transmitting ${event.type} to dashboard (diff: ${diff}ms)`);
-          send(event);
-        } else {
-          console.warn(`[WS] FILTERED: ${event.type} too old or clock drift (diff: ${diff}ms, eventTs: ${event.timestamp}, now: ${now})`);
+        if (diff >= 60000) {
+          console.warn(`[WS] FILTERED: ${event.type} too old or clock drift (diff: ${diff}ms)`)
+          return
         }
+        if (!shouldDeliver(event)) return
+        send(event);
       };
       handlers.set(type, handler);
       deps.network.on(type as EventType, handler);
     });
+
+    socket.on('message', (raw: any) => {
+      let msg: any
+      try {
+        msg = JSON.parse(raw.toString())
+      } catch {
+        return
+      }
+      if (!msg || typeof msg !== 'object') return
+      if (msg.type === 'subscribe' && typeof msg.taskId === 'string') {
+        subscribedTaskIds.add(msg.taskId)
+      } else if (msg.type === 'unsubscribe' && typeof msg.taskId === 'string') {
+        subscribedTaskIds.delete(msg.taskId)
+      }
+    })
 
     socket.on('close', () => {
       console.log('[WS] Client disconnected');
@@ -892,6 +984,7 @@ export default async function createServer(deps: ServerDeps) {
         deps.network.off(type as EventType, handler);
       });
       handlers.clear();
+      subscribedTaskIds.clear();
     });
   });
 
