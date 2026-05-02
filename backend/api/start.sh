@@ -2,6 +2,25 @@
 
 echo "[Start] Starting API Core"
 
+# 0. Ensure persistent data dir exists and is writable. AGENT_SECRETS_PATH +
+# BRIDGE_STATE_DIR live under /data, which the compose file bind-mounts from
+# ./data on the host. On platforms where the bind-mount silently fails to
+# attach (Dokploy / Coolify / Railway when no Volume is declared in the UI,
+# rootless podman, read-only root FS, etc.) the runtime would later crash
+# with `ENOENT: open '/data/agent-secrets.json.tmp'` mid-write. Fail loud
+# here instead so the operator knows exactly what to fix.
+DATA_DIR="${AGENT_SECRETS_DIR:-/data}"
+mkdir -p "$DATA_DIR" 2>/dev/null || true
+if ! ( touch "$DATA_DIR/.write-test" && rm "$DATA_DIR/.write-test" ) 2>/dev/null; then
+  echo "[Fatal] $DATA_DIR is not writable."
+  echo "[Fatal] On Dokploy: open the service → 'Advanced' → 'Volumes/Mounts',"
+  echo "[Fatal] add a Bind Mount with Host Path '../files/data' (or any host"
+  echo "[Fatal] path you want to persist) and Container Path '/data'."
+  echo "[Fatal] Then redeploy."
+  exit 1
+fi
+echo "[Start] /data writable."
+
 
 # 1. Create local AXL config
 # API connects to axl-seed as well

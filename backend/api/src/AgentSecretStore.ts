@@ -113,11 +113,27 @@ export class AgentSecretStore {
     for (const [id, secret] of this.cache.entries()) {
       out[id] = this.encrypt(JSON.stringify(secret))
     }
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
+    const dir = path.dirname(this.filePath)
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch (err) {
+      throw new Error(
+        `[AgentSecretStore] cannot create ${dir} (${(err as Error).message}). ` +
+        `On Dokploy/Coolify/Railway add a persistent volume mounted at ${dir}.`
+      )
+    }
     // Atomic replace: write to a sibling file then rename, so a crash mid-write
     // doesn't truncate the store.
     const tmp = this.filePath + '.tmp'
-    fs.writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf-8')
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf-8')
+    } catch (err) {
+      throw new Error(
+        `[AgentSecretStore] cannot write ${tmp} (${(err as Error).message}). ` +
+        `Check that ${dir} is a writable persistent volume — without it agent ` +
+        `secrets will be lost on container restart.`
+      )
+    }
     fs.renameSync(tmp, this.filePath)
   }
 
