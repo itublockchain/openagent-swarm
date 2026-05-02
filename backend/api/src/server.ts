@@ -23,8 +23,7 @@ import { registerTasksRoutes } from './v1/tasksRoutes'
 import { registerBalanceRoutes } from './v1/balanceRoutes'
 import { registerAgentsRoutes } from './v1/agentsRoutes'
 import { registerProfileRoutes } from './v1/profileRoutes'
-import { registerWithdrawRoutes } from './v1/withdrawRoutes'
-import { BridgeWatcher } from './BridgeWatcher'
+import { registerSwarmRoutes } from './v1/swarmRoutes'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
 const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
@@ -927,17 +926,12 @@ export default async function createServer(deps: ServerDeps) {
   await registerBalanceRoutes(fastify, { keyStore })
   await registerAgentsRoutes(fastify, { keyStore, manager: deps.manager })
 
-  // SIWE-JWT withdraw flow: debits Treasury on 0G, releases real USDC
-  // on Base Sepolia. Operator wallet covers Base ETH gas; user pays a
-  // flat USDC fee from their Treasury balance.
-  await registerWithdrawRoutes(fastify, { requireAuth })
-
-  // BridgeWatcher mirrors USDCGateway.Deposited (Base) → Treasury.creditBalance
-  // (0G). Boots in the background — failure to start is logged but does
-  // not block server startup; the watcher itself is robust to
-  // disconnects/restarts.
-  const bridgeWatcher = new BridgeWatcher()
-  bridgeWatcher.start().catch(err => console.error('[server] BridgeWatcher start failed:', err))
+  // Multi-agent SDK relay endpoints — see backend/api/src/v1/swarmRoutes.ts.
+  // Routes use the same storage port the rest of the API uses, so every
+  // DAG payload + node output lands in 0G Storage; root hashes flow
+  // on-chain. Gas billing pulls a flat USDC fee from the API key's
+  // SwarmTreasury balance per call.
+  await registerSwarmRoutes(fastify, { keyStore, storage: deps.storage })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
   await registerProfileRoutes(fastify, {

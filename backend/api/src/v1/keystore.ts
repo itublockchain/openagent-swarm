@@ -48,10 +48,10 @@ export interface ApiKeyPublic {
   prefix: string
 }
 
-export type Scope = 'tasks:submit' | 'tasks:read' | 'agents:read'
+export type Scope = 'tasks:submit' | 'tasks:read' | 'agents:read' | 'swarm:write'
 
 /** Default scopes the webapp's "Generate Key" button grants. */
-export const DEFAULT_SCOPES: Scope[] = ['tasks:submit', 'tasks:read']
+export const DEFAULT_SCOPES: Scope[] = ['tasks:submit', 'tasks:read', 'swarm:write']
 
 /** Compute the canonical keyHash — keccak256(plaintext) as bytes32.
  *  Same value used by DB lookup AND Treasury contract. */

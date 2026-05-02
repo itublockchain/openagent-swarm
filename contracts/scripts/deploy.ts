@@ -65,12 +65,32 @@ async function main() {
   await setTreasuryTx.wait()
   console.log('Wired Escrow.setTreasury → Treasury')
 
+  // 5.6 SporeCoordinator — registry + audit trail + BFT validator-vote
+  //    verifier for the @spore/sdk multi-agent orchestrator (LangChain
+  //    pathway). No USDC: this contract intentionally holds NO funds —
+  //    devs pay for gas via API-key billing handled in backend/api,
+  //    not through agent stakes / budgets.
+  console.log('Deploying SporeCoordinator...')
+  const SporeCoordinator = await ethers.getContractFactory('SporeCoordinator')
+  const coordinator = await SporeCoordinator.deploy()
+  await coordinator.waitForDeployment()
+  const coordinatorAddress = await coordinator.getAddress()
+  console.log('SporeCoordinator:', coordinatorAddress)
+
+  // 6. Approve Escrow
+  console.log('Approving SwarmEscrow to spend USDC...')
+  const approveTx = await usdc.approve(escrowAddress, ethers.MaxUint256)
+  await approveTx.wait()
+  console.log('Approved.')
+
+  // Adresleri kaydet
   const addresses = {
     SwarmEscrow: escrowAddress,
     DAGRegistry: registryAddress,
     SlashingVault: vaultAddress,
     AgentRegistry: agentRegistryAddress,
     SwarmTreasury: treasuryAddress,
+    SporeCoordinator: coordinatorAddress,
     network: 'og_testnet',
     deployedAt: new Date().toISOString(),
   }
