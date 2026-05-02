@@ -1,7 +1,7 @@
 {
   "name": "@spore/sdk",
   "version": "0.1.0",
-  "description": "Official TypeScript SDK for the SPORE protocol — HTTP client + local multi-agent orchestrator.",
+  "description": "Official TypeScript SDK for the SPORE protocol HTTP API.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -12,11 +12,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./swarm": {
-      "types": "./dist/swarm/index.d.ts",
-      "import": "./dist/swarm/index.js",
-      "require": "./dist/swarm/index.cjs"
     }
   },
   "files": [
@@ -24,12 +19,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/swarm/index.ts --format esm,cjs --dts --clean",
-    "dev": "tsup src/index.ts src/swarm/index.ts --format esm,cjs --dts --watch",
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx examples/smoke.ts",
-    "submit": "tsx examples/submit.ts",
-    "langchain-example": "tsx examples/langchain.ts"
+    "submit": "tsx examples/submit.ts"
   },
   "engines": {
     "node": ">=18"
@@ -38,31 +32,11 @@
     "spore",
     "sdk",
     "ai-agents",
-    "multi-agent",
-    "orchestration",
     "swarm",
-    "0g",
-    "langchain"
+    "0g"
   ],
-  "peerDependencies": {
-    "@langchain/core": "^0.3.0",
-    "ethers": "^6.0.0"
-  },
-  "peerDependenciesMeta": {
-    "@langchain/core": {
-      "optional": true
-    },
-    "ethers": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@langchain/community": "^0.3.0",
-    "@langchain/core": "^0.3.0",
-    "@langchain/langgraph": "^0.2.0",
-    "@langchain/openai": "^0.3.0",
     "@types/node": "^20.11.0",
-    "ethers": "^6.13.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.3",
     "typescript": "^5.6.3"
