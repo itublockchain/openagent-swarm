@@ -4,8 +4,8 @@ services:
     build:
       context: .
       dockerfile: backend/api/Dockerfile
-    expose:
-      - "3001"
+    ports:
+      - "3001:3001"
     # Runtime env precedence (highest first):
     #   1. compose `environment:` (none below — left for ad-hoc overrides)
     #   2. `env_file: .env` — every key from the repo-root .env lands here
@@ -147,8 +147,8 @@ services:
         NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS: ${NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS}
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-    expose:
-      - "3000"
+    ports:
+      - "3000:3000"
     depends_on:
       api:
         condition: service_healthy

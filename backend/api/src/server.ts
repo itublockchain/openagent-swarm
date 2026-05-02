@@ -27,6 +27,7 @@ import { registerWithdrawRoutes } from './v1/withdrawRoutes'
 import { registerCctpRoutes } from './v1/cctpRoutes'
 import { BridgeWatcher } from './BridgeWatcher'
 import { CCTPRelayer } from './CCTPRelayer'
+import { registerSporeiseRoutes } from './v1/sporeiseRoutes'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
 const JWT_SECRET = process.env.JWT_SECRET ?? DEFAULT_JWT_SECRET
@@ -1032,6 +1033,14 @@ export default async function createServer(deps: ServerDeps) {
   })
 
   console.log(`[API] SDK routes mounted (env=${sdkEnv})`)
+
+  // Sporeise — managed-mode REST + WS for the SDK's `Spore` class. Reuses
+  // the same KeyStore (apiKeyAuth) and storage port as the rest of /v1/*.
+  await registerSporeiseRoutes(fastify, {
+    keyStore,
+    storage: deps.storage,
+    dbPath,
+  })
 
   return fastify;
 }
