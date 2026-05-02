@@ -49,15 +49,6 @@ async function start() {
   }
 
   const manager = new AgentManager();
-  // Reconcile against on-chain registry + Docker before serving traffic, so
-  // /agent/pool reflects reality from the very first request after restart.
-  // Failures here are logged but non-fatal — a partially-restored pool is
-  // still better than a dead API.
-  try {
-    await manager.restore();
-  } catch (err) {
-    console.error('[API] manager.restore() failed:', err);
-  }
 
   const server = await createServer({
     storage,
@@ -73,6 +64,15 @@ async function start() {
     server.log.error(err);
     process.exit(1);
   }
+
+  // Reconcile against on-chain registry + Docker AFTER listen() so /health
+  // answers immediately and compose's healthcheck doesn't time out. Each
+  // orphan mark is a real on-chain tx + tx.wait() (~3-5s on 0G testnet);
+  // with N orphans this used to push boot past the 90s healthcheck window
+  // and bring the whole stack down with "dependency failed: api unhealthy".
+  // The first /agent/pool request after restart may briefly return stale
+  // data while restore runs — acceptable trade-off vs. blocked boot.
+  manager.restore().catch(err => console.error('[API] manager.restore() failed:', err));
 }
 
 start();

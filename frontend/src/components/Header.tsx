@@ -14,7 +14,7 @@ import { DepositModal } from './DepositModal'
 import { WithdrawModal } from './WithdrawModal'
 import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
 import { CCTP_SOURCE_CHAINS, BASE_SEPOLIA_CHAIN_ID } from '@/lib/cctp'
-import { apiRequest } from '../../lib/api'
+import { apiRequest, OPEN_DEPOSIT_EVENT } from '../../lib/api'
 
 const USDC_DECIMALS = 6
 
@@ -175,6 +175,15 @@ export function Header({ onDeployClick }: Props) {
     const t = setInterval(refreshBalance, BALANCE_REFRESH_MS)
     return () => clearInterval(t)
   }, [isAuthenticated, refreshBalance])
+
+  // Any flow that hits an insufficient-Treasury-balance response dispatches
+  // OPEN_DEPOSIT_EVENT instead of telling the user to "open the deposit
+  // modal" — we just open it for them.
+  useEffect(() => {
+    const onOpen = () => setShowDeposit(true)
+    window.addEventListener(OPEN_DEPOSIT_EVENT, onOpen)
+    return () => window.removeEventListener(OPEN_DEPOSIT_EVENT, onOpen)
+  }, [])
 
   // Persist taskId in navigation links if present
   const tasksHref = taskId ? `/explorer?taskId=${taskId}` : '/explorer'

@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { X, Rocket } from 'lucide-react'
 import { useAccount } from 'wagmi'
-import { apiRequest } from '../../lib/api'
+import { apiRequest, openDepositModal } from '../../lib/api'
 import { ENV } from '../../lib/env'
 import { cn } from '@/lib/utils'
 
@@ -147,7 +147,8 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
         const e = await prepRes.json().catch(() => ({}))
         const msg = e.error || `prepare failed (${prepRes.status})`
         if (/insufficient/i.test(msg)) {
-          throw new Error(`${msg} — open the Deposit modal to top up first.`)
+          openDepositModal()
+          throw new Error(`${msg} — opening the deposit modal so you can top up.`)
         }
         throw new Error(msg)
       }

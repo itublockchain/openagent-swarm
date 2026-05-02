@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useAccount } from 'wagmi'
-import { apiRequest } from '../../lib/api'
+import { apiRequest, openDepositModal } from '../../lib/api'
 
 export type TaskSubmitStep = 'idle' | 'submitting' | 'done' | 'error'
 
@@ -58,7 +58,8 @@ export function useTaskSubmit(onLog?: (line: string) => void) {
       if (!res.ok) {
         const detail = await res.json().catch(() => ({}))
         if (res.status === 402 && detail.code === 'INSUFFICIENT_BALANCE') {
-          throw new Error(`Insufficient Treasury balance — deposit ${detail.required} USDC first (current: ${detail.balance})`)
+          openDepositModal()
+          throw new Error(`Insufficient Treasury balance (need ${detail.required} USDC, have ${detail.balance}) — opening deposit.`)
         }
         throw new Error(detail.error ?? `submit failed (${res.status})`)
       }

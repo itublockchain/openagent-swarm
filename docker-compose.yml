@@ -27,9 +27,16 @@ services:
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "-qO-", "http://127.0.0.1:3001/health" ]
-      interval: 30s
+      interval: 10s
       timeout: 5s
       retries: 3
+      # Boot-time grace window. The API's startup chain (AXL bridge wait +
+      # storage init + ZG compute pool + listen()) reliably finishes inside
+      # ~30s on warm caches but can stretch on a cold node. start_period
+      # lets the container stay "starting" instead of "unhealthy" during
+      # the window, so a slow boot doesn't trip restart: unless-stopped or
+      # cascade into "dependency failed" on frontend/agent.
+      start_period: 60s
     depends_on:
       docker-proxy:
         condition: service_started

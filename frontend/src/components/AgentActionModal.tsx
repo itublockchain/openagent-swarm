@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { ArrowDownToLine, ArrowUpFromLine, Loader2, Power, X } from 'lucide-react'
-import { apiRequest } from '../../lib/api'
+import { apiRequest, openDepositModal } from '../../lib/api'
 import { cn } from '@/lib/utils'
 
 export type ActionMode = 'deposit' | 'withdraw' | 'stop'
@@ -73,7 +73,8 @@ export function AgentActionModal({ mode, agent, onSuccess, onClose }: Props) {
         const body = await res.json().catch(() => ({}))
         const msg = body.error ?? `topup failed (${res.status})`
         if (/insufficient/i.test(msg)) {
-          throw new Error(`${msg} — open the Deposit modal to add USDC to your Treasury balance.`)
+          openDepositModal()
+          throw new Error(`${msg} — opening the deposit modal so you can top up your Treasury.`)
         }
         throw new Error(msg)
       }

@@ -15,7 +15,7 @@ import { CopyableId } from '@/components/ui/copyable-id';
 import { useSporeEvents, SubtaskStatus } from '@/hooks/useSporeEvents';
 import { DeployAgentModal } from '@/components/DeployAgentModal';
 import { Header } from '@/components/Header';
-import { apiRequest } from '../../../../lib/api';
+import { apiRequest, openDepositModal } from '../../../../lib/api';
 import { ENV } from '../../../../lib/env';
 import { cn } from '@/lib/utils';
 
@@ -326,7 +326,8 @@ function DashboardContent() {
       if (!submitRes.ok) {
         const detail = await submitRes.json().catch(() => ({}));
         if (submitRes.status === 402 && detail.code === 'INSUFFICIENT_BALANCE') {
-          throw new Error(`Insufficient Treasury balance — deposit ${detail.required} USDC first (current: ${detail.balance})`);
+          openDepositModal();
+          throw new Error(`Insufficient Treasury balance (need ${detail.required} USDC, have ${detail.balance}) — opening deposit.`);
         }
         throw new Error(`submit failed: ${detail.error ?? submitRes.status}`);
       }

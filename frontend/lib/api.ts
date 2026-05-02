@@ -7,6 +7,18 @@ const API_URL = ENV.API_URL
  *  pulling React into the fetch helper. */
 export const AUTH_EXPIRED_EVENT = 'swarm:auth-expired'
 
+/** Fired by any flow that hits an insufficient-balance backend response.
+ *  Header listens and pops the DepositModal so the user lands directly on
+ *  the fix instead of reading a "go open the deposit modal" instruction. */
+export const OPEN_DEPOSIT_EVENT = 'spore:open-deposit'
+
+/** Convenience helper — keeps call sites a one-liner and avoids importing
+ *  the constant separately wherever they detect insufficient balance. */
+export function openDepositModal(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event(OPEN_DEPOSIT_EVENT))
+}
+
 export async function apiRequest(
   path: string,
   options: RequestInit = {}
