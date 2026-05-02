@@ -62,6 +62,65 @@ export class AgentSecretStore {
     if (this.key.length !== KEY_LENGTH) {
       throw new Error(`[AgentSecretStore] derived key has wrong length: ${this.key.length}`)
     }
+    // Boot-time probe: fail loud here if the persistence dir isn't
+    // actually writable, instead of waiting for the first agent deploy
+    // to crash mid-flow with a confused user. start.sh runs a similar
+    // shell-level check, but some PaaS deployments (Dokploy, Coolify)
+    // override the entrypoint and skip it — so we re-validate inside
+    // the Node process where it can't be bypassed.
+    this.probeWritable()
+  }
+
+  /**
+   * Touch a file inside the persistence directory and delete it.
+   * Throws with rich diagnostics (dir state, perms, process uid) when
+   * the volume isn't attached or isn't writable, so the operator sees
+   * exactly what to fix in their PaaS volume config.
+   */
+  private probeWritable(): void {
+    const dir = path.dirname(this.filePath)
+    try {
+      fs.mkdirSync(dir, { recursive: true })
+    } catch (err) {
+      throw new Error(this.diagnosticMessage(dir, `mkdir ${dir} failed: ${(err as Error).message}`))
+    }
+    const probe = path.join(dir, `.write-probe-${process.pid}-${Date.now()}`)
+    try {
+      fs.writeFileSync(probe, 'ok', 'utf-8')
+      fs.unlinkSync(probe)
+    } catch (err) {
+      throw new Error(
+        this.diagnosticMessage(dir, `probe write to ${probe} failed: ${(err as Error).message}`),
+      )
+    }
+  }
+
+  /**
+   * Build a hint with the directory's actual state so the operator can
+   * tell at a glance whether the bind mount attached, who owns the dir,
+   * and which user the API is running as.
+   */
+  private diagnosticMessage(dir: string, cause: string): string {
+    let stateLine = ''
+    try {
+      const st = fs.statSync(dir)
+      stateLine = `dir exists=${true}, mode=${(st.mode & 0o777).toString(8)}, uid=${st.uid}, gid=${st.gid}`
+    } catch {
+      stateLine = `dir exists=false`
+    }
+    const procUid =
+      typeof process.getuid === 'function' ? String(process.getuid()) : 'n/a'
+    const procGid =
+      typeof process.getgid === 'function' ? String(process.getgid()) : 'n/a'
+    return (
+      `[AgentSecretStore] ${cause}. ` +
+      `${stateLine}; process uid=${procUid}, gid=${procGid}. ` +
+      `Mount a writable persistent volume at ${dir} — without it agent secrets ` +
+      `are lost on container restart. ` +
+      `Dokploy: Service → Advanced → Volumes/Mounts → Bind Mount, ` +
+      `Host '../files/data', Container '${dir}'. ` +
+      `Compose: ensure './data:${dir}' bind mount and that ./data exists on the host.`
+    )
   }
 
   private encrypt(plaintext: string): SerializedSecret {
@@ -117,10 +176,7 @@ export class AgentSecretStore {
     try {
       fs.mkdirSync(dir, { recursive: true })
     } catch (err) {
-      throw new Error(
-        `[AgentSecretStore] cannot create ${dir} (${(err as Error).message}). ` +
-        `On Dokploy/Coolify/Railway add a persistent volume mounted at ${dir}.`
-      )
+      throw new Error(this.diagnosticMessage(dir, `cannot create ${dir} (${(err as Error).message})`))
     }
     // Atomic replace: write to a sibling file then rename, so a crash mid-write
     // doesn't truncate the store.
@@ -128,11 +184,7 @@ export class AgentSecretStore {
     try {
       fs.writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf-8')
     } catch (err) {
-      throw new Error(
-        `[AgentSecretStore] cannot write ${tmp} (${(err as Error).message}). ` +
-        `Check that ${dir} is a writable persistent volume — without it agent ` +
-        `secrets will be lost on container restart.`
-      )
+      throw new Error(this.diagnosticMessage(dir, `cannot write ${tmp} (${(err as Error).message})`))
     }
     fs.renameSync(tmp, this.filePath)
   }
