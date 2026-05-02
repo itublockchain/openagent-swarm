@@ -18,6 +18,7 @@ import {
 } from '@/lib/cctp'
 import { config as wagmiConfig, paymentChain } from '../../lib/wagmi'
 import { apiRequest } from '../../lib/api'
+import { ensureWalletChain } from '../../lib/tx'
 
 const USDC_DECIMALS = 6
 const POLL_INTERVAL_MS = 4_000
@@ -143,20 +144,14 @@ export function DepositModal({ onClose, onSuccess }: Props) {
 
     setError(null)
     try {
-      // 1. Make sure the wallet is on the chosen source chain.
-      if (chainId !== sourceChainId) {
-        setStep('switching-chain')
-        try {
-          await switchChainAsync({ chainId: sourceChainId })
-        } catch (err: any) {
-          if (err?.code === 4902 || /unrecognized chain/i.test(String(err?.message))) {
-            throw new Error(
-              `Add chainId ${sourceChainId} to your wallet, then retry`,
-            )
-          }
-          throw err
-        }
-      }
+      // 1. Make sure the wallet is on the chosen source chain. Force
+      //    the switch unconditionally — `chainId` from useChainId() is
+      //    unreliable when the wallet is on a chain that isn't in the
+      //    wagmi config (e.g. 0G Galileo 16602), and a stale match
+      //    silently skips the switch and trips viem's ChainMismatchError
+      //    on the first writeContract.
+      setStep('switching-chain')
+      await ensureWalletChain(sourceChainId, switchChainAsync)
 
       // 2. Approve the spender if allowance falls short.
       const spender = isCctpPath ? sourceConfig!.tokenMessengerV2 : (approveTargetAddr as `0x${string}`)
@@ -181,6 +176,10 @@ export function DepositModal({ onClose, onSuccess }: Props) {
       }
 
       // 3. Move USDC. Two paths.
+      // Re-assert chain — the user may have switched their wallet
+      // network during the approve wait, which would race the next
+      // signature with viem's ChainMismatchError.
+      await ensureWalletChain(sourceChainId, switchChainAsync)
       let depositTxHash: `0x${string}`
       if (isCctpPath) {
         setStep('burning')
