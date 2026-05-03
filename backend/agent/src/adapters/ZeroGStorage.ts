@@ -5,8 +5,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-const MAX_RETRIES = 3
-const RETRY_BASE_MS = 2000
+const MAX_RETRIES = 12
+const RETRY_BASE_MS = 3000
 
 export class ZeroGStorage implements IStoragePort {
   private provider: ethers.JsonRpcProvider
@@ -35,6 +35,7 @@ export class ZeroGStorage implements IStoragePort {
         const isLast = attempt === MAX_RETRIES
         console.warn(`[ZeroGStorage] ${operation} attempt ${attempt}/${MAX_RETRIES} failed:`, err)
         if (isLast) throw err
+        // Linear increase: 3s, 6s, 9s... gives the indexer ample time to sync
         const delay = RETRY_BASE_MS * attempt
         await new Promise(r => setTimeout(r, delay))
       }
