@@ -252,11 +252,15 @@ export default function PoolPage() {
     }
   }, [useMock])
 
-  // Drop errored agents up-front (unless the toggle opts back in). Every
-  // downstream view (topology, counts, sidebar list, selection) reads from
-  // this set so the toggle is honored everywhere at once.
+  // Pool view shows only `running` agents — `pending` (still bootstrapping)
+  // and `stopped` (intentionally taken offline) are noise for the operator
+  // looking at "who's claimable right now". `error` is also hidden by
+  // default; the showFailedAgents toggle (env or ?showFailed=1) opts back
+  // in for debug. Every downstream view (topology, counts, sidebar list,
+  // selection) reads from this set so the rule is honored everywhere.
   const visibleAgents = useMemo(
-    () => (showFailedAgents ? agents : agents.filter(a => a.status !== 'error')),
+    () =>
+      agents.filter(a => a.status === 'running' || (showFailedAgents && a.status === 'error')),
     [agents, showFailedAgents]
   )
 
@@ -354,8 +358,6 @@ export default function PoolPage() {
             {visibleAgents.length > 0 && (
               <div className="absolute bottom-4 left-4 z-20 flex items-center gap-3 bg-background/80 backdrop-blur-sm px-3 py-1.5 rounded-lg border border-border/50 text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
                 <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500" />Running</span>
-                <span className="opacity-30">·</span>
-                <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-blue-500" />Idle</span>
                 {showFailedAgents && (
                   <>
                     <span className="opacity-30">·</span>
