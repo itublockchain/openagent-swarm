@@ -122,6 +122,14 @@ services:
         NEXT_PUBLIC_TREASURY_ADDRESS: ${NEXT_PUBLIC_TREASURY_ADDRESS}
         NEXT_PUBLIC_GATEWAY_ADDRESS: ${NEXT_PUBLIC_GATEWAY_ADDRESS}
         NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS: ${NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS}
+        # Per-chain RPC overrides for the wallet (DepositModal, etc).
+        # Optional — wagmi.ts already falls back to publicnode.com and the
+        # chain-default RPC if these are unset, but a paid Alchemy/Infura
+        # endpoint massively improves reliability under load. Set in
+        # Dokploy/Coolify env to bake into the bundle at build time.
+        NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL}
+        NEXT_PUBLIC_ETH_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ETH_SEPOLIA_RPC_URL}
+        NEXT_PUBLIC_ARB_SEPOLIA_RPC_URL: ${NEXT_PUBLIC_ARB_SEPOLIA_RPC_URL}
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
     expose:
