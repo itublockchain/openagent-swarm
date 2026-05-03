@@ -138,7 +138,7 @@ export default function DeveloperPage() {
     setConfirmState({
       isOpen: true,
       title: 'Revoke API Key',
-      message: `Are you sure you want to revoke key "${k.name ?? k.prefix}"? Any application using this key will lose access immediately.`,
+      message: `Are you sure you want to revoke key "${k.name ?? k.prefix.replace(/…$/, '')}"? Any application using this key will lose access immediately.`,
       isDestructive: true,
       confirmText: 'Revoke Key',
       onConfirm: async () => {

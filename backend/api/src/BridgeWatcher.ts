@@ -130,11 +130,7 @@ export class BridgeWatcher {
   /** Look up whether a specific deposit event was already credited.
    *  Used by /v1/cctp/status to surface the final 0G credit step. */
   hasProcessed(contractAddress: string, txHash: string): boolean {
-    const addr = contractAddress.toLowerCase()
-    for (const key of this.processedKeys) {
-      if (key.startsWith(`${addr}:${txHash.toLowerCase()}:`)) return true
-    }
-    return false
+    return this.processedKeys.has(txHash.toLowerCase())
   }
 
   private async tick(): Promise<void> {
@@ -168,7 +164,7 @@ export class BridgeWatcher {
     contractAddress: string,
     event: ethers.EventLog,
   ): Promise<void> {
-    const key = `${contractAddress}:${event.transactionHash.toLowerCase()}:${event.index}`
+    const key = event.transactionHash.toLowerCase()
     if (this.processedKeys.has(key)) return
 
     const args = event.args ?? ([] as any)
@@ -184,10 +180,12 @@ export class BridgeWatcher {
       throw new Error('writeTreasury missing — operator wallet went away after start')
     }
 
-    // Mark + persist BEFORE submitting the credit tx. If we crash between
-    // submit and confirmation, on restart we'll see the key already
-    // recorded and won't re-credit. The trade-off — losing a deposit if
-    // the tx never lands — is acceptable; double-crediting isn't.
+    // Mark + persist BEFORE submitting the credit tx, and NEVER release
+    // the key once we've submitted. tx.wait() can throw after the tx has
+    // already mined (RPC blip, reorg, replaced-tx noise on 0G); if we
+    // released the key on that error the next tick would re-credit the
+    // same deposit. Losing a credit is recoverable via manual operator
+    // reconciliation from the error log below; double-crediting is not.
     this.processedKeys.add(key)
     this.persistState()
 
@@ -199,11 +197,13 @@ export class BridgeWatcher {
         `[BridgeWatcher] ${label}: credited ${ethers.formatUnits(amount, USDC_DECIMALS)} USDC to ${user} (base tx ${event.transactionHash.slice(0, 12)}, og tx ${ogTxHash.slice(0, 12)})`,
       )
     } catch (err) {
-      // Submission failed outright — safe to retry next tick, so release the key.
-      this.processedKeys.delete(key)
-      this.persistState()
-      console.error(`[BridgeWatcher] creditBalance failed for ${key}:`, err)
-      throw err
+      // Key stays. We don't know if the tx mined or not, and a retry
+      // that double-credits is worse than a lost credit that an operator
+      // can fix by hand from this log line.
+      console.error(
+        `[BridgeWatcher] creditBalance tx errored for ${key} — key kept to prevent retry, manual reconciliation may be needed:`,
+        err,
+      )
     }
   }
 
