@@ -7,6 +7,7 @@ import '@xyflow/react/dist/style.css';
 import { useAccount } from 'wagmi';
 import TaskNode, { NodeData } from '@/components/flow/task-node';
 import { CanvasEmptyState } from '@/components/flow/CanvasEmptyState';
+import { CanvasDagLoadingState } from '@/components/flow/CanvasDagLoadingState';
 import { IntentSuggestions } from '@/components/flow/IntentSuggestions';
 import { LogsPanel } from '@/components/flow/LogsPanel';
 import { entryFromEvent, makeEntry, type LogEntry } from '@/components/flow/logEntry';
@@ -467,6 +468,21 @@ function DashboardContent() {
               <Controls className="fill-foreground" />
             </ReactFlow>
             <CanvasEmptyState visible={nodes.length === 0 && submitStep === 'idle' && !taskIdFromUrl && !accessDenied} />
+
+            {/* DAG creation loader — bridges the gap between "user hits send"
+                and "ReactFlow paints the first nodes". Visible while the
+                broadcast is in flight (no taskId yet) or after the task is
+                in flight but the planner hasn't emitted DAG_READY (dag is
+                still null and the canvas has no nodes). Hidden once nodes
+                land or on access-denied. */}
+            <CanvasDagLoadingState
+              visible={
+                !accessDenied &&
+                nodes.length === 0 &&
+                (submitStep === 'submitting' || (!!taskIdFromUrl && !dag))
+              }
+              phase={submitStep === 'submitting' ? 'broadcasting' : 'awaiting-dag'}
+            />
 
             {/* Unauthorized deep-link state — shown when the connected wallet
                 isn't the task owner (or no wallet is connected). The backend
