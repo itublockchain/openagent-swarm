@@ -257,6 +257,19 @@ export class TaskStateStore {
     return row.c
   }
 
+  /** Wipe all state for a single task — DAG nodes + event timeline. Used
+   *  by the profile DELETE routes after the owner-scoped TaskIndex.delete
+   *  succeeds. Wrapped in a transaction so a partial failure can't leave
+   *  events orphaned from their parent DAG (or vice versa). Idempotent:
+   *  no-op if the task isn't in the store. */
+  deleteTask(taskId: string): void {
+    const txn = this.db.transaction((tid: string) => {
+      this.db.prepare(`DELETE FROM task_dag_nodes WHERE task_id = ?`).run(tid)
+      this.db.prepare(`DELETE FROM task_events WHERE task_id = ?`).run(tid)
+    })
+    txn(taskId)
+  }
+
   close(): void {
     this.db.close()
   }

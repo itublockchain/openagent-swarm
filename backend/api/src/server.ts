@@ -27,6 +27,7 @@ import { registerWithdrawRoutes } from './v1/withdrawRoutes'
 import { registerCctpRoutes } from './v1/cctpRoutes'
 import { BridgeWatcher } from './BridgeWatcher'
 import { CCTPRelayer } from './CCTPRelayer'
+import { SlashWatcher } from './SlashWatcher'
 import { registerSporeiseRoutes } from './v1/sporeiseRoutes'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
@@ -1100,10 +1101,18 @@ export default async function createServer(deps: ServerDeps) {
   await registerCctpRoutes(fastify, { requireAuth, relayer: cctpRelayer })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
+  // taskState is passed so the DELETE routes can cascade-clean the dag /
+  // events tables; onTaskDeleted prunes the in-memory caches so a deleted
+  // task can't keep delivering events to its old owner over WS.
   await registerProfileRoutes(fastify, {
     taskIndex,
     requireAuth,
     taskResults: taskResultsAdapter as any,
+    taskState,
+    onTaskDeleted: (taskId) => {
+      taskOwners.delete(taskId)
+      plannerByTask.delete(taskId)
+    },
   })
 
   // Colony surface — same SQLite file as KeyStore / TaskIndex. Two mounts:
@@ -1151,6 +1160,20 @@ export default async function createServer(deps: ServerDeps) {
       return { address: ctx.userAddress }
     },
   })
+
+  // SlashWatcher mirrors SwarmEscrow.Slashed events into colony cleanup —
+  // a slashed agent loses trust, so we drop it from every colony it
+  // belonged to and broadcast the removal so peer agents stop honouring
+  // its membership immediately. Constructed here (not earlier) because we
+  // need colonyStore + manager + network all initialised. Background
+  // start: failure to boot is logged but does not block server startup,
+  // matching BridgeWatcher's contract.
+  const slashWatcher = new SlashWatcher({
+    colonyStore,
+    manager: deps.manager,
+    network: deps.network,
+  })
+  slashWatcher.start().catch(err => console.error('[server] SlashWatcher start failed:', err))
 
   // Internal: agent self-reads its colony memberships every 30s. No auth —
   // only swarm_default Docker network can hit /internal/* endpoints. The

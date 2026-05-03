@@ -147,6 +147,30 @@ export class TaskIndex {
     return row ? row.owner : null
   }
 
+  /** Owner-scoped single-row delete. Returns true iff a row was actually
+   *  removed — the owner WHERE clause is what makes this safe to expose
+   *  without a separate ownership check. Caller is responsible for
+   *  cascading the cleanup into TaskStateStore (dag nodes + events). */
+  delete(taskId: string, owner: string): boolean {
+    const result = this.db
+      .prepare(`DELETE FROM user_tasks WHERE task_id = ? AND owner = ?`)
+      .run(taskId, owner.toLowerCase())
+    return result.changes > 0
+  }
+
+  /** Owner-scoped bulk delete used by the profile-page "Clear all" button.
+   *  Returns the list of deleted task ids so the caller can cascade the
+   *  cleanup into TaskStateStore (which is keyed only on taskId, no
+   *  owner column). */
+  deleteAllForOwner(owner: string): string[] {
+    const rows = this.db
+      .prepare(`SELECT task_id FROM user_tasks WHERE owner = ?`)
+      .all(owner.toLowerCase()) as Array<{ task_id: string }>
+    if (rows.length === 0) return []
+    this.db.prepare(`DELETE FROM user_tasks WHERE owner = ?`).run(owner.toLowerCase())
+    return rows.map(r => r.task_id)
+  }
+
   listForOwner(owner: string, limit = 100): UserTaskRow[] {
     const rows = this.db
       .prepare(
