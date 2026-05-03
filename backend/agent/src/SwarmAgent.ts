@@ -60,6 +60,12 @@ export class SwarmAgent {
     salt: string
     revealAt: number
   }>()
+  // Per-task dedupe for the keeper-timeout watchdog. Multiple peers may
+  // hear the same DAG_VALIDATING event AND a worker may emit-then-receive
+  // it locally; without this guard we'd spawn N redundant timers per task
+  // (each agent already arms its own; we just don't want one agent doing
+  // it twice). Cleared on DAG_COMPLETED in the existing handler.
+  private keeperWatchdogScheduled = new Set<string>()
 
   constructor(private deps: AgentDeps) { }
 
@@ -195,15 +201,25 @@ export class SwarmAgent {
     })
 
     // Keeper handoff: last subtask is on-chain but markValidatedBatch +
-    // settleTask haven't run yet. Only the planner of this task acts on
-    // it (judges + settles); every other agent ignores it so they don't
-    // drop their busy state before the chain is actually settled.
+    // settleTask haven't run yet. Two paths:
+    //   - We ARE the planner-keeper for this task → judge + settle now.
+    //     Skip self-emits (we already ran the path inline in executeSubtask).
+    //   - We are NOT the planner → schedule the keeper-timeout watchdog.
+    //     If the planner is offline / restarted / crashed, after
+    //     KEEPER_TIMEOUT (90s on-chain + grace) anyone can call
+    //     `DAGRegistry.forceComplete` to settle with planner share = 0.
+    //     Without this, a stuck "validate" state locks worker stake +
+    //     task budget forever — the failure mode that motivated this
+    //     watchdog in the first place.
     this.deps.network.on(EventType.DAG_VALIDATING, async (event) => {
       const { taskId, lastNodeId, lastOutputHash } = event.payload as any
-      if (!this.plannerFor.has(taskId)) return
-      if (event.agentId === this.deps.config.agentId) return
-      console.log(`[Agent ${this.deps.config.agentId}] KEEPER: DAG_VALIDATING for ${taskId} — judging last node`)
-      await this.validateLastNodeAsPlanner(lastNodeId, lastOutputHash, taskId)
+      if (this.plannerFor.has(taskId)) {
+        if (event.agentId === this.deps.config.agentId) return
+        console.log(`[Agent ${this.deps.config.agentId}] KEEPER: DAG_VALIDATING for ${taskId} — judging last node`)
+        await this.validateLastNodeAsPlanner(lastNodeId, lastOutputHash, taskId)
+      } else {
+        this.scheduleKeeperWatchdog(taskId)
+      }
     })
 
     this.deps.network.on(EventType.DAG_COMPLETED, async (event) => {
@@ -220,6 +236,11 @@ export class SwarmAgent {
         this.tasks.delete(taskId)
         this.plannerFor.delete(taskId)
       }
+      // Drop the watchdog dedupe entry too — task is settled, no point
+      // keeping a "we already armed forceComplete for this" memo. The
+      // setTimeout itself can't be cancelled but its body short-circuits
+      // on `isTaskFinalized`.
+      this.keeperWatchdogScheduled.delete(taskId)
     })
 
     console.log(`[Agent ${this.deps.config.agentId}] started and listening for ALL events`)
@@ -1242,6 +1263,85 @@ export class SwarmAgent {
     }
 
     setTimeout(tick, POLL_MS)
+  }
+
+  /**
+   * Keeper-timeout watchdog. When DAG_VALIDATING fires and we are NOT the
+   * planner, schedule a one-shot timer; on fire, check the chain and call
+   * `forceComplete` if the planner-keeper still hasn't settled.
+   *
+   * Why this exists: `validateLastNodeAsPlanner` runs only on the agent
+   * whose `plannerFor` set has the taskId — and that set is in-memory.
+   * If the planner's process restarted after registerDAG (or the agent
+   * crashed silently between submitOutput batches), no one acts on the
+   * DAG_VALIDATING event and the task hangs forever, locking every
+   * worker's stake AND the user's budget. The on-chain
+   * `DAGRegistry.forceComplete` provides the permissionless escape; this
+   * watchdog is what *triggers* it from the swarm side without manual
+   * operator intervention.
+   *
+   * Multiple peers may schedule this for the same task — that's fine.
+   * forceComplete is idempotent on-chain: the first caller wins, the
+   * rest revert "Task already finalized" (caught + logged at debug).
+   * Adapters that don't implement it (mock without override) just no-op.
+   */
+  private scheduleKeeperWatchdog(taskId: string): void {
+    if (this.keeperWatchdogScheduled.has(taskId)) return
+    this.keeperWatchdogScheduled.add(taskId)
+    const agentId = this.deps.config.agentId
+
+    // On-chain KEEPER_TIMEOUT = 90s; pad a bit so a marginal block-time
+    // race doesn't trigger the "Keeper still has time" revert. With ~3s
+    // 0G testnet block time, +20s grace is plenty.
+    const FIRE_AFTER_MS = 110_000
+    setTimeout(async () => {
+      // Cleanup-on-completion already happens in DAG_COMPLETED handler;
+      // the dedupe entry's only job here is to gate the *next* schedule.
+      // Drop it now so a follow-up DAG_VALIDATING (e.g. operator
+      // re-broadcast) can re-arm the watchdog if this round failed.
+      this.keeperWatchdogScheduled.delete(taskId)
+
+      // Fast-path skip: if isTaskFinalized is supported AND the chain
+      // says yes, don't even attempt forceComplete (saves an RPC + a
+      // potential pending-tx slot). Falls through to the attempt when
+      // the read fails — the on-chain `notFinalized(taskId)` modifier
+      // is the authoritative check.
+      try {
+        const finalized = await this.deps.chain.isTaskFinalized?.(taskId)
+        if (finalized === true) {
+          console.log(`[Agent ${agentId}] keeper watchdog: ${taskId} already finalized — no-op`)
+          return
+        }
+      } catch (err) {
+        console.warn(`[Agent ${agentId}] keeper watchdog isTaskFinalized check failed:`, err)
+      }
+
+      if (typeof this.deps.chain.forceComplete !== 'function') {
+        console.warn(`[Agent ${agentId}] keeper watchdog: chain adapter has no forceComplete, skipping`)
+        return
+      }
+
+      console.log(`[Agent ${agentId}] keeper watchdog FIRE: calling forceComplete for ${taskId}`)
+      try {
+        await this.deps.chain.forceComplete(taskId)
+        console.log(`[Agent ${agentId}] keeper watchdog: forceComplete succeeded for ${taskId}`)
+        // Broadcast DAG_COMPLETED so peers + UI flush their busy state
+        // without waiting on chain log indexing. settled=true is the
+        // signal taskIndex.markCompleted reads on the API side.
+        await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
+          taskId, settled: true, viaForceComplete: true,
+        })).catch(() => {})
+      } catch (err: any) {
+        // Common benign reverts:
+        //   "Keeper still has time"        — clock skew / pre-grace race
+        //   "Task already finalized"       — peer's forceComplete won
+        //   "Node missing output"          — stuck claim, needs expireClaim first
+        // Anything else is worth surfacing — the protocol expects this
+        // call to succeed when the precondition holds.
+        const msg = err?.shortMessage ?? err?.reason ?? err?.message ?? String(err)
+        console.warn(`[Agent ${agentId}] keeper watchdog forceComplete failed for ${taskId}: ${msg}`)
+      }
+    }, FIRE_AFTER_MS)
   }
 
   private buildEvent<T>(type: EventType, payload: T): AXLEvent<T> {

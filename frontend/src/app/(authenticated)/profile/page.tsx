@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { useAccount, useReadContracts } from 'wagmi'
-import { Bot, ListChecks, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus } from 'lucide-react'
+import { Bot, ListChecks, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Loader2, ShieldAlert, ExternalLink, ArrowDownToLine, ArrowUpFromLine, Power, Layers, Plus, Trash2 } from 'lucide-react'
 import { Header } from '@/components/Header'
 import { DeployAgentModal } from '@/components/DeployAgentModal'
 import { AgentActionModal, type ActionMode } from '@/components/AgentActionModal'
 import { ColonyModal, type ColonyModalMode } from '@/components/ColonyModal'
+import { ConfirmModal } from '@/components/ConfirmModal'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { cn, shortHash } from '@/lib/utils'
 import { ERC20_ABI, CONTRACT_ADDRESSES } from '@/lib/contracts'
@@ -39,6 +40,21 @@ interface UserTask {
   status: 'pending' | 'completed'
   node_count: number
   final_result: string | null
+  /** Planner summary hydrated by /v1/me/tasks. `null` means we still
+   *  haven't seen DAG_READY for this task (or its planner column was
+   *  never written before the migration that started persisting it).
+   *  When `slashed`, the user sees the slash reason inline so a deleted
+   *  agent doesn't disappear without explanation. */
+  planner: {
+    agent_id: string
+    slashed: boolean
+    slash_reason: string | null
+    slash_amount: string | null
+  } | null
+  /** Total slash records on this task (across all subtasks + planner).
+   *  Drives the row-level "N slashes" badge — clicking the row still
+   *  takes the user to the explorer for full details. */
+  slash_count: number
 }
 
 interface NodeResult {
@@ -97,15 +113,17 @@ export default function ProfilePage() {
     return () => clearInterval(t)
   }, [isConnected, reloadAgents])
 
-  // Hide ERROR-status agents — orphan-sweep marks them when the on-chain
-  // record exists without a local secret (registry redeploy, lost volume),
-  // and the user can't recover them anyway. Showing dead rows just clutters
-  // the pool. Keep pending/running/stopped — those are still actionable.
+  // Surface only RUNNING agents — pending ones are mid-deploy (the next
+  // 10s poll will lift them once setStatus(RUNNING) confirms on-chain),
+  // stopped/error are terminal states the user already finalised (via
+  // the Stop button) or can't recover (orphan sweep). The pool view
+  // applies the same rule. Trade-off: a brief gap after deploy before
+  // the new card appears, instead of showing a transient pending placeholder.
   const myAgents = agents.filter(
     a =>
       address &&
       a.ownerAddress?.toLowerCase() === address.toLowerCase() &&
-      a.status !== 'error',
+      a.status === 'running',
   )
 
   // Pagination state. Three independent indices because the three lists
@@ -180,6 +198,17 @@ export default function ProfilePage() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [resultCache, setResultCache] = useState<Record<string, NodeResult[] | null>>({})
   const [resultLoading, setResultLoading] = useState<Set<string>>(new Set())
+  // Delete confirm flow. `null` = closed; the variant carries enough context
+  // to render a tailored prompt (single-row preview vs. clear-all count) and
+  // to know which DELETE endpoint to hit on confirm. `deleting` is a
+  // separate flag so the spinner stays visible across the in-flight tx
+  // even if the modal payload reference is reused.
+  const [deletePrompt, setDeletePrompt] = useState<
+    | { kind: 'single'; taskId: string; spec: string }
+    | { kind: 'all'; count: number }
+    | null
+  >(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const last = Math.max(0, Math.ceil(tasks.length / TASKS_PER_PAGE) - 1)
@@ -234,6 +263,46 @@ export default function ProfilePage() {
     const t = setInterval(reloadColonies, 30_000)
     return () => clearInterval(t)
   }, [isConnected, reloadColonies])
+
+  // Optimistic local removal lets the row disappear instantly on confirm —
+  // the next reloadTasks() poll would catch up anyway, but waiting on it
+  // makes the trash-icon click feel laggy. We also drop the cached result
+  // so the memory footprint doesn't keep growing on a "clear-all" sweep.
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deletePrompt) return
+    setDeleting(true)
+    try {
+      if (deletePrompt.kind === 'single') {
+        const { taskId } = deletePrompt
+        const res = await apiRequest(`/v1/me/tasks/${encodeURIComponent(taskId)}`, {
+          method: 'DELETE',
+        })
+        if (!res.ok && res.status !== 404) {
+          // 404 means the row was already gone (rapid double-click) — treat
+          // as success so the UI converges either way.
+          throw new Error(`delete failed (${res.status})`)
+        }
+        setTasks(prev => prev.filter(t => t.task_id !== taskId))
+        setResultCache(prev => {
+          const { [taskId]: _, ...rest } = prev
+          return rest
+        })
+        if (expanded === taskId) setExpanded(null)
+      } else {
+        const res = await apiRequest('/v1/me/tasks', { method: 'DELETE' })
+        if (!res.ok) throw new Error(`clear failed (${res.status})`)
+        setTasks([])
+        setResultCache({})
+        setExpanded(null)
+      }
+      setDeletePrompt(null)
+    } catch (err) {
+      console.error('[profile] delete task failed:', err)
+      setTasksError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDeleting(false)
+    }
+  }, [deletePrompt, expanded])
 
   const toggleExpand = async (taskId: string) => {
     if (expanded === taskId) {
@@ -509,13 +578,28 @@ export default function ProfilePage() {
 
           {/* Tasks */}
           <section className="space-y-3">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <ListChecks className="w-4 h-4 text-muted-foreground" />
-              My tasks
-              <span className="text-xs font-normal text-muted-foreground tabular-nums">
-                ({tasks.length})
-              </span>
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <ListChecks className="w-4 h-4 text-muted-foreground" />
+                My tasks
+                <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                  ({tasks.length})
+                </span>
+              </h2>
+              {/* Clear-all is a destructive bulk action; gate it behind the
+                  same ConfirmModal as single-row delete and only render the
+                  button when there's something to clear. */}
+              {tasks.length > 0 && (
+                <button
+                  onClick={() => setDeletePrompt({ kind: 'all', count: tasks.length })}
+                  className="flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-md border border-red-500/30 bg-red-500/5 text-red-500 hover:bg-red-500/10 transition-colors"
+                  title="Remove every task from your history (does not refund spent USDC)"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  Clear all
+                </button>
+              )}
+            </div>
 
             {!tasksLoaded ? (
               <div className="space-y-2">
@@ -537,48 +621,103 @@ export default function ProfilePage() {
                   const cached = resultCache[t.task_id]
                   return (
                     <li key={t.task_id} className="rounded-lg border border-border bg-card overflow-hidden">
-                      <button
-                        onClick={() => toggleExpand(t.task_id)}
-                        className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-muted/50 transition-colors"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-sm font-medium truncate">
-                              {t.spec.length > 90 ? t.spec.slice(0, 87) + '…' : t.spec}
-                            </span>
-                            <span
-                              className={cn(
-                                'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider border shrink-0',
-                                t.status === 'completed'
-                                  ? 'border-green-500/30 bg-green-500/10 text-green-500'
-                                  : 'border-yellow-500/30 bg-yellow-500/10 text-yellow-500',
-                              )}
-                            >
-                              {t.status}
-                            </span>
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-muted text-muted-foreground shrink-0">
-                              {t.source}
-                            </span>
+                      {/* Row container is a div, not a button — the trash icon
+                          is its own button and React/HTML forbid nesting
+                          interactive elements. The expand-area is the
+                          flex-1 button; the trash sits as a sibling so the
+                          two click targets stay independent. */}
+                      <div className="w-full flex items-stretch group">
+                        <button
+                          onClick={() => toggleExpand(t.task_id)}
+                          className="flex-1 min-w-0 px-4 py-3 flex items-center gap-3 text-left hover:bg-muted/50 transition-colors"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-sm font-medium truncate">
+                                {t.spec.length > 90 ? t.spec.slice(0, 87) + '…' : t.spec}
+                              </span>
+                              <span
+                                className={cn(
+                                  'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider border shrink-0',
+                                  t.status === 'completed'
+                                    ? 'border-green-500/30 bg-green-500/10 text-green-500'
+                                    : 'border-yellow-500/30 bg-yellow-500/10 text-yellow-500',
+                                )}
+                              >
+                                {t.status}
+                              </span>
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider bg-muted text-muted-foreground shrink-0">
+                                {t.source}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-muted-foreground">
+                              <span>{shortHash(t.task_id, 8, 6)}</span>
+                              <span>{t.budget} USDC</span>
+                              {t.model && <span>{t.model}</span>}
+                              <span>{new Date(t.submitted_at).toLocaleString()}</span>
+                              {t.node_count > 0 && <span>{t.node_count} nodes</span>}
+                            </div>
+                            {/* Planner footer. Three states matching the
+                                explorer planner node:
+                                  - missing       → "Planner pending — DAG not built yet"
+                                  - clean         → "Planner: 0xab…cd"
+                                  - slashed       → red badge + reason
+                                Without this row the user can't tell who ran
+                                their task, especially after the slashed
+                                agent's record was removed from colonies. */}
+                            {t.planner ? (
+                              <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono">
+                                <span className="text-muted-foreground">Planner:</span>
+                                {t.planner.slashed ? (
+                                  <span
+                                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
+                                    title={`Slashed ${t.planner.slash_amount ?? '?'} USDC — ${t.planner.slash_reason ?? 'unknown reason'}`}
+                                  >
+                                    <ShieldAlert className="w-3 h-3" />
+                                    {shortHash(t.planner.agent_id, 6, 4)} · slashed ({t.planner.slash_reason ?? 'reason unknown'})
+                                  </span>
+                                ) : (
+                                  <span className="text-foreground/80">{shortHash(t.planner.agent_id, 6, 4)}</span>
+                                )}
+                                {t.slash_count > 0 && !t.planner.slashed && (
+                                  <span className="ml-1 px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 border border-red-500/30">
+                                    {t.slash_count} slash{t.slash_count > 1 ? 'es' : ''}
+                                  </span>
+                                )}
+                              </div>
+                            ) : t.status === 'pending' ? (
+                              <div className="mt-1.5 text-[10px] font-mono text-muted-foreground italic">
+                                Planner pending — DAG not built yet
+                              </div>
+                            ) : null}
+                            {t.final_result && (
+                              <p className="mt-1.5 text-[11px] text-muted-foreground/80 italic line-clamp-1 border-l-2 border-primary/20 pl-2">
+                                &ldquo;{t.final_result.length > 120 ? t.final_result.slice(0, 117) + '…' : t.final_result}&rdquo;
+                              </p>
+                            )}
                           </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] font-mono text-muted-foreground">
-                            <span>{shortHash(t.task_id, 8, 6)}</span>
-                            <span>{t.budget} USDC</span>
-                            {t.model && <span>{t.model}</span>}
-                            <span>{new Date(t.submitted_at).toLocaleString()}</span>
-                            {t.node_count > 0 && <span>{t.node_count} nodes</span>}
-                          </div>
-                          {t.final_result && (
-                            <p className="mt-1.5 text-[11px] text-muted-foreground/80 italic line-clamp-1 border-l-2 border-primary/20 pl-2">
-                              &ldquo;{t.final_result.length > 120 ? t.final_result.slice(0, 117) + '…' : t.final_result}&rdquo;
-                            </p>
+                          {isOpen ? (
+                            <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
+                          ) : (
+                            <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
                           )}
-                        </div>
-                        {isOpen ? (
-                          <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" />
-                        ) : (
-                          <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />
-                        )}
-                      </button>
+                        </button>
+                        {/* Trash icon — separate button, surfaces only on row
+                            hover so it doesn't visually compete with the
+                            content on resting state. Stops click propagation
+                            so the row doesn't expand on icon-click. */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setDeletePrompt({ kind: 'single', taskId: t.task_id, spec: t.spec })
+                          }}
+                          className="px-3 flex items-center justify-center text-muted-foreground hover:text-red-500 hover:bg-red-500/10 transition-colors opacity-50 group-hover:opacity-100"
+                          aria-label="Delete task"
+                          title="Delete this task from your history"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
 
                       {isOpen && (
                         <div className="border-t border-border/60 bg-background/40 px-4 py-3 space-y-2">
@@ -704,6 +843,25 @@ export default function ProfilePage() {
           }}
         />
       )}
+      <ConfirmModal
+        isOpen={!!deletePrompt}
+        isDestructive
+        isLoading={deleting}
+        title={deletePrompt?.kind === 'all' ? 'Clear all tasks?' : 'Delete task?'}
+        message={
+          deletePrompt?.kind === 'all'
+            ? `Permanently remove ${deletePrompt.count} task${deletePrompt.count === 1 ? '' : 's'} from your history. The on-chain receipts and 0G Storage payloads stay intact — this only clears your dashboard view. USDC already spent is not refunded.`
+            : deletePrompt?.kind === 'single'
+              ? `Permanently remove this task from your history:\n\n"${deletePrompt.spec.length > 140 ? deletePrompt.spec.slice(0, 137) + '…' : deletePrompt.spec}"\n\nThe on-chain receipt stays intact; this only clears the dashboard row. USDC already spent is not refunded.`
+              : ''
+        }
+        confirmText={deletePrompt?.kind === 'all' ? 'Clear all' : 'Delete'}
+        onConfirm={handleDeleteConfirm}
+        onClose={() => {
+          if (deleting) return // can't dismiss mid-flight; avoids double-submit
+          setDeletePrompt(null)
+        }}
+      />
     </div>
   )
 }

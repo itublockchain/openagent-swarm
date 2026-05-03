@@ -39,6 +39,29 @@ export interface TaskNodeRow {
   updatedAt: string
 }
 
+/** Persistent slash record. Lets `/task/:id` and the profile page surface
+ *  "this agent was slashed because <reason>" forever — without it a
+ *  refresh after the WS event flushed leaves the user staring at a dead
+ *  agent with no explanation. Reason is best-effort: pulled from the
+ *  matching CHALLENGE event when one exists, else 'on_chain_slash' as a
+ *  generic fallback so the row is never empty. */
+export interface AgentSlashRow {
+  taskId: string
+  /** Null when SlashWatcher couldn't correlate the on-chain slash to a
+   *  specific subtask (e.g. legacy task-level slash on a non-DAG task). */
+  nodeId: string | null
+  /** Local agentId (matches AgentManager) when the slashed agent was ours,
+   *  null when the operator doesn't manage it locally. */
+  agentId: string | null
+  /** EVM address from the on-chain Slashed event. Always present so the
+   *  UI can fall back to a hex shortform when there's no local agent. */
+  agentAddress: string
+  /** Slashed amount in 6-decimal USDC base units, decimal string. */
+  amount: string
+  reason: string
+  slashedAt: string
+}
+
 export class TaskStateStore {
   private db: DB
 
@@ -78,6 +101,20 @@ export class TaskStateStore {
         PRIMARY KEY (task_id, event_type, timestamp)
       );
       CREATE INDEX IF NOT EXISTS task_events_task_idx ON task_events(task_id);
+
+      CREATE TABLE IF NOT EXISTS agent_slashes (
+        task_id        TEXT NOT NULL,
+        node_id        TEXT,
+        agent_id       TEXT,
+        agent_address  TEXT NOT NULL,
+        amount         TEXT NOT NULL,
+        reason         TEXT NOT NULL,
+        slashed_at     TEXT NOT NULL,
+        tx_key         TEXT NOT NULL,
+        PRIMARY KEY (tx_key)
+      );
+      CREATE INDEX IF NOT EXISTS agent_slashes_task_idx ON agent_slashes(task_id);
+      CREATE INDEX IF NOT EXISTS agent_slashes_agent_idx ON agent_slashes(agent_id) WHERE agent_id IS NOT NULL;
     `)
   }
 
@@ -187,6 +224,110 @@ export class TaskStateStore {
   // Event Log — persists the timeline for refresh-safe terminal output
   // ------------------------------------------------------------------
 
+  // ------------------------------------------------------------------
+  // Slash records — written by SlashWatcher when SwarmEscrow.Slashed lands
+  // ------------------------------------------------------------------
+
+  /** Idempotent on the watcher's tx-level key (`${txHash}:${logIndex}`)
+   *  so a re-scan doesn't insert duplicates. The watcher already dedupes
+   *  via its in-memory set, but the DB-level guard keeps things sane
+   *  across watcher restarts where the in-memory set is briefly empty. */
+  recordSlash(args: {
+    taskId: string
+    nodeId: string | null
+    agentId: string | null
+    agentAddress: string
+    amount: string
+    reason: string
+    txKey: string
+    slashedAt?: string
+  }): void {
+    const ts = args.slashedAt ?? new Date().toISOString()
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO agent_slashes
+           (task_id, node_id, agent_id, agent_address, amount, reason, slashed_at, tx_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        args.taskId,
+        args.nodeId,
+        args.agentId,
+        args.agentAddress.toLowerCase(),
+        args.amount,
+        args.reason,
+        ts,
+        args.txKey,
+      )
+  }
+
+  /** All slashes recorded for a task, oldest-first. Used by /task/:id
+   *  hydration so the explorer can render a "slashed" overlay on the
+   *  affected nodes after a deep-link reload. */
+  getSlashesForTask(taskId: string): AgentSlashRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT task_id, node_id, agent_id, agent_address, amount, reason, slashed_at
+         FROM agent_slashes WHERE task_id = ?
+         ORDER BY slashed_at ASC`,
+      )
+      .all(taskId) as Array<{
+        task_id: string
+        node_id: string | null
+        agent_id: string | null
+        agent_address: string
+        amount: string
+        reason: string
+        slashed_at: string
+      }>
+    return rows.map(r => ({
+      taskId: r.task_id,
+      nodeId: r.node_id,
+      agentId: r.agent_id,
+      agentAddress: r.agent_address,
+      amount: r.amount,
+      reason: r.reason,
+      slashedAt: r.slashed_at,
+    }))
+  }
+
+  /** Reverse lookup: which subtask was this agent claiming when it got
+   *  slashed? The Slashed event itself only carries (taskId, agent),
+   *  not nodeId, so we infer it from the per-task DAG snapshot. Returns
+   *  the nodeId if a unique match exists; null when the agent claimed
+   *  multiple nodes (rare but possible — falls back to task-level slash
+   *  semantics). */
+  findNodeByAgent(taskId: string, agentId: string): string | null {
+    const rows = this.db
+      .prepare(
+        `SELECT node_id FROM task_dag_nodes WHERE task_id = ? AND agent_id = ?`,
+      )
+      .all(taskId, agentId) as Array<{ node_id: string }>
+    return rows.length === 1 ? rows[0].node_id : null
+  }
+
+  /** Last CHALLENGE event reason for a (taskId, nodeId) pair. SlashWatcher
+   *  uses this to attribute a slash to its triggering challenge so the UI
+   *  can show "Slashed: validation_failed" instead of just "Slashed". */
+  getLastChallengeReason(taskId: string, nodeId: string): string | null {
+    const rows = this.db
+      .prepare(
+        `SELECT payload_json FROM task_events
+         WHERE task_id = ? AND event_type = 'CHALLENGE'
+         ORDER BY timestamp DESC LIMIT 8`,
+      )
+      .all(taskId) as Array<{ payload_json: string }>
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(r.payload_json)
+        if (p?.nodeId === nodeId && typeof p?.reason === 'string') return p.reason
+      } catch {
+        // Ignore — corrupt rows fall through to null
+      }
+    }
+    return null
+  }
+
   recordEvent(taskId: string, type: string, payload: any): void {
     const ts = Date.now()
     const pJson = JSON.stringify(payload)
@@ -255,6 +396,20 @@ export class TaskStateStore {
       .prepare(`SELECT COUNT(*) AS c FROM task_dag_nodes WHERE task_id = ? AND result IS NOT NULL`)
       .get(taskId) as { c: number }
     return row.c
+  }
+
+  /** Wipe all state for a single task — DAG nodes + event timeline. Used
+   *  by the profile DELETE routes after the owner-scoped TaskIndex.delete
+   *  succeeds. Wrapped in a transaction so a partial failure can't leave
+   *  events orphaned from their parent DAG (or vice versa). Idempotent:
+   *  no-op if the task isn't in the store. */
+  deleteTask(taskId: string): void {
+    const txn = this.db.transaction((tid: string) => {
+      this.db.prepare(`DELETE FROM task_dag_nodes WHERE task_id = ?`).run(tid)
+      this.db.prepare(`DELETE FROM task_events WHERE task_id = ?`).run(tid)
+      this.db.prepare(`DELETE FROM agent_slashes WHERE task_id = ?`).run(tid)
+    })
+    txn(taskId)
   }
 
   close(): void {

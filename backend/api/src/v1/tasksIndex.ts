@@ -103,6 +103,22 @@ export class TaskIndex {
       .run(ts, finalResult ?? null, taskId)
   }
 
+  /** Stamps the planner agent on the task row so the explorer can show
+   *  who the planner was after an API restart (the in-memory
+   *  `plannerByTask` map evaporates on every redeploy, leaving deep-link
+   *  reloads stuck on "Awaiting planner…" forever). Called from the
+   *  DAG_READY handler — first writer wins, later overrides are ignored
+   *  so a re-broadcast can't rewrite history.
+   *  Returns true iff a row was actually updated (false when the task
+   *  isn't in our index yet, or already has a planner stamped). */
+  setPlanner(taskId: string, plannerAgentId: string): boolean {
+    if (!plannerAgentId) return false
+    const result = this.db
+      .prepare(`UPDATE user_tasks SET planner_id = ? WHERE task_id = ? AND planner_id IS NULL`)
+      .run(plannerAgentId, taskId)
+    return result.changes > 0
+  }
+
   /** Idempotent on conflict — re-broadcast of the same content-addressed
    *  task spec yields the same taskId and we just keep the original row.
    *  Callers don't supply completedAt — it's filled in later by markCompleted
@@ -145,6 +161,30 @@ export class TaskIndex {
       .prepare(`SELECT owner FROM user_tasks WHERE task_id = ?`)
       .get(taskId) as { owner: string } | undefined
     return row ? row.owner : null
+  }
+
+  /** Owner-scoped single-row delete. Returns true iff a row was actually
+   *  removed — the owner WHERE clause is what makes this safe to expose
+   *  without a separate ownership check. Caller is responsible for
+   *  cascading the cleanup into TaskStateStore (dag nodes + events). */
+  delete(taskId: string, owner: string): boolean {
+    const result = this.db
+      .prepare(`DELETE FROM user_tasks WHERE task_id = ? AND owner = ?`)
+      .run(taskId, owner.toLowerCase())
+    return result.changes > 0
+  }
+
+  /** Owner-scoped bulk delete used by the profile-page "Clear all" button.
+   *  Returns the list of deleted task ids so the caller can cascade the
+   *  cleanup into TaskStateStore (which is keyed only on taskId, no
+   *  owner column). */
+  deleteAllForOwner(owner: string): string[] {
+    const rows = this.db
+      .prepare(`SELECT task_id FROM user_tasks WHERE owner = ?`)
+      .all(owner.toLowerCase()) as Array<{ task_id: string }>
+    if (rows.length === 0) return []
+    this.db.prepare(`DELETE FROM user_tasks WHERE owner = ?`).run(owner.toLowerCase())
+    return rows.map(r => r.task_id)
   }
 
   listForOwner(owner: string, limit = 100): UserTaskRow[] {

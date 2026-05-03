@@ -268,14 +268,18 @@ export default function DeveloperPage() {
             <div className="text-sm text-muted-foreground italic">No keys yet. Generate one above to start using the SDK.</div>
           ) : (
             <ul className="divide-y divide-border">
-              {visibleKeys.map(k => (
-                <li key={k.id} className="py-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      {k.name && <span>{k.name}</span>}
-                      <CopyableId value={k.prefix.replace(/…$/, '')} head={20} tail={0} />
-                    </div>
-                    <div className="mt-1 text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
+              {visibleKeys.map(k => {
+                const isNewlyCreated = createdKey?.id === k.id
+                const fullKey = isNewlyCreated ? createdKey.key : k.prefix
+                
+                return (
+                  <li key={k.id} className="py-3 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <span>{k.name || '(unnamed)'}</span>
+                        <CopyableId value={fullKey} head={6} tail={4} />
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
                       {k.scopes.map(s => (
                         <span key={s} className="rounded-full bg-muted px-2 py-0.5">{s}</span>
                       ))}
@@ -292,8 +296,9 @@ export default function DeveloperPage() {
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
-                </li>
-              ))}
+                  </li>
+                )
+              })}
             </ul>
           )}
         </section>
