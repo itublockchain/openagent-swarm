@@ -2,7 +2,7 @@
 
 import { LandingHeader } from '@/components/landing/LandingHeader'
 import { Hero } from '@/components/landing/Hero'
-import { DemoShowcase } from '@/components/landing/DemoShowcase'
+
 import { HowItWorks } from '@/components/landing/HowItWorks'
 import { Stack } from '@/components/landing/Stack'
 import { Features } from '@/components/landing/Features'
@@ -16,7 +16,7 @@ export default function LandingPage() {
       <LandingHeader />
       <main>
         <Hero />
-        <DemoShowcase />
+
         <HowItWorks />
         <Stack />
         <Features />

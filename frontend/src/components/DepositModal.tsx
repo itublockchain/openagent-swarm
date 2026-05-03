@@ -141,6 +141,10 @@ export function DepositModal({ onClose, onSuccess }: Props) {
       setError('Amount must be > 0')
       return
     }
+    if (usdcBalanceQ.data !== undefined && amountWei > (usdcBalanceQ.data as bigint)) {
+      setError('Insufficient USDC balance')
+      return
+    }
 
     setError(null)
     try {
