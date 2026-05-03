@@ -196,7 +196,14 @@ function DashboardContent() {
   }, [taskStartMs, taskEndMs]);
 
   const elapsedFmt = `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`;
-  const completedCount = nodes.filter(n => n.data?.status === 'completed').length;
+  // Counter excludes the two fixed header nodes (id 1 = "Active Task",
+  // id 2 = "Planner") so the ratio reflects real subtask progress. Without
+  // this filter every settled task showed N-1/N forever — the planner
+  // node's status stays 'planner' (not 'completed'), so it inflated the
+  // denominator without ever counting toward the numerator.
+  const subtaskNodes = nodes.filter(n => !['1', '2'].includes(n.id));
+  const completedCount = subtaskNodes.filter(n => n.data?.status === 'completed').length;
+  const totalSubtasks = subtaskNodes.length;
 
   // Shared by the right-panel loader, the completion banner condition, and
   // the abandon-confirmation gate. Hoisted out of the IIFE so the modal
@@ -554,10 +561,10 @@ function DashboardContent() {
                 <span className="flex items-center gap-1.5"><span className="opacity-60">Task</span><CopyableId value={taskIdFromUrl} head={6} tail={4} /></span>
               </>
             )}
-            {nodes.length > 0 && (
+            {totalSubtasks > 0 && (
               <>
                 <span className="opacity-30">·</span>
-                <span><span className="opacity-60">Nodes</span> <span className="tabular-nums">{completedCount}/{nodes.length}</span></span>
+                <span><span className="opacity-60">Nodes</span> <span className="tabular-nums">{completedCount}/{totalSubtasks}</span></span>
               </>
             )}
             {taskIdFromUrl && (

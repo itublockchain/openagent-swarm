@@ -3,7 +3,39 @@
 import React from 'react'
 import { Wrench, CheckCircle2, Clock4, XCircle } from 'lucide-react'
 import { cn, shortHash } from '@/lib/utils'
+import { CopyableId } from '@/components/ui/copyable-id'
 import type { NodeData } from './task-node'
+
+/**
+ * Strip the agent-loop's JSON envelope `{"action":"final","answer":"..."}`
+ * from a raw result string so the panel renders just the human-readable
+ * answer. The backend serializes its final step into this shape; when the
+ * LLM produces it with unescaped newlines inside the `answer` value
+ * standard JSON.parse fails, so we fall back to a regex extract that
+ * tolerates the common malformed-but-recoverable case.
+ */
+function unwrapFinalEnvelope(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed.startsWith('{')) return raw
+
+  // Happy path: well-formed JSON.
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object' && parsed.action === 'final' && typeof parsed.answer === 'string') {
+      return parsed.answer
+    }
+  } catch {
+    /* fall through to regex */
+  }
+
+  // Recovery: the LLM wrapped the answer with literal newlines / unescaped
+  // backticks. Pull out the `"answer":"…"` slice up to the closing brace
+  // and treat the unescaped contents as the final text. Conservative — if
+  // the regex misses we hand back the raw string instead of a partial.
+  const m = trimmed.match(/"answer"\s*:\s*"([\s\S]*)"\s*}\s*$/)
+  if (m && m[1]) return m[1]
+  return raw
+}
 
 interface NodeDetailPanelProps {
   data: NodeData
@@ -29,17 +61,32 @@ const stopReasonMeta: Record<NonNullable<NodeData['stopReason']>, { label: strin
 export const NodeDetailPanel = ({ data }: NodeDetailPanelProps) => {
   const transcript = data.transcript ?? []
   const finalStep = [...transcript].reverse().find((s): s is Extract<typeof s, { kind: 'final' }> => s.kind === 'final')
-  const finalText = finalStep?.text ?? data.result
+  const rawFinal = finalStep?.text ?? data.result
+  const finalText = rawFinal ? unwrapFinalEnvelope(rawFinal) : undefined
 
   // Planner / "Active Task" header nodes don't carry a final answer;
   // show a placeholder so the panel still feels intentional.
   const hasFinal = !!finalText
 
-  const stopMeta = data.stopReason ? stopReasonMeta[data.stopReason] : null
+  // `parse_error` typically means an intermediate iteration's JSON was
+  // malformed; the loop recovers and the final answer still arrives.
+  // Surfacing the badge in that case is misleading ("got an answer but
+  // labels it broken"). Hide the rosette when we have a final to show.
+  const stopMeta = data.stopReason && !(data.stopReason === 'parse_error' && hasFinal)
+    ? stopReasonMeta[data.stopReason]
+    : null
 
   return (
     <div
-      className="w-[360px] max-h-[480px] overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-2xl flex flex-col"
+      // `nowheel` + `nopan` are ReactFlow's documented opt-outs: they
+      // bypass the native wheel/pointer listeners that otherwise treat
+      // every trackpad scroll inside the panel as a canvas zoom/pan.
+      // `stopPropagation` on the synthetic React onWheel doesn't help
+      // because ReactFlow's listener is registered on the viewport via
+      // native DOM with passive:false — the event reaches it before
+      // React's bubble phase runs. Class-based opt-out is the only
+      // reliable fix.
+      className="nowheel nopan w-[360px] max-h-[480px] overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-2xl flex flex-col"
       // Keep clicks from bubbling up to ReactFlow (would deselect the node
       // and snap the panel shut mid-scroll).
       onClick={(e) => e.stopPropagation()}
@@ -116,13 +163,13 @@ export const NodeDetailPanel = ({ data }: NodeDetailPanelProps) => {
         )}
       </div>
 
-      {/* Footer — outputHash if present */}
+      {/* Footer — outputHash if present. Uses CopyableId so the user can
+          one-click the hash to clipboard (the previous span was display-
+          only and forced manual selection inside a tiny line). */}
       {data.outputHash && (
         <div className="px-4 py-2 border-t border-border/60 shrink-0 text-[10px] font-mono text-muted-foreground flex items-center justify-between gap-2">
           <span className="opacity-70">0G hash</span>
-          <span className="truncate text-foreground/70" title={data.outputHash}>
-            {shortHash(data.outputHash, 8, 6)}
-          </span>
+          <CopyableId value={data.outputHash} head={8} tail={6} />
         </div>
       )}
     </div>
