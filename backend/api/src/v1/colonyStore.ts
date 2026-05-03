@@ -258,6 +258,23 @@ export class ColonyStore {
     return result.changes > 0
   }
 
+  /** Drop the agent from every colony it belongs to (active and archived).
+   *  Used by SlashWatcher when an on-chain `Slashed` event lands — a slashed
+   *  agent loses trust, so it should stop pulling colony-scoped tasks
+   *  immediately. Returns the list of colonyIds the agent was actually
+   *  removed from so the caller can broadcast a per-colony
+   *  COLONY_MEMBERSHIP_CHANGED event without waiting for the agent's 30s
+   *  poll. Includes archived colonies in the lookup so the audit trail
+   *  doesn't leave stale memberships behind. */
+  removeAgentFromAllColonies(agentId: string): string[] {
+    const rows = this.db
+      .prepare(`SELECT colony_id FROM colony_members WHERE agent_id = ?`)
+      .all(agentId) as Array<{ colony_id: string }>
+    if (rows.length === 0) return []
+    this.db.prepare(`DELETE FROM colony_members WHERE agent_id = ?`).run(agentId)
+    return rows.map(r => r.colony_id)
+  }
+
   getMembers(colonyId: string): ColonyMember[] {
     const rows = this.db
       .prepare(

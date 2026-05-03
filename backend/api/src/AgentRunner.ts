@@ -439,6 +439,21 @@ export class AgentManager {
     return { agentId: secret.agentId, ownerAddress: secret.ownerAddress }
   }
 
+  /** EVM address → agentId resolver. SlashWatcher uses this to map an
+   *  on-chain `Slashed(taskId, agent, amount)` event back to the local
+   *  agentId that ColonyStore keys members on. Returns null when no
+   *  secret matches (e.g. the slashed agent belongs to a different API
+   *  node, or its secret was already purged via stop()) — the watcher
+   *  treats that as "nothing to clean up locally". */
+  findAgentIdByAddress(agentAddress: string): string | null {
+    if (!agentAddress) return null
+    const target = agentAddress.toLowerCase()
+    for (const s of this.secrets.list()) {
+      if (s.agentAddress.toLowerCase() === target) return s.agentId
+    }
+    return null
+  }
+
   /**
    * Drain an agent's Escrow ledger balance back to its owner's Treasury
    * balance. Replaces the old USDC/OG token sweep — in the tokenless model,
