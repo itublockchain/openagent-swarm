@@ -102,7 +102,17 @@ export class AgentManager {
   private registryAddr = process.env.L2_AGENT_REGISTRY_ADDRESS || (deployments as any).AgentRegistry || ''
 
   private provider = new ethers.JsonRpcProvider(this.rpcUrl)
-  private fundingSigner = this.fundingPk ? new ethers.Wallet(this.fundingPk, this.provider) : null
+  // NonceManager wraps the wallet so concurrent sendTransaction calls
+  // don't both snapshot the same `pending` nonce and produce a
+  // REPLACEMENT_UNDERPRICED revert. The race triggers any time two
+  // operator-signed txs overlap — gas prefund during a deploy burst, or
+  // a prefund running parallel to an Escrow.creditAgent / Treasury debit.
+  // NonceManager assigns sequential nonces locally before either tx is
+  // sent so the chain sees them in a strict order. Plain Wallet was
+  // racing on `provider.getTransactionCount(addr, 'pending')`.
+  private fundingSigner = this.fundingPk
+    ? new ethers.NonceManager(new ethers.Wallet(this.fundingPk, this.provider))
+    : null
   private escrow: ethers.Contract | null
   private treasury: ethers.Contract | null
   private registry: ethers.Contract | null
@@ -885,7 +895,10 @@ export class AgentManager {
     // them ERROR is the only signal we can give downstream readers that the
     // record is dead — we can't actually bring them back without the key.
     if (!this.fundingSigner) return
-    const ourAddr = this.fundingSigner.address.toLowerCase()
+    // NonceManager doesn't expose a sync `.address` like Wallet does —
+    // getAddress() is the cross-signer-class equivalent (cheap, no
+    // network round-trip for key-derived signers).
+    const ourAddr = (await this.fundingSigner.getAddress()).toLowerCase()
     const haveSecret = new Set(secrets.map(s => this.toBytes32Id(s.agentId)))
     try {
       const [ids, agents] = await this.registry.listAgents(0, 0)
