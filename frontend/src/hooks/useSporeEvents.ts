@@ -64,6 +64,12 @@ export interface DAGState {
    *  when DAG_COMPLETED arrives. UI uses this to show "waiting keeper
    *  approval" instead of "done" during the in-between window. */
   validating?: boolean
+  /** True after DAG_COMPLETED — keeper has settled the task on-chain.
+   *  Distinct from `validating: false` (which is also the initial state)
+   *  so the phase strip can flip Settle to "done". Persists for the rest
+   *  of the session; a fresh task arrives via DAG_READY which rebuilds
+   *  the dag from scratch. */
+  settled?: boolean
   boxes: SubtaskBox[]
 }
 
@@ -116,10 +122,17 @@ export function useSporeEvents() {
         const data = await res.json()
         if (data && data.dag) {
           setAccessDenied(false)
+          const nodes = data.dag.nodes as any[]
+          // Deep-link refresh on a finished task: API returns every node
+          // as 'done', but no DAG_COMPLETED event will replay (it already
+          // fired). Seed `settled` from the snapshot so the phase strip
+          // lands on Settle = done instead of staying stuck on Validate.
+          const allDone = nodes.length > 0 && nodes.every(n => n.status === 'done')
           setDag({
             taskId: taskIdFromUrl,
             plannerId: data.plannerId || data.dag.plannerAgentId,
-            boxes: data.dag.nodes.map((n: any) => ({
+            settled: allDone || undefined,
+            boxes: nodes.map((n: any) => ({
               nodeId: n.id,
               subtask: n.subtask,
               status: n.status || 'idle',
@@ -242,7 +255,15 @@ export function useSporeEvents() {
     const handleDAGCompleted = (event: WSEvent) => {
       const { taskId, result } = event.payload as any
       if (!matchesActiveTask(taskId)) return
-      setDag(prev => prev ? { ...prev, validating: false, finalResult: result } : null)
+      setDag(prev => prev ? {
+        ...prev,
+        validating: false,
+        settled: true,
+        // Backend currently emits { taskId, settled } without a result
+        // field; keep the assignment so a future payload upgrade flows
+        // through without another hook change.
+        finalResult: result ?? prev.finalResult,
+      } : null)
     }
 
     const handleSubtaskClaimed = (event: WSEvent) => {

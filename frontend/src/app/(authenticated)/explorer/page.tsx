@@ -127,11 +127,20 @@ function DashboardContent() {
 
   // Five-phase indicator strip. Each phase is "done", "active", or "pending"
   // based on observable state (DAG / node statuses).
+  //
+  // Two backend signals (`dag.validating` from DAG_VALIDATING, `dag.settled`
+  // from DAG_COMPLETED) are folded in as additional progress markers. Without
+  // them the strip used to stall in Validate whenever a per-node
+  // SUBTASK_VALIDATED event dropped on the WS — the keeper-level events
+  // arrive reliably even when individual node events miss, so they're the
+  // safer source of truth for late-stage transitions.
   const phases = (() => {
     const taskNodes = nodes.filter(n => !['1', '2'].includes(n.id));
     const hasClaim = taskNodes.some(n => ['claimed', 'validating', 'completed', 'slashed'].includes(n.data?.status as string));
     const hasValidate = taskNodes.some(n => ['validating', 'completed'].includes(n.data?.status as string));
     const allDone = taskNodes.length > 0 && taskNodes.every(n => n.data?.status === 'completed');
+    const isValidating = !!dag?.validating;
+    const isSettled = !!dag?.settled;
 
     const stepOf = (done: boolean, active: boolean) =>
       done ? 'done' as const : active ? 'active' as const : 'pending' as const;
@@ -139,9 +148,9 @@ function DashboardContent() {
     return [
       { key: 'spec', label: 'Spec', state: stepOf(!!dag || !!taskIdFromUrl, !!taskIdFromUrl && !dag) },
       { key: 'plan', label: 'Plan', state: stepOf(!!dag, !taskIdFromUrl ? false : !dag) },
-      { key: 'claim', label: 'Claim', state: stepOf(hasValidate || allDone, !!dag && !hasValidate && hasClaim) },
-      { key: 'validate', label: 'Validate', state: stepOf(allDone, hasValidate && !allDone) },
-      { key: 'settle', label: 'Settle', state: stepOf(false, allDone) },
+      { key: 'claim', label: 'Claim', state: stepOf(hasValidate || allDone || isValidating || isSettled, !!dag && !hasValidate && hasClaim && !isValidating && !isSettled) },
+      { key: 'validate', label: 'Validate', state: stepOf(allDone || isValidating || isSettled, hasValidate && !allDone && !isValidating && !isSettled) },
+      { key: 'settle', label: 'Settle', state: stepOf(isSettled, (allDone || isValidating) && !isSettled) },
     ];
   })();
   const { address: walletAddress } = useAccount();
@@ -566,6 +575,7 @@ function DashboardContent() {
             const isDispatching = submitStep === 'submitting';
             const hasActiveTask = !!taskIdFromUrl;
             const taskComplete =
+              !!dag?.settled ||
               !!dag?.finalResult ||
               (!!dag && dag.boxes.length > 0 && dag.boxes.every(b => b.status === 'done'));
             const showLoader = (isDispatching || hasActiveTask) && !taskComplete;
