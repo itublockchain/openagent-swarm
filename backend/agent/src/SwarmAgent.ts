@@ -347,6 +347,24 @@ export class SwarmAgent {
         return
       }
 
+      // Ensure we have enough balance to stake as a planner before racing.
+      // If we don't, we can still participate as a worker later.
+      // The capacity check is against the ACTUAL configured stakeAmount —
+      // the previous '100' default was a lie when the agent was deployed
+      // with a smaller bond (and let the agent race a stake it couldn't
+      // cover, blowing up later inside runAsPlanner).
+      if (typeof this.deps.chain.getStakeCapacity === 'function') {
+        try {
+          const capacity = await this.deps.chain.getStakeCapacity(this.deps.config.stakeAmount)
+          if (capacity < 1) {
+            console.log(`[Agent ${this.deps.config.agentId}] insufficient balance to be planner, abstaining`)
+            return
+          }
+        } catch {
+          // read failure -> fall through
+        }
+      }
+
       this.lastActivity = Date.now()
       // Plancı olmak için niyetini belli et
       await this.deps.network.emit(this.buildEvent(EventType.PLANNER_SELECTED, { agentId: this.deps.config.agentId, taskId }))
@@ -407,6 +425,31 @@ export class SwarmAgent {
       const nodeIds = nodes.map(n => n.id)
       await this.deps.chain.registerDAG(taskId, nodeIds)
       console.log(`[Agent ${agentId}] DAG registered on-chain with ${nodeIds.length} nodes`)
+
+      // Defensive re-check between registerDAG and stake. The earlier
+      // pre-race check at onTaskSubmitted can race with another task
+      // consuming the same Escrow ledger balance — by the time we get
+      // here our agentBalances may have dropped below stakeAmount and
+      // stake() would revert with "insufficient balance", silently
+      // killing settlement (no DAG_READY ever fires). Skip-and-fail
+      // here lets us emit TASK_FAILED so the UI surfaces the real
+      // reason instead of spinning forever.
+      if (typeof this.deps.chain.getStakeCapacity === 'function') {
+        try {
+          const capacity = await this.deps.chain.getStakeCapacity(this.deps.config.stakeAmount)
+          if (capacity < 1) {
+            throw new Error(
+              `Planner stake unaffordable: agent Escrow balance < stakeAmount=${this.deps.config.stakeAmount} USDC. Bond more USDC for ${agentId} (Escrow.deposit) and retry.`,
+            )
+          }
+        } catch (capErr) {
+          // Re-throw so the outer catch at runAsPlanner emits TASK_FAILED.
+          // Don't swallow read failures here — they may mask the real
+          // issue and let stake() blow up downstream.
+          throw capErr
+        }
+      }
+
       await this.deps.chain.stake(taskId, this.deps.config.stakeAmount)
 
       // Mark planner responsibility BEFORE emitting DAG_READY. AxlNetwork.emit
@@ -446,6 +489,20 @@ export class SwarmAgent {
       }, SINGLE_AGENT_FALLBACK_MS)
     } catch (err) {
       console.error(`[Agent ${this.deps.config.agentId}] runAsPlanner FAILED:`, err)
+      // Without this, the frontend sits on "Awaiting DAG…" forever because
+      // no DAG_READY ever fires. Surface the failure so the UI can paint
+      // an actionable error instead of an indefinite spinner.
+      const taskId = event?.payload?.taskId
+      if (taskId) {
+        const reason = (err as any)?.shortMessage ?? (err as any)?.message ?? String(err)
+        this.deps.network.emit(this.buildEvent(EventType.TASK_FAILED, {
+          taskId,
+          reason: `Planner failed during DAG construction: ${reason}`,
+          stage: 'planner',
+        })).catch(emitErr => {
+          console.error(`[Agent ${this.deps.config.agentId}] TASK_FAILED emit also failed:`, emitErr)
+        })
+      }
     }
   }
 
@@ -676,11 +733,16 @@ export class SwarmAgent {
       // from starting. Kick it off, do the slow LLM work concurrently, and
       // await right before submitOutput (which is the next tx that
       // *requires* the stake to have landed). Saves ~5-10s per node.
-      const stakePromise = this.deps.chain.stakeForSubtask(taskId, node.id, perSubtaskStake)
-      // Don't let an unhandled rejection bubble out before our await — we
-      // catch it explicitly later. Attach a noop catch now so Node doesn't
-      // log "PromiseRejectionHandledWarning".
-      stakePromise.catch(() => {})
+      let stakePromise: Promise<any> = Promise.resolve()
+      if (!this.plannerFor.has(taskId)) {
+        stakePromise = this.deps.chain.stakeForSubtask(taskId, node.id, perSubtaskStake)
+        // Don't let an unhandled rejection bubble out before our await — we
+        // catch it explicitly later. Attach a noop catch now so Node doesn't
+        // log "PromiseRejectionHandledWarning".
+        stakePromise.catch(() => {})
+      } else {
+        console.log(`[Agent ${agentId}] skipping stakeForSubtask for ${node.id} — already staked for full task as planner`)
+      }
 
       await this.deps.network.emit(this.buildEvent(EventType.SUBTASK_CLAIMED, { nodeId: node.id, agentId, taskId }))
 
@@ -901,6 +963,15 @@ export class SwarmAgent {
 
     console.log(`[Agent ${agentId}] KEEPER: Validating last node ${lastNodeId} output`)
 
+    // Outcome accumulators. We always emit DAG_COMPLETED at the end (in the
+    // finally block) so the UI never sits in "validating" forever — even if
+    // an on-chain step or storage call throws. `settled` reflects whether
+    // the chain actually finalized; `failureReason` is surfaced to the
+    // frontend so the user gets actionable feedback instead of silence.
+    let settled = false
+    let failureReason: string | undefined
+    let challenged = false
+
     try {
       // Self-claimant guard: if the planner-keeper also worked the last node,
       // a judge → challenge flow is impossible (SlashingVault rejects
@@ -908,10 +979,6 @@ export class SwarmAgent {
       // worker to peer-validate the last node. Trust own work and mark
       // validated; the per-node SUBTASK_PEER_VALIDATED signal earlier in the
       // chain still gives meaningful jury coverage to every other node.
-      //
-      // myAddr: prefer the explicitly configured agentAddress (set in env);
-      // fall back to AGENT_PRIVATE_KEY-derived address so we never skip the
-      // guard just because the config field was left blank.
       const rawAddr = this.deps.config.agentAddress
         ?? (process.env.AGENT_PRIVATE_KEY
           ? new Wallet(process.env.AGENT_PRIVATE_KEY).address
@@ -927,9 +994,22 @@ export class SwarmAgent {
       const selfClaimed = !!myAddr && !!claimant && myAddr.toLowerCase() === claimant.toLowerCase()
 
       if (!selfClaimed) {
-        // Son node'un çıktısını storage'dan çek ve LLM-Judge ile denetle
-        const lastOutput = await this.deps.storage.fetch(outputHash)
-        const isValid = await this.deps.compute.judge(extractFinal(lastOutput))
+        // Storage fetch is the most common stall point — 0G storage node
+        // sync gaps used to hang here forever. ZeroGStorage now caps each
+        // attempt with a wall-clock timeout, so a stuck node throws here
+        // instead of pinning the whole settlement flow.
+        let isValid = true
+        try {
+          const lastOutput = await this.deps.storage.fetch(outputHash)
+          isValid = await this.deps.compute.judge(extractFinal(lastOutput))
+        } catch (err) {
+          // Couldn't fetch / judge the output — treat as "trust the worker"
+          // rather than aborting settlement. The chain already has the
+          // outputHash; refusing to settle here would punish the worker
+          // for our infra failure. Log loudly so we notice in operator
+          // dashboards.
+          console.error(`[Agent ${agentId}] KEEPER: judge step failed (continuing to settle on trust):`, err)
+        }
 
         if (!isValid) {
           console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} FAILED validation. Challenging.`)
@@ -937,6 +1017,7 @@ export class SwarmAgent {
           if (lastNode) {
             await this.challengeNode(lastNode, taskId)
           }
+          challenged = true
           return
         }
       } else {
@@ -946,9 +1027,6 @@ export class SwarmAgent {
       console.log(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} validated. Marking + settling.`)
 
       const nodeIds = task.nodes.map(n => n.id)
-
-      // Resolve claimant addresses + compute payouts (read-only, fine to
-      // do before the tx burst).
       const workerAddrs = await Promise.all(
         nodeIds.map(id => this.deps.chain.getNodeClaimant(id))
       )
@@ -956,36 +1034,70 @@ export class SwarmAgent {
       const plannerAddr = this.deps.config.agentAddress ?? this.deps.config.agentId
       const { addresses, amounts } = this.computePayouts(budget, plannerAddr, workerAddrs)
 
-      // Sequential: same NonceManager race as in runAsPlanner. Order
-      // matters less here (settle's pre-check reads claimedBy, not
-      // validated), but the safer choice is markValidatedBatch first so
-      // that subtask stakes are released before the task gets finalized.
-      // markValidatedBatch already releases each subtask stake on-chain
-      // (DAGRegistry.markValidatedBatch → escrow.releaseSubtaskStake per node),
-      // so no separate refund call is needed here.
-      await this.deps.chain.markValidatedBatch(nodeIds)
-
-      await this.deps.chain.settleTask(taskId, addresses, amounts.map(a => a.toString()))
-
-      // Per-node validated event so the dashboard can flip each box from
-      // 'pending' (yellow / output written) to 'done' (green / validated).
-      // Emitting individually keeps the UI animation natural even though the
-      // contract validates all in one tx.
-      for (const nid of nodeIds) {
-        this.deps.network.emit(this.buildEvent(EventType.SUBTASK_VALIDATED, {
-          nodeId: nid, taskId, agentId,
-        })).catch(() => { })
+      // Per-step try/catch so a revert in one chain call doesn't kill the
+      // DAG_COMPLETED emit at the bottom. The order is meaningful:
+      // markValidatedBatch must precede settleTask (releases stakes), and
+      // completeTask is the on-chain finalization hook.
+      let markedValidated = false
+      try {
+        await this.deps.chain.markValidatedBatch(nodeIds)
+        markedValidated = true
+      } catch (err) {
+        failureReason = `markValidatedBatch reverted: ${(err as any)?.shortMessage ?? (err as any)?.message ?? String(err)}`
+        console.error(`[Agent ${agentId}] KEEPER: markValidatedBatch FAILED:`, err)
       }
 
-      // FCFS at planner-claim already guarantees a single keeper reaches this
-      // path per task. completeTask is now an idempotent sync hook (no-op on
-      // L2; mock dedupes via completedTasks map) — no need to gate the emit
-      // on its return value.
-      await this.deps.chain.completeTask(taskId)
-      console.log(`[Agent ${agentId}] KEEPER: DAG_COMPLETED — paid planner ${amounts[0]} + ${workerAddrs.length} workers`)
-      await this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, { taskId, settled: true }))
+      let settledOnChain = false
+      if (markedValidated) {
+        try {
+          await this.deps.chain.settleTask(taskId, addresses, amounts.map(a => a.toString()))
+          settledOnChain = true
+        } catch (err) {
+          failureReason = `settleTask reverted: ${(err as any)?.shortMessage ?? (err as any)?.message ?? String(err)}`
+          console.error(`[Agent ${agentId}] KEEPER: settleTask FAILED (stakes released, payouts NOT made):`, err)
+        }
+      }
+
+      // Per-node validated events for the UI animation. Always safe to fire
+      // once markValidatedBatch landed — the contract did the actual work.
+      if (markedValidated) {
+        for (const nid of nodeIds) {
+          this.deps.network.emit(this.buildEvent(EventType.SUBTASK_VALIDATED, {
+            nodeId: nid, taskId, agentId,
+          })).catch(() => { })
+        }
+      }
+
+      try {
+        await this.deps.chain.completeTask(taskId)
+      } catch (err) {
+        // completeTask is mostly an idempotent sync hook; a revert here is
+        // not fatal to settlement (settleTask already paid out) but worth
+        // surfacing for ops.
+        console.warn(`[Agent ${agentId}] KEEPER: completeTask non-fatal error:`, err)
+      }
+
+      settled = markedValidated && settledOnChain
+      if (settled) {
+        console.log(`[Agent ${agentId}] KEEPER: DAG_COMPLETED — paid planner ${amounts[0]} + ${workerAddrs.length} workers`)
+      } else {
+        console.error(`[Agent ${agentId}] KEEPER: settlement INCOMPLETE — emitting DAG_COMPLETED with settled=false: ${failureReason}`)
+      }
     } catch (err) {
+      failureReason = (err as any)?.shortMessage ?? (err as any)?.message ?? String(err)
       console.error(`[Agent ${agentId}] KEEPER validation error:`, err)
+    } finally {
+      // Skip the unconditional emit only when we deliberately bailed into
+      // the challenge flow — challenge has its own settlement timeline.
+      if (!challenged) {
+        this.deps.network.emit(this.buildEvent(EventType.DAG_COMPLETED, {
+          taskId,
+          settled,
+          ...(failureReason ? { error: failureReason } : {}),
+        })).catch(err => {
+          console.error(`[Agent ${agentId}] KEEPER: DAG_COMPLETED emit failed:`, err)
+        })
+      }
     }
   }
 

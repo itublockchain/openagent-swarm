@@ -37,6 +37,18 @@ export enum EventType {
   DAG_VALIDATING    = 'DAG_VALIDATING',
   DAG_COMPLETED     = 'DAG_COMPLETED',
   TASK_FINALIZED    = 'TASK_FINALIZED',
+  /** Planner failed to decompose / register the DAG (LLM error, JSON parse,
+   *  on-chain revert, storage timeout). Payload: { taskId, reason }. The
+   *  UI swaps the "Awaiting DAG" loader for an actionable error overlay
+   *  instead of spinning forever. */
+  TASK_FAILED       = 'TASK_FAILED',
+  /** Periodic AXL-bridge keepalive, broadcast every ~60s. Sole purpose is
+   *  to exercise sendToPeer for each known peer so the underlying TCP
+   *  links stay marked `up` in the bridge's topology view — without it,
+   *  an idle swarm has its peer connections drop and SUBTASK_DONE events
+   *  fail to route. Intercepted at AxlNetwork; no app handler ever sees
+   *  it, no log spam. */
+  HEARTBEAT         = 'HEARTBEAT',
   /** Owner added or removed an agent from a colony. Payload: { colonyId,
    *  agentId, change: 'added'|'removed' }. Lets agents update their local
    *  myColonies set immediately instead of waiting for the next 30s poll —

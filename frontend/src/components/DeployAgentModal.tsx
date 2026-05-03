@@ -232,7 +232,7 @@ export function DeployAgentModal({ isOpen, onClose, onSuccess }: Props) {
     idle: '',
     preparing: 'Committing stake from your Treasury balance…',
     deploying: 'Spawning Docker container…',
-    'awaiting-active': 'Registering on-chain — waiting for agent to go live in the SPORE network…',
+    'awaiting-active': 'Registering on-chain and waiting for agent to go live in the SPORE network…',
     done: '✓ Agent live in pool',
     error: errorMsg || 'Error',
   }

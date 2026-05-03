@@ -5,8 +5,28 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-const MAX_RETRIES = 12
+const MAX_RETRIES = 5
 const RETRY_BASE_MS = 3000
+// 0G SDK's `waitForLogEntry` has an unbounded `while (true)` loop that
+// polls the storage node forever when sync is stalled. Without a wall-
+// clock timeout on each `indexer.upload/download` call, a stuck node
+// freezes every caller awaiting on it — and the existing withRetry()
+// can't trigger because the inner promise never rejects. These caps
+// turn that infinite hang into a bounded reject so retries kick in,
+// and ultimately the caller (e.g. validateLastNodeAsPlanner) sees a
+// real error it can catch.
+const UPLOAD_TIMEOUT_MS = 60_000
+const FETCH_TIMEOUT_MS = 45_000
+
+function withTimeout<T>(label: string, ms: number, p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`[ZeroGStorage] ${label} timed out after ${ms}ms`)), ms)
+    p.then(
+      v => { clearTimeout(t); resolve(v) },
+      e => { clearTimeout(t); reject(e) },
+    )
+  })
+}
 
 export class ZeroGStorage implements IStoragePort {
   private provider: ethers.JsonRpcProvider
@@ -56,10 +76,10 @@ export class ZeroGStorage implements IStoragePort {
       const rootHash = tree.rootHash()!
       console.log(`[ZeroGStorage] uploading, root: ${rootHash}`)
 
-      const [result, uploadErr] = await this.indexer.upload(
-        file,
-        this.rpc,
-        this.signer
+      const [result, uploadErr] = await withTimeout(
+        'append.upload',
+        UPLOAD_TIMEOUT_MS,
+        this.indexer.upload(file, this.rpc, this.signer),
       )
       if (uploadErr || !result) throw new Error(`Upload error: ${uploadErr}`)
 
@@ -90,7 +110,11 @@ export class ZeroGStorage implements IStoragePort {
 
     const uploadPromise = (async () => {
       try {
-        const [result, uploadErr] = await this.indexer.upload(file, this.rpc, this.signer)
+        const [result, uploadErr] = await withTimeout(
+          'appendDeferred.upload',
+          UPLOAD_TIMEOUT_MS,
+          this.indexer.upload(file, this.rpc, this.signer),
+        )
         if (uploadErr || !result) throw uploadErr ?? new Error('upload returned no result')
         const txHash = 'txHash' in result ? result.txHash : result.txHashes[0]
         console.log(`[ZeroGStorage] deferred upload landed: ${rootHash}, tx: ${txHash}`)
@@ -111,10 +135,10 @@ export class ZeroGStorage implements IStoragePort {
       const tempFilePath = path.join(tempDir, `0g-download-${hash}-${Date.now()}.json`)
 
       try {
-        const err = await this.indexer.download(
-          hash,
-          tempFilePath,
-          true  // verify
+        const err = await withTimeout(
+          'fetch.download',
+          FETCH_TIMEOUT_MS,
+          this.indexer.download(hash, tempFilePath, true /* verify */),
         )
         if (err) throw new Error(`Download error: ${err}`)
 

@@ -44,6 +44,10 @@ function DashboardContent() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isDeployOpen, setIsDeployOpen] = useState(false);
   const [submitStep, setSubmitStep] = useState<SubmitStep>('idle');
+  // Set when the user clicks "New intent" while a task is still in flight.
+  // Held until they confirm abandon-view or cancel; bare null otherwise so
+  // settled/failed tasks skip the modal entirely.
+  const [pendingAbandon, setPendingAbandon] = useState<{ taskId: string } | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>(() => [
     makeEntry('system', 'Waiting for user intent…'),
     makeEntry('system', 'Ready to generate and deploy DAG.'),
@@ -54,7 +58,11 @@ function DashboardContent() {
   // don't repeatedly stamp the panel with near-identical rows.
   const seenLogIdsRef = useRef<Set<string>>(new Set());
 
-  const { dag, events, taskIdFromUrl, accessDenied } = useSporeEvents();
+  const { dag, events, taskIdFromUrl, accessDenied, taskFailure } = useSporeEvents();
+  // Failure can come from two places: standalone TASK_FAILED (planner blew
+  // up, no dag) or DAG_COMPLETED with settled=false (settlement reverted).
+  // Either way the canvas swaps to an error overlay instead of spinning.
+  const activeFailure = dag?.failure ?? taskFailure ?? null;
 
   // Resizable right panel: min = 380px (initial size), max = 50vw.
   // Inline width is only applied at md+ — below that the panel stacks full-width.
@@ -110,20 +118,119 @@ function DashboardContent() {
     };
   }, []);
 
-  // Elapsed-time ticker for status bar. Resets when a new taskId arrives.
+  // Elapsed-time ticker for status bar. Persists across refreshes per
+  // taskId via localStorage so reopening a task picks up where it left
+  // off instead of restarting at 00:00. Refines the start timestamp from
+  // the earliest replayed event when available (more accurate than the
+  // first time *this* tab opened the task), and freezes once the dag is
+  // settled so the displayed value reflects the actual run duration.
   const [elapsedSec, setElapsedSec] = useState(0);
+  const [taskStartMs, setTaskStartMs] = useState<number | null>(null);
+  const [taskEndMs, setTaskEndMs] = useState<number | null>(null);
+
+  // Initialize / refine start time. Runs whenever the taskId changes or
+  // new replayed events arrive so an earlier WS timestamp can backdate
+  // the start past Date.now() (relevant for deep-link visits).
   useEffect(() => {
-    if (!taskIdFromUrl) return;
-    const start = Date.now();
+    if (!taskIdFromUrl) {
+      setTaskStartMs(null);
+      setTaskEndMs(null);
+      return;
+    }
+    const startKey = `spore-task-start:${taskIdFromUrl}`;
+    const endKey = `spore-task-end:${taskIdFromUrl}`;
+
+    const cachedStart = Number(window.localStorage.getItem(startKey));
+    const cachedEnd = Number(window.localStorage.getItem(endKey));
+
+    let start = Number.isFinite(cachedStart) && cachedStart > 0 ? cachedStart : Date.now();
+    if (events.length > 0) {
+      let earliest = Infinity;
+      for (const e of events) {
+        if (e.timestamp && e.timestamp < earliest) earliest = e.timestamp;
+      }
+      if (Number.isFinite(earliest) && earliest < start) start = earliest;
+    }
+    window.localStorage.setItem(startKey, String(start));
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setElapsedSec(0);
+    setTaskStartMs(start);
+
+    if (Number.isFinite(cachedEnd) && cachedEnd > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTaskEndMs(cachedEnd);
+    }
+  }, [taskIdFromUrl, events]);
+
+  // Freeze the timer the first time the dag reports settled. Persist the
+  // moment so future reloads keep the same total instead of inching up.
+  useEffect(() => {
+    if (!taskIdFromUrl || !dag?.settled || taskEndMs != null) return;
+    const endKey = `spore-task-end:${taskIdFromUrl}`;
+    const cached = Number(window.localStorage.getItem(endKey));
+    const end = Number.isFinite(cached) && cached > 0 ? cached : Date.now();
+    window.localStorage.setItem(endKey, String(end));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTaskEndMs(end);
+  }, [taskIdFromUrl, dag?.settled, taskEndMs]);
+
+  // The actual ticker. When the task is settled we stop the interval and
+  // hold the final value so a long-running browser doesn't keep adding
+  // wall-clock seconds to a task that already finished an hour ago.
+  useEffect(() => {
+    if (taskStartMs == null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setElapsedSec(0);
+      return;
+    }
+    if (taskEndMs != null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setElapsedSec(Math.max(0, Math.floor((taskEndMs - taskStartMs) / 1000)));
+      return;
+    }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setElapsedSec(Math.max(0, Math.floor((Date.now() - taskStartMs) / 1000)));
     const id = setInterval(() => {
-      setElapsedSec(Math.floor((Date.now() - start) / 1000));
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - taskStartMs) / 1000)));
     }, 1000);
     return () => clearInterval(id);
-  }, [taskIdFromUrl]);
+  }, [taskStartMs, taskEndMs]);
+
   const elapsedFmt = `${Math.floor(elapsedSec / 60).toString().padStart(2, '0')}:${(elapsedSec % 60).toString().padStart(2, '0')}`;
   const completedCount = nodes.filter(n => n.data?.status === 'completed').length;
+
+  // Shared by the right-panel loader, the completion banner condition, and
+  // the abandon-confirmation gate. Hoisted out of the IIFE so the modal
+  // (rendered at component root) can reference the same value the inline
+  // loader uses to decide whether the active task is still in flight.
+  const taskComplete =
+    !!dag?.settled ||
+    !!dag?.finalResult ||
+    (!!dag && dag.boxes.length > 0 && dag.boxes.every(b => b.status === 'done'));
+  // In-flight = task accepted on-chain but neither settled nor failed.
+  // Abandoning it doesn't refund the budget (operator already debited
+  // Treasury) and the swarm keeps working — so the modal asks first.
+  const taskInFlight = !!dag && !dag.settled && !dag.failure && !taskComplete;
+
+  // The actual reset — clears URL and local state. Called directly for
+  // settled/failed tasks; gated behind a confirm modal for in-flight ones.
+  const performNewIntent = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('taskId');
+    params.delete('intent');
+    const qs = params.toString();
+    router.replace(qs ? `?${qs}` : '?');
+    setSubmitStep('idle');
+    setInputText('');
+    setPendingAbandon(null);
+  }, [router, searchParams]);
+
+  const newIntentHandler = useCallback(() => {
+    if (taskInFlight && dag) {
+      setPendingAbandon({ taskId: dag.taskId });
+      return;
+    }
+    performNewIntent();
+  }, [taskInFlight, dag, performNewIntent]);
 
   // Five-phase indicator strip. Each phase is "done", "active", or "pending"
   // based on observable state (DAG / node statuses).
@@ -348,6 +455,19 @@ function DashboardContent() {
     setSubmitStep('submitting');
     setLogs(prev => [...prev, makeEntry('user', `Submitting spec: ${intent} (budget=${budgetStr} USDC)`)]);
 
+    // Drop the previous task's id from the URL the moment a new submit
+    // starts. The hook treats taskId removal as a hard reset, so the
+    // canvas swaps the old (settled) DAG for the "Broadcasting intent…"
+    // loader immediately instead of letting the stale graph linger for
+    // the 1-3s API window.
+    if (taskIdFromUrl) {
+      const cleared = new URLSearchParams(searchParams.toString());
+      cleared.delete('taskId');
+      cleared.delete('intent');
+      const qs = cleared.toString();
+      router.replace(qs ? `?${qs}` : '?');
+    }
+
     try {
       const submitRes = await apiRequest('/task', {
         method: 'POST',
@@ -506,11 +626,53 @@ function DashboardContent() {
             <CanvasDagLoadingState
               visible={
                 !accessDenied &&
+                !activeFailure &&
                 nodes.length === 0 &&
                 (submitStep === 'submitting' || (!!taskIdFromUrl && !dag))
               }
               phase={submitStep === 'submitting' ? 'broadcasting' : 'awaiting-dag'}
             />
+
+            {/* Failure overlay — planner blew up (TASK_FAILED) or the
+                keeper failed to settle (DAG_COMPLETED with settled=false).
+                Either way the user gets an actionable message + a way out
+                instead of staring at an indefinite spinner. */}
+            {activeFailure && !accessDenied && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/85 backdrop-blur-sm">
+                <div className="max-w-md text-center px-6">
+                  <div className="text-xs font-mono uppercase tracking-widest text-red-500 mb-2">
+                    {activeFailure.stage === 'planner' ? 'Planner failed' : 'Settlement failed'}
+                  </div>
+                  <h2 className="text-lg font-bold mb-2">
+                    {activeFailure.stage === 'planner'
+                      ? 'The planner could not decompose your intent'
+                      : 'On-chain settlement reverted'}
+                  </h2>
+                  <p className="text-sm text-muted-foreground mb-1 leading-relaxed">
+                    {activeFailure.stage === 'planner'
+                      ? 'This usually means the LLM call, JSON parse, or DAG-registration tx failed. The Treasury debit will be refunded by the operator if the task did not register on-chain.'
+                      : 'The keeper attempted to mark validated + settle the task but the chain rejected it. Your subtasks finished correctly; payouts will be reattempted by the watchdog within ~110 seconds.'}
+                  </p>
+                  <p className="text-[11px] font-mono text-muted-foreground/80 mb-4 truncate" title={activeFailure.reason}>
+                    {activeFailure.reason}
+                  </p>
+                  <div className="flex items-center justify-center gap-2">
+                    <button
+                      onClick={() => router.replace('/explorer')}
+                      className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider border border-border rounded-md hover:bg-muted transition-colors"
+                    >
+                      New intent
+                    </button>
+                    <button
+                      onClick={() => window.location.reload()}
+                      className="px-3 py-1.5 text-xs font-mono uppercase tracking-wider border border-border rounded-md hover:bg-muted transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Unauthorized deep-link state — shown when the connected wallet
                 isn't the task owner (or no wallet is connected). The backend
@@ -593,10 +755,6 @@ function DashboardContent() {
           {(() => {
             const isDispatching = submitStep === 'submitting';
             const hasActiveTask = !!taskIdFromUrl;
-            const taskComplete =
-              !!dag?.settled ||
-              !!dag?.finalResult ||
-              (!!dag && dag.boxes.length > 0 && dag.boxes.every(b => b.status === 'done'));
             const showLoader = (isDispatching || hasActiveTask) && !taskComplete;
 
             if (!showLoader) {
@@ -604,8 +762,11 @@ function DashboardContent() {
                 <>
                   {/* Completion banner — shown after the active task's DAG
                       reaches done. Distinguishes "fresh idle" from "previous
-                      task finished, you can dispatch a follow-up". */}
-                  {taskComplete && hasActiveTask && (
+                      task finished, you can dispatch a follow-up". Hidden
+                      once the user starts composing the next intent so the
+                      "completed" pill doesn't sit awkwardly above an active
+                      typing flow. */}
+                  {taskComplete && hasActiveTask && inputText.trim().length === 0 && (
                     <div className="px-4 py-2 border-t border-border bg-green-500/5 flex items-center gap-2 text-[11px]">
                       <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
                       <span className="text-green-700 dark:text-green-400 font-bold uppercase tracking-wider text-[10px]">
@@ -677,15 +838,10 @@ function DashboardContent() {
                 : dag ? 'DAG live — awaiting subtasks'
                   : 'Awaiting DAG from planner…';
 
-            const handleNewIntent = () => {
-              const params = new URLSearchParams(searchParams.toString());
-              params.delete('taskId');
-              params.delete('intent');
-              const qs = params.toString();
-              router.replace(qs ? `?${qs}` : '?');
-              setSubmitStep('idle');
-              setInputText('');
-            };
+            // Local ergonomic alias — the actual handler lives at component
+            // top level so the abandon-confirmation modal (rendered outside
+            // this IIFE) can share it.
+            const handleNewIntent = newIntentHandler;
 
             return (
               <div className="p-4 border-t border-border bg-background">
@@ -723,6 +879,51 @@ function DashboardContent() {
         onClose={() => setIsDeployOpen(false)}
         onSuccess={() => { }}
       />
+
+      {/* Abandon-view confirmation. Surfaced when the user clicks "New
+          intent" while the active task is still in flight. We don't cancel
+          the on-chain task — that's not currently supported and would
+          require a refund path — we just let them know the work continues
+          and how to come back to it. */}
+      {pendingAbandon && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="w-full max-w-md mx-4 rounded-xl border border-border bg-card p-5 shadow-2xl">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+              <h2 className="text-base font-semibold tracking-tight">Task is still running</h2>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed mb-2">
+              Your current task is in flight on SPORE. Starting a new intent
+              moves it to the background — the swarm continues working,
+              workers earn their share, and the keeper still settles
+              on-chain.
+            </p>
+            <p className="text-[11px] text-muted-foreground/80 mb-4">
+              The Treasury debit for this task is committed and not refunded.
+              You can return to view the result via the task URL or your task
+              history.
+            </p>
+            <div className="text-[10px] font-mono text-muted-foreground mb-4 px-2 py-1.5 rounded bg-muted/50 border border-border/50">
+              <span className="opacity-60">task</span>{' '}
+              <span className="text-foreground">{pendingAbandon.taskId.slice(0, 10)}…{pendingAbandon.taskId.slice(-6)}</span>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setPendingAbandon(null)}
+                className="px-3 py-1.5 text-xs font-semibold border border-border rounded-md hover:bg-muted transition-colors"
+              >
+                Keep watching
+              </button>
+              <button
+                onClick={performNewIntent}
+                className="px-3 py-1.5 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+              >
+                Start new intent
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

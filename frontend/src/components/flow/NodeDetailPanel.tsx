@@ -1,7 +1,7 @@
 'use client'
 
 import React from 'react'
-import { Wrench, ArrowRight, CheckCircle2, AlertCircle, Clock4, XCircle } from 'lucide-react'
+import { Wrench, CheckCircle2, Clock4, XCircle } from 'lucide-react'
 import { cn, shortHash } from '@/lib/utils'
 import type { NodeData } from './task-node'
 
@@ -28,13 +28,12 @@ const stopReasonMeta: Record<NonNullable<NodeData['stopReason']>, { label: strin
  */
 export const NodeDetailPanel = ({ data }: NodeDetailPanelProps) => {
   const transcript = data.transcript ?? []
-  const toolSteps = transcript.filter((s): s is Extract<typeof s, { kind: 'tool_call' }> => s.kind === 'tool_call')
   const finalStep = [...transcript].reverse().find((s): s is Extract<typeof s, { kind: 'final' }> => s.kind === 'final')
   const finalText = finalStep?.text ?? data.result
 
-  // Planner / "Active Task" header nodes don't carry a reasoning trace;
+  // Planner / "Active Task" header nodes don't carry a final answer;
   // show a placeholder so the panel still feels intentional.
-  const hasReasoning = transcript.length > 0 || !!data.result
+  const hasFinal = !!finalText
 
   const stopMeta = data.stopReason ? stopReasonMeta[data.stopReason] : null
 
@@ -95,55 +94,17 @@ export const NodeDetailPanel = ({ data }: NodeDetailPanelProps) => {
         )}
       </div>
 
-      {/* Body — scrollable trace + final */}
+      {/* Body — final answer only. Tool-call traces and per-step error
+          surfaces were removed by request: the panel now shows the model's
+          final answer and nothing else, so users aren't shown intermediate
+          tool failures (some retries succeed and the final answer is fine
+          regardless). */}
       <div className="overflow-y-auto px-4 py-3 flex-1 flex flex-col gap-4">
-        {!hasReasoning && (
+        {!hasFinal ? (
           <div className="text-xs text-muted-foreground italic py-6 text-center">
-            Henüz çıktı yok. Agent çalışmayı bitirince düşünme süreci burada görünür.
+            No output yet. The final answer will appear here once the agent finishes.
           </div>
-        )}
-
-        {toolSteps.length > 0 && (
-          <section className="flex flex-col gap-2">
-            <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
-              Thinking trace ({toolSteps.length} step{toolSteps.length === 1 ? '' : 's'})
-            </div>
-            <ol className="flex flex-col gap-2.5">
-              {toolSteps.map((step, i) => (
-                <li
-                  key={i}
-                  className={cn(
-                    'rounded-lg border bg-background/40 p-2.5 flex flex-col gap-1.5',
-                    step.ok ? 'border-border' : 'border-red-500/40'
-                  )}
-                >
-                  <div className="flex items-center gap-1.5 text-[11px] font-mono">
-                    <span className="text-muted-foreground tabular-nums">#{i + 1}</span>
-                    <ArrowRight className="w-3 h-3 text-muted-foreground" />
-                    <span className="font-semibold text-foreground">{step.tool}</span>
-                    {!step.ok && (
-                      <span className="ml-auto inline-flex items-center gap-1 text-red-600 dark:text-red-400 text-[10px] uppercase tracking-wider">
-                        <AlertCircle className="w-3 h-3" /> error
-                      </span>
-                    )}
-                  </div>
-                  {Object.keys(step.args).length > 0 && (
-                    <pre className="text-[10px] font-mono leading-snug text-foreground/80 bg-muted/50 rounded px-2 py-1 whitespace-pre-wrap break-words max-h-24 overflow-y-auto">
-                      {JSON.stringify(step.args, null, 2)}
-                    </pre>
-                  )}
-                  {step.output && (
-                    <pre className="text-[10px] font-mono leading-snug text-muted-foreground bg-muted/30 rounded px-2 py-1 whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
-                      {step.output}
-                    </pre>
-                  )}
-                </li>
-              ))}
-            </ol>
-          </section>
-        )}
-
-        {finalText && (
+        ) : (
           <section className="flex flex-col gap-1.5">
             <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground">
               Final answer

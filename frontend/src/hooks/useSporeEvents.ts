@@ -90,7 +90,22 @@ export interface DAGState {
    *  of the session; a fresh task arrives via DAG_READY which rebuilds
    *  the dag from scratch. */
   settled?: boolean
+  /** Set when the planner emitted TASK_FAILED (DAG construction blew up)
+   *  or when DAG_COMPLETED arrived with settled=false (settlement throw).
+   *  Frontend swaps the spinner for an actionable error overlay instead
+   *  of waiting indefinitely. `stage` tells the UI which step failed. */
+  failure?: { reason: string; stage: 'planner' | 'settlement' }
   boxes: SubtaskBox[]
+}
+
+/** Standalone failure carrier for the case where a TASK_FAILED arrives
+ *  BEFORE DAG_READY (no `dag` to attach it to yet). The hook surfaces
+ *  this through `taskFailure` so the explorer can paint an error overlay
+ *  even though no DAG was ever created. */
+export interface TaskFailure {
+  taskId: string
+  reason: string
+  stage: 'planner' | 'settlement'
 }
 
 export function useSporeEvents() {
@@ -107,6 +122,10 @@ export function useSporeEvents() {
   // exist). Surfaced by the explorer page as a "you don't have access"
   // empty state instead of leaving the canvas blank as if loading.
   const [accessDenied, setAccessDenied] = useState(false)
+  // TASK_FAILED that arrived before DAG_READY (planner blew up during
+  // decomposition, no dag exists yet). Lets the explorer show an error
+  // overlay instead of an indefinite "Awaiting DAG…" spinner.
+  const [taskFailure, setTaskFailure] = useState<TaskFailure | null>(null)
 
   // taskId URL'e yaz
   const setTaskId = useCallback((taskId: string) => {
@@ -118,9 +137,34 @@ export function useSporeEvents() {
   // --- Initial State Fetch ---
   useEffect(() => {
     if (!taskIdFromUrl) {
+      // URL dropped its taskId (e.g. user clicked "New intent" or just
+      // submitted a fresh one). Wipe the previous task's state so the
+      // canvas paints a fresh CanvasDagLoadingState instead of holding
+      // the stale DAG until the new one arrives.
       setAccessDenied(false)
+      setTaskFailure(null)
+      setDag(null)
+      setEvents([])
       return
     }
+    // Hard reset when the URL pivots to a different task. Without this
+    // the prior settled DAG stays on the canvas while the new task is
+    // already in flight, and the fetch effect's `if (dag) return` guard
+    // below blocks /task/:newId from ever being read. Clear-then-fetch
+    // is the only ordering that lets both submit-after-completion and
+    // navigation-between-tasks behave the same way.
+    if (dag && dag.taskId !== taskIdFromUrl) {
+      setDag(null)
+      setEvents([])
+      setAccessDenied(false)
+      setTaskFailure(null)
+      // Don't fetch this tick — let the next effect run pick up the
+      // cleared dag and proceed with the request. Keeps the reset and
+      // the read in clearly separated phases.
+      return
+    }
+    // Fresh task → drop any stale failure from a previous run.
+    setTaskFailure(prev => (prev && prev.taskId === taskIdFromUrl ? prev : null))
     if (dag) return
     // /task/:id is owner-gated server-side; apiRequest stamps the JWT
     // automatically so the backend can verify the caller. 401/403/404
@@ -307,17 +351,50 @@ export function useSporeEvents() {
     }
 
     const handleDAGCompleted = (event: WSEvent) => {
-      const { taskId, result } = event.payload as any
+      const { taskId, result, settled, error } = event.payload as any
       if (!matchesActiveTask(taskId)) return
+      // Backend now emits DAG_COMPLETED unconditionally — even when
+      // settlement reverted on-chain — with `settled: false` + `error`
+      // for the failure case. We still want to flip the UI out of the
+      // "validating" spinner; we just paint a settlement-failure overlay
+      // instead of the "task complete" celebration.
+      const settledOk = settled !== false // default true for legacy payloads
       setDag(prev => prev ? {
         ...prev,
         validating: false,
-        settled: true,
+        settled: settledOk,
+        failure: settledOk
+          ? prev.failure
+          : { reason: error ?? 'Settlement failed', stage: 'settlement' as const },
         // Backend currently emits { taskId, settled } without a result
         // field; keep the assignment so a future payload upgrade flows
         // through without another hook change.
         finalResult: result ?? prev.finalResult,
+        // Promote any still-yellow boxes (status === 'pending', i.e.
+        // SUBTASK_DONE landed but SUBTASK_VALIDATED was lost in flight)
+        // to 'done'. Settlement on-chain implies every node validated;
+        // keeping a node yellow after the keeper paid out misleads the
+        // user into thinking the task hasn't finished.
+        boxes: prev.boxes.map(b =>
+          b.status === 'pending' || b.status === 'claimed' ? { ...b, status: 'done' } : b
+        ),
       } : null)
+    }
+
+    // Planner blew up before DAG_READY — surface the failure so the
+    // explorer swaps the loading spinner for an actionable error.
+    const handleTaskFailed = (event: WSEvent) => {
+      const { taskId, reason, stage } = event.payload as any
+      if (!matchesActiveTask(taskId)) return
+      const failure = {
+        reason: reason ?? 'Unknown failure',
+        stage: (stage as 'planner' | 'settlement') ?? 'planner',
+      }
+      // If a dag exists already (rare — TASK_FAILED usually arrives pre-
+      // DAG_READY), attach the failure there so existing failure-aware
+      // code paths see it. Otherwise stash it on the standalone slot.
+      setDag(prev => prev ? { ...prev, failure } : null)
+      setTaskFailure({ taskId, ...failure })
     }
 
     const handleSubtaskClaimed = (event: WSEvent) => {
@@ -474,6 +551,7 @@ export function useSporeEvents() {
     wsClient.on(EventType.DAG_READY, handleDAGReady)
     wsClient.on(EventType.DAG_VALIDATING, handleDAGValidating)
     wsClient.on(EventType.DAG_COMPLETED, handleDAGCompleted)
+    wsClient.on(EventType.TASK_FAILED, handleTaskFailed)
     wsClient.on(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
     wsClient.on(EventType.SUBTASK_DONE, handleSubtaskDone)
     wsClient.on(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
@@ -491,6 +569,7 @@ export function useSporeEvents() {
       wsClient.off(EventType.DAG_READY, handleDAGReady)
       wsClient.off(EventType.DAG_VALIDATING, handleDAGValidating)
       wsClient.off(EventType.DAG_COMPLETED, handleDAGCompleted)
+      wsClient.off(EventType.TASK_FAILED, handleTaskFailed)
       wsClient.off(EventType.SUBTASK_CLAIMED, handleSubtaskClaimed)
       wsClient.off(EventType.SUBTASK_DONE, handleSubtaskDone)
       wsClient.off(EventType.SUBTASK_VALIDATED, handleSubtaskValidated)
@@ -511,5 +590,5 @@ export function useSporeEvents() {
     }
   }, [taskIdFromUrl, setTaskId, jwt, address])
 
-  return { dag, events, taskIdFromUrl, accessDenied }
+  return { dag, events, taskIdFromUrl, accessDenied, taskFailure }
 }

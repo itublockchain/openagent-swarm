@@ -8,12 +8,14 @@ import { createHash } from 'node:crypto';
 // an event is "stale". Replay risk is still bounded by seenEvents.
 const EVENT_TTL_MS = 60_000;
 
-// Lifetime of a knownNodes entry. Agents reboot with new Yggdrasil pubkeys
-// (and old pubkeys never get pruned by the bridge for ~minutes), so without
-// a TTL the set grows monotonically across docker-compose down/up cycles
-// and broadcasts get sent to dead addresses. 5 min is well above any
-// healthy event cadence — a peer we haven't heard from in 5 min is gone.
-const KNOWN_NODE_TTL_MS = 5 * 60_000;
+// Lifetime of a knownNodes entry. Old assumption: 5 min TTL is "well above
+// any healthy event cadence". Reality: an idle swarm (no submissions for a
+// few minutes) prunes every peer to zero, then the next broadcast goes
+// "0 delivered, 1 skipped of 1" — no agent receives the task. 30 min is
+// long enough to survive idle stretches between user submits while
+// `sendToPeer` still evicts genuinely-dead pubkeys after 3 failed sends,
+// so we don't accumulate junk indefinitely across container restarts.
+const KNOWN_NODE_TTL_MS = 30 * 60_000;
 
 // Topology cache TTL. Yggdrasil's spanning tree converges over seconds, not
 // per request — caching for 5s cuts ~10x bridge HTTP load on busy bursts
@@ -23,6 +25,14 @@ const TOPOLOGY_CACHE_TTL_MS = 5_000;
 // Background warm-up cadence. Refreshes the topology cache + prunes stale
 // knownNodes so emit() doesn't pay the latency on the hot path.
 const TOPOLOGY_WARMUP_MS = 5_000;
+
+// AXL-level heartbeat cadence. The bridge marks idle TCP peer links as
+// `up:false` after a few minutes of silence, which collapses gossip
+// routing — agents see SUBTASK_DONE broadcast as "X delivered" but the
+// recipients never get it because there's no live route. Sending a tiny
+// broadcast every minute exercises every known peer's sendToPeer path,
+// which keeps the bridge's link state warm and routing healthy.
+const HEARTBEAT_INTERVAL_MS = 60_000;
 
 // Gossip relay fan-out. When we receive a fresh event, we re-broadcast it
 // to N random peers so it propagates beyond the sender's local topology
@@ -58,9 +68,16 @@ export class AxlNetwork implements INetworkPort {
   private knownNodes = new Map<string, number>();
   private topologyCache: CachedTopology | null = null;
   private warmupTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Identifier stamped on outgoing HEARTBEATs so receivers can attribute
+  // the keepalive to a sender (and rememberNode them). Falls back to the
+  // env var's AGENT_ID if nothing was passed in — both API and agent set
+  // this in their respective entrypoints.
+  private readonly nodeId: string;
 
   constructor(axlUrl: string = process.env.AXL_URL || 'http://127.0.0.1:9002') {
     this.baseUrl = axlUrl;
+    this.nodeId = process.env.AGENT_ID || process.env.NODE_ID || 'axl-node';
   }
 
   async connect(): Promise<void> {
@@ -80,10 +97,34 @@ export class AxlNetwork implements INetworkPort {
       this.isPolling = true;
       this.pollMessages();
       this.startWarmupLoop();
+      this.startHeartbeatLoop();
     } catch (err) {
       console.error('[AxlNetwork] connection failed:', err);
       throw err;
     }
+  }
+
+  private startHeartbeatLoop(): void {
+    if (this.heartbeatTimer) return;
+    // Fire one immediately so peer discovery lights up the link as soon
+    // as we connect, without waiting a full minute for the first tick.
+    this.sendHeartbeat().catch(() => {});
+    this.heartbeatTimer = setInterval(() => {
+      this.sendHeartbeat().catch(err => console.warn('[AxlNetwork] heartbeat error:', err));
+    }, HEARTBEAT_INTERVAL_MS);
+    if (typeof this.heartbeatTimer.unref === 'function') this.heartbeatTimer.unref();
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    // Minimal payload — receivers don't read it, they just rememberNode
+    // the sender. Keep it small so even at 1/min × N peers it's noise-free.
+    const event: AXLEvent<{ ping: 1 }> = {
+      type: EventType.HEARTBEAT,
+      agentId: this.nodeId,
+      payload: { ping: 1 },
+      timestamp: Date.now(),
+    };
+    await this.emit(event);
   }
 
   private seenEvents = new Set<string>(); // Prevent gossip loops
@@ -136,9 +177,11 @@ export class AxlNetwork implements INetworkPort {
       const targets = new Set<string>();
       const peers: any[] = topology.peers || [];
       for (const p of peers) {
-        // up:true means the TCP link to that peer is currently live.
-        // Filtering here avoids the bridge dialling dead links.
-        if (p?.up && p?.public_key) targets.add(p.public_key);
+        // Previously filtered by `p.up` to skip dead TCP links, but the
+        // bridge marks idle-but-reachable peers as down too. Accepting
+        // every public_key it knows about + relying on sendToPeer's
+        // 3-retry dead-eviction is more reliable than this hint flag.
+        if (p?.public_key) targets.add(p.public_key);
       }
       const tree: any[] = topology.tree || [];
       for (const t of tree) {
@@ -206,6 +249,16 @@ export class AxlNetwork implements INetworkPort {
               // FIFO-ish: remove oldest 1000 instead of clearing all
               const arr = Array.from(this.seenEvents);
               this.seenEvents = new Set(arr.slice(1000));
+            }
+
+            // HEARTBEAT is an AXL-internal keepalive — refresh the
+            // sender in knownNodes (its only purpose) and short-circuit:
+            // no app handler dispatch, no gossip relay (the original
+            // sender already broadcast to everyone), no log spam.
+            if (parsed.type === EventType.HEARTBEAT) {
+              this.rememberNode(parsed.senderPubKey);
+              this.rememberNode(fromPeer);
+              continue;
             }
 
             console.log(`[AxlNetwork V3-FIXED] Received NEW event: ${parsed.type} from ${parsed.agentId}`);
@@ -308,6 +361,8 @@ export class AxlNetwork implements INetworkPort {
 
   async emit<T>(event: AXLEvent<T>): Promise<void> {
     try {
+      const isHeartbeat = event.type === EventType.HEARTBEAT;
+
       // Key MUST match pollMessages' format — payload fingerprint included.
       // If they diverge, the gossip-loopback event we just emitted comes
       // back through pollMessages with a different key, doesn't match the
@@ -318,22 +373,26 @@ export class AxlNetwork implements INetworkPort {
       const eventId = `${event.type}:${event.agentId}:${event.timestamp}:${payloadFingerprint(event.payload)}`;
       this.seenEvents.add(eventId);
 
-      // Trigger local handlers immediately so we process our own events
-      const channel = `axl-events:${event.type}`;
-      const globalChannel = 'axl-events';
-      const triggerHandlers = async () => {
-        if (this.handlers.has(channel)) {
-          for (const handler of this.handlers.get(channel)!) {
-            await handler(event);
+      // Trigger local handlers immediately so we process our own events.
+      // Heartbeats skip this — no app handler is registered for them and
+      // we don't want to even build the unused dispatch promise.
+      if (!isHeartbeat) {
+        const channel = `axl-events:${event.type}`;
+        const globalChannel = 'axl-events';
+        const triggerHandlers = async () => {
+          if (this.handlers.has(channel)) {
+            for (const handler of this.handlers.get(channel)!) {
+              await handler(event);
+            }
           }
-        }
-        if (this.handlers.has(globalChannel)) {
-          for (const handler of this.handlers.get(globalChannel)!) {
-            await handler(event);
+          if (this.handlers.has(globalChannel)) {
+            for (const handler of this.handlers.get(globalChannel)!) {
+              await handler(event);
+            }
           }
-        }
-      };
-      triggerHandlers().catch(err => console.error('[AxlNetwork] local trigger error:', err));
+        };
+        triggerHandlers().catch(err => console.error('[AxlNetwork] local trigger error:', err));
+      }
 
       const cached = await this.getBroadcastTargets();
       event.senderPubKey = cached.ourKey;
@@ -347,11 +406,13 @@ export class AxlNetwork implements INetworkPort {
       const dead = results.filter(r => r === 'dead').length;
       const skipped = results.filter(r => r === 'skipped').length;
       // delivered/dead surfaces the gap between optimistic target count
-      // and reality. "12 delivered, 47 dead, of 64" is the truth that
-      // the previous "to 64 nodes" log hid.
-      console.log(
-        `[AxlNetwork] Broadcast ${event.type}: ${ok} delivered, ${dead} dead, ${skipped} skipped, of ${targetCount}`,
-      );
+      // and reality. Heartbeat broadcasts skip the log so the operator's
+      // tail isn't drowned by 1/min keepalive lines.
+      if (!isHeartbeat) {
+        console.log(
+          `[AxlNetwork] Broadcast ${event.type}: ${ok} delivered, ${dead} dead, ${skipped} skipped, of ${targetCount}`,
+        );
+      }
     } catch (err) {
       console.error(`[AxlNetwork] Broadcast error:`, err);
     }
