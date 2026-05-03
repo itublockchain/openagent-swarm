@@ -3,10 +3,14 @@
 import { Sparkles } from 'lucide-react'
 
 const SUGGESTIONS = [
-  'Research the top AI trends on X this week',
-  'Summarize https://arxiv.org/abs/2401.12345',
-  'Generate a market report on Solana DeFi',
-  'Find the highest-yielding stablecoin pools right now',
+  'Write a simple calculator in Python with add, subtract, multiply, divide',
+  'Implement FizzBuzz in JavaScript for numbers 1 to 100',
+  'Write a Python function that checks if a string is a palindrome',
+  'Create a TypeScript function to reverse a linked list',
+  'Implement binary search in Go with a unit test',
+  'Write a Bash script that finds the 10 largest files in a directory',
+  'Build a React counter component with increment, decrement, and reset',
+  'Write a SQL query to get the second-highest salary from an employees table',
 ]
 
 export function IntentSuggestions({ onPick }: { onPick: (text: string) => void }) {
