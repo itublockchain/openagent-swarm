@@ -48,4 +48,13 @@ export const ENV = {
    *  this as the `mintRecipient` argument to depositForBurnWithHook. */
   CCTP_RECEIVER_ADDRESS:
     optional(process.env.NEXT_PUBLIC_CCTP_RECEIVER_ADDRESS) as `0x${string}` | undefined,
+  /** Per-chain RPC overrides for wagmi. Without these viem falls back to
+   *  the chain default (e.g. https://sepolia.base.org), which Coinbase
+   *  rate-limits aggressively — DepositModal then surfaces "Request is
+   *  being rate limited" wrapped as a contract revert. publicnode.com
+   *  endpoints are the same ones the backend uses; replace with a paid
+   *  Alchemy/Infura URL for production. */
+  BASE_SEPOLIA_RPC_URL: optional(process.env.NEXT_PUBLIC_BASE_SEPOLIA_RPC_URL),
+  ETH_SEPOLIA_RPC_URL: optional(process.env.NEXT_PUBLIC_ETH_SEPOLIA_RPC_URL),
+  ARB_SEPOLIA_RPC_URL: optional(process.env.NEXT_PUBLIC_ARB_SEPOLIA_RPC_URL),
 } as const
