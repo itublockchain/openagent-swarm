@@ -92,6 +92,25 @@ export interface IChainPort {
   getNodeClaimant(nodeId: string): Promise<string>
   /** Task'ın budget'ını döner (smallest unit, decimals'a göre) */
   getTaskBudget(taskId: string): Promise<string>
+  /**
+   * True iff `tasks[taskId].finalized == true`. Used by the keeper-timeout
+   * watchdog to short-circuit a forceComplete attempt when the planner
+   * already settled (or another peer's forceComplete landed first).
+   * Optional — the watchdog falls back to attempting forceComplete and
+   * tolerating the "Task already finalized" revert when this isn't
+   * implemented (e.g. mock adapter).
+   */
+  isTaskFinalized?(taskId: string): Promise<boolean>
+  /**
+   * Permissionless escape hatch for the "all nodes submitted but planner
+   * never settled" failure mode. Reverts on-chain when the keeper still
+   * has time, when the budget is empty, or when any node lacks an
+   * outputHash. Caller (typically a non-planner agent watching the task)
+   * doesn't supply winners/amounts — the contract reads them canonically
+   * so a malicious bystander can't redirect the budget. See
+   * `DAGRegistry.forceComplete` for the full state-machine notes.
+   */
+  forceComplete?(taskId: string): Promise<void>
   /** hatalı node'u sıfırlar */
   resetSubtask(nodeId: string): Promise<void>
   /**

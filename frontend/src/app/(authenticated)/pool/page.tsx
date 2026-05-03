@@ -252,15 +252,21 @@ export default function PoolPage() {
     }
   }, [useMock])
 
-  // Pool view shows only `running` agents — `pending` (still bootstrapping)
-  // and `stopped` (intentionally taken offline) are noise for the operator
-  // looking at "who's claimable right now". `error` is also hidden by
-  // default; the showFailedAgents toggle (env or ?showFailed=1) opts back
-  // in for debug. Every downstream view (topology, counts, sidebar list,
-  // selection) reads from this set so the rule is honored everywhere.
+  // Public pool only surfaces RUNNING agents — half-deployed (pending) and
+  // shut-down (stopped) agents are noise to anyone other than their owner,
+  // and showing them inflates the "live mesh" count with nodes that can't
+  // actually claim work. Errors stay hidden by default too; the showFailed
+  // toggle brings them back for ops debugging without re-surfacing
+  // pending/stopped. Every downstream view (topology, counts, sidebar
+  // list, selection) reads from this set so the rule applies everywhere
+  // at once.
   const visibleAgents = useMemo(
     () =>
-      agents.filter(a => a.status === 'running' || (showFailedAgents && a.status === 'error')),
+      agents.filter(a => {
+        if (a.status === 'pending' || a.status === 'stopped') return false
+        if (a.status === 'error' && !showFailedAgents) return false
+        return true
+      }),
     [agents, showFailedAgents]
   )
 

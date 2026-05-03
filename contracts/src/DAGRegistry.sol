@@ -11,6 +11,14 @@ interface ISwarmEscrow {
         uint256[] calldata amounts
     ) external;
     function releaseSubtaskStake(bytes32 taskId, bytes32 nodeId) external;
+    /// Read the canonical Task struct so forceComplete can derive the
+    /// per-worker share on-chain instead of trusting a caller-supplied
+    /// amounts[] array. Order matches the Task struct field declaration:
+    /// (owner, budget, stakedTotal, finalized).
+    function tasks(bytes32 taskId)
+        external
+        view
+        returns (address owner, uint256 budget, uint256 stakedTotal, bool finalized);
 }
 
 /**
@@ -44,12 +52,33 @@ contract DAGRegistry is Ownable {
     /// inference + storage round trip on 0G testnet.
     uint64 public constant CLAIM_TTL = 10 minutes;
 
+    /// Wall-clock timestamp of the most recent registerDAG / submitOutput
+    /// for the task. Drives the keeper-timeout: if the planner-keeper
+    /// hasn't called requestSettle within KEEPER_TIMEOUT of the last
+    /// activity, anyone can call forceComplete to settle the DAG.
+    /// Without this, an offline / restarted planner locks the task budget
+    /// (and every worker's task-level stake) forever — the original
+    /// design has no permissionless escape from "all nodes submitted but
+    /// planner won't settle".
+    mapping(bytes32 => uint64) public lastActivityAt;
+
+    /// Demo timing — keepers normally settle within seconds of the last
+    /// SUBTASK_DONE. 90s gives an honest planner-keeper plenty of slack
+    /// (judge round + tx confirm) before peers step in. Production
+    /// deployments should restore minute-scale (e.g. 5–10 min) so brief
+    /// operator outages don't trigger forceComplete races.
+    uint64 public constant KEEPER_TIMEOUT = 90 seconds;
+
     event PlannerSelected(bytes32 indexed taskId, address indexed planner);
     event SubtaskClaimed(bytes32 indexed nodeId, address indexed agent);
     event OutputSubmitted(bytes32 indexed nodeId, address indexed agent, bytes32 outputHash);
     event DAGCompleted(bytes32 indexed taskId);
     event NodeReset(bytes32 indexed nodeId);
     event ClaimExpired(bytes32 indexed nodeId, address indexed previousClaimant);
+    /// Emitted when forceComplete fires — distinct from DAGCompleted so
+    /// off-chain indexers can tell "planner did their job" apart from
+    /// "peers stepped in because the planner was unresponsive".
+    event DAGForceCompleted(bytes32 indexed taskId, address indexed forcer, address indexed planner);
 
     constructor() Ownable(msg.sender) {}
 
@@ -83,6 +112,9 @@ contract DAGRegistry is Ownable {
             });
         }
         taskNodes[taskId] = nodeIds;
+        // Seed the keeper-timeout clock — workers have KEEPER_TIMEOUT to
+        // start submitting outputs, then each submitOutput resets it.
+        lastActivityAt[taskId] = uint64(block.timestamp);
     }
 
     function claimSubtask(bytes32 nodeId) external returns (bool) {
@@ -98,6 +130,10 @@ contract DAGRegistry is Ownable {
     function submitOutput(bytes32 nodeId, bytes32 outputHash) external {
         require(nodes[nodeId].claimedBy == msg.sender, "Only claimant");
         nodes[nodeId].outputHash = outputHash;
+        // Reset the keeper-timeout clock — every submitOutput is a sign
+        // of life from the swarm; only after KEEPER_TIMEOUT of true
+        // silence can forceComplete fire.
+        lastActivityAt[nodes[nodeId].taskId] = uint64(block.timestamp);
         emit OutputSubmitted(nodeId, msg.sender, outputHash);
     }
 
@@ -195,5 +231,71 @@ contract DAGRegistry is Ownable {
         nodes[nodeId].validated = false;
         claimedAt[nodeId] = 0;
         emit NodeReset(nodeId);
+    }
+
+    /// Permissionless escape hatch for the "all nodes submitted but the
+    /// planner-keeper never settled" failure mode. Any address can call
+    /// once `lastActivityAt[taskId] + KEEPER_TIMEOUT` has elapsed —
+    /// settlement uses the canonical claim list (no caller-supplied
+    /// winners[] / amounts[] argument so a malicious bystander can't
+    /// redirect the budget). Planner is included with amount=0 so their
+    /// task-level stake is still refunded inside escrow.settleWithAmounts;
+    /// they only forfeit the planner share. Workers split the budget
+    /// evenly. Any rounding dust stays inside the budget (escrow tolerates
+    /// totalReward <= budget).
+    ///
+    /// Side effects:
+    ///   - Marks every node validated and releases its subtask stake
+    ///     (idempotent on already-validated nodes — they just no-op).
+    ///   - Calls escrow.settleWithAmounts → finalizes the task, agent
+    ///     ledger entries are credited, future calls revert
+    ///     "Task already finalized" so racing watchdogs are harmless.
+    ///   - Emits both DAGCompleted (for off-chain consumers that already
+    ///     listen to it) AND DAGForceCompleted (for explorers / metrics
+    ///     that want to flag this as an unhappy-path settlement).
+    function forceComplete(bytes32 taskId) external {
+        bytes32[] memory nodeIds = taskNodes[taskId];
+        require(nodeIds.length > 0, "Unknown task");
+        uint64 stamp = lastActivityAt[taskId];
+        require(stamp > 0, "No activity recorded");
+        require(block.timestamp >= uint256(stamp) + KEEPER_TIMEOUT, "Keeper still has time");
+
+        // Every node MUST have an outputHash. If a worker is still mid-
+        // claim with no output, force-completing now would credit them
+        // for work they never delivered. The right escape hatch for that
+        // case is expireClaim() → re-claim → submit → forceComplete; we
+        // don't try to do it inline because it would need the slashing
+        // path too (the original claimant might have a stake locked).
+        address planner = planners[taskId];
+        require(planner != address(0), "No planner");
+
+        address[] memory winners = new address[](nodeIds.length + 1);
+        uint256[] memory amounts = new uint256[](nodeIds.length + 1);
+        winners[0] = planner;
+        amounts[0] = 0; // planner forfeits the planning bonus
+
+        // Pull the budget straight from escrow so the share math is
+        // canonical and the caller has no discretion over payouts.
+        (, uint256 budget, ,) = escrow.tasks(taskId);
+        require(budget > 0, "Empty budget");
+        uint256 workerShare = budget / nodeIds.length;
+
+        for (uint256 i = 0; i < nodeIds.length; i++) {
+            bytes32 nid = nodeIds[i];
+            DAGNode storage n = nodes[nid];
+            require(n.outputHash != bytes32(0), "Node missing output");
+            address claimant = n.claimedBy;
+            require(claimant != address(0), "Unclaimed subtask");
+            winners[i + 1] = claimant;
+            amounts[i + 1] = workerShare;
+            if (!n.validated) {
+                n.validated = true;
+                escrow.releaseSubtaskStake(taskId, nid);
+            }
+        }
+
+        escrow.settleWithAmounts(taskId, winners, amounts);
+        emit DAGCompleted(taskId);
+        emit DAGForceCompleted(taskId, msg.sender, planner);
     }
 }

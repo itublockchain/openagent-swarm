@@ -21,6 +21,19 @@ export interface JuryTally {
   committed: string[]
 }
 
+/** Slash overlay attached to a node and/or the planner. Carries enough
+ *  context for the UI to render a tooltip ("Slashed: validation_failed —
+ *  0.50 USDC") without a follow-up fetch. Reason is the SwarmAgent
+ *  CHALLENGE-event reason when a challenge preceded the slash, otherwise
+ *  the SlashWatcher fallback string ('on_chain_slash'). */
+export interface SlashInfo {
+  agentId: string | null
+  agentAddress: string
+  amount: string
+  reason: string
+  slashedAt?: string
+}
+
 export interface SubtaskBox {
   nodeId: string
   subtask: string
@@ -53,11 +66,18 @@ export interface SubtaskBox {
    *  summary row. */
   iterations?: number
   stopReason?: 'final' | 'max_iter' | 'deadline' | 'parse_error' | 'no_chat'
+  /** Set when SlashWatcher recorded a slash for the agent that claimed
+   *  this subtask. Drives the per-node red overlay + tooltip. */
+  slash?: SlashInfo
 }
 
 export interface DAGState {
   taskId: string
   plannerId?: string
+  /** Set when the planner agent itself was slashed. The explorer renders
+   *  the planner node red + shows a banner with the reason instead of
+   *  the "Awaiting…" placeholder. */
+  plannerSlash?: SlashInfo
   finalResult?: string
   /** True after DAG_VALIDATING fires (last subtask submitted on-chain,
    *  keeper still has to judge + markValidatedBatch + settle). Cleared
@@ -122,17 +142,50 @@ export function useSporeEvents() {
         const data = await res.json()
         if (data && data.dag) {
           setAccessDenied(false)
-          const nodes = data.dag.nodes as any[]
+
+          // Backend hydrates `slashes: [{ node_id, agent_id, amount,
+          // reason, agent_address, slashed_at }]` and `planner: { agent_id,
+          // slashed, slash_reason, slash_amount }`. Project them into
+          // per-node SlashInfo + a single plannerSlash so the UI can
+          // render the red overlays without replaying the SLASH_EXECUTED
+          // event timeline.
+          const slashByNode = new Map<string, SlashInfo>()
+          if (Array.isArray(data.slashes)) {
+            for (const s of data.slashes) {
+              if (!s.node_id) continue
+              slashByNode.set(s.node_id, {
+                agentId: s.agent_id ?? null,
+                agentAddress: s.agent_address,
+                amount: s.amount,
+                reason: s.reason,
+                slashedAt: s.slashed_at,
+              })
+            }
+          }
+          const plannerSlash: SlashInfo | undefined =
+            data.planner?.slashed && data.planner?.slash_reason
+              ? {
+                  agentId: data.planner.agent_id ?? null,
+                  agentAddress: '',
+                  amount: data.planner.slash_amount ?? '0',
+                  reason: data.planner.slash_reason,
+                }
+              : undefined
+
           // Deep-link refresh on a finished task: API returns every node
           // as 'done', but no DAG_COMPLETED event will replay (it already
           // fired). Seed `settled` from the snapshot so the phase strip
           // lands on Settle = done instead of staying stuck on Validate.
-          const allDone = nodes.length > 0 && nodes.every(n => n.status === 'done')
+          const dagNodes = data.dag.nodes as any[]
+          const allDone = dagNodes.length > 0 && dagNodes.every(n => n.status === 'done')
+
           setDag({
             taskId: taskIdFromUrl,
-            plannerId: data.plannerId || data.dag.plannerAgentId,
+            plannerId:
+              data.planner?.agent_id || data.plannerId || data.dag.plannerAgentId,
+            plannerSlash,
             settled: allDone || undefined,
-            boxes: nodes.map((n: any) => ({
+            boxes: dagNodes.map((n: any) => ({
               nodeId: n.id,
               subtask: n.subtask,
               status: n.status || 'idle',
@@ -147,6 +200,7 @@ export function useSporeEvents() {
               transcript: n.transcript,
               iterations: n.iterations,
               stopReason: n.stopReason,
+              slash: slashByNode.get(n.id),
             }))
           })
         }
@@ -373,6 +427,48 @@ export function useSporeEvents() {
       }))
     }
 
+    // SLASH_EXECUTED is the post-on-chain confirmation that an agent's
+    // stake was actually burned. CHALLENGE flips the status earlier, but
+    // (a) some slash paths skip CHALLENGE (peer-validation reject + direct
+    // vault execute), and (b) the per-node tooltip needs the reason +
+    // amount, which only this event carries. We update the affected node
+    // OR the planner-slash banner depending on which agent was hit.
+    const handleSlashExecuted = (event: WSEvent) => {
+      const { nodeId, taskId, agentId, agentAddress, amount, reason } =
+        event.payload as any
+      if (!matchesActiveTask(taskId)) return
+      const slash: SlashInfo = {
+        agentId: agentId ?? null,
+        agentAddress: agentAddress ?? '',
+        amount: amount ?? '0',
+        reason: reason ?? 'on_chain_slash',
+      }
+      setDag(prev => {
+        if (!prev) return prev
+        let nextBoxes = prev.boxes
+        if (nodeId) {
+          // Per-subtask slash. Flip status to failed AND attach the
+          // tooltip payload. Status flip is idempotent — if CHALLENGE
+          // already moved us there, we just enrich with the slash data.
+          nextBoxes = prev.boxes.map(b =>
+            b.nodeId === nodeId
+              ? { ...b, status: 'failed' as SubtaskStatus, slash }
+              : b,
+          )
+        }
+        // Planner-slash detection: when the slashed agentId matches the
+        // planner, surface a top-level banner so the UI can show "Planner
+        // X was slashed: <reason>" even if no specific node was tagged
+        // (legacy task-level slash, or planner that didn't claim a node).
+        const plannerSlashed = !!agentId && agentId === prev.plannerId
+        return {
+          ...prev,
+          boxes: nextBoxes,
+          plannerSlash: plannerSlashed ? slash : prev.plannerSlash,
+        }
+      })
+    }
+
     wsClient.on('*', handleAll)
     wsClient.on('subscribe_rejected', handleSubscribeRejected)
     wsClient.on(EventType.DAG_READY, handleDAGReady)
@@ -387,6 +483,7 @@ export function useSporeEvents() {
     wsClient.on(EventType.JUROR_VOTED, handleJurorVoted)
     wsClient.on(EventType.CHALLENGE, handleChallenge)
     wsClient.on(EventType.TASK_REOPENED, handleTaskReopened)
+    wsClient.on(EventType.SLASH_EXECUTED, handleSlashExecuted)
 
     return () => {
       wsClient.off('*', handleAll)
@@ -403,6 +500,7 @@ export function useSporeEvents() {
       wsClient.off(EventType.JUROR_VOTED, handleJurorVoted)
       wsClient.off(EventType.CHALLENGE, handleChallenge)
       wsClient.off(EventType.TASK_REOPENED, handleTaskReopened)
+      wsClient.off(EventType.SLASH_EXECUTED, handleSlashExecuted)
       // Drop the watch when navigating away from a deep-linked task so
       // the backend stops streaming us events we no longer care about.
       // Owner-routed events (no explicit subscribe) keep flowing — they

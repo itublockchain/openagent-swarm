@@ -27,6 +27,7 @@ import { registerWithdrawRoutes } from './v1/withdrawRoutes'
 import { registerCctpRoutes } from './v1/cctpRoutes'
 import { BridgeWatcher } from './BridgeWatcher'
 import { CCTPRelayer } from './CCTPRelayer'
+import { SlashWatcher } from './SlashWatcher'
 import { registerSporeiseRoutes } from './v1/sporeiseRoutes'
 
 const DEFAULT_JWT_SECRET = 'swarm-dev-secret'
@@ -87,7 +88,18 @@ export default async function createServer(deps: ServerDeps) {
       taskId,
       nodes.map((n: any) => ({ id: n.id, subtask: n.subtask })),
     )
-    if (plannerAgentId) plannerByTask.set(taskId, plannerAgentId)
+    if (plannerAgentId) {
+      plannerByTask.set(taskId, plannerAgentId)
+      // Persist for restart-survival. taskIndex is initialised below this
+      // listener — guard the call so the seed events that arrive in the
+      // ~ms-window before init don't crash. After init the call is cheap
+      // (UPDATE … WHERE planner_id IS NULL) and idempotent.
+      try {
+        taskIndex?.setPlanner(taskId, plannerAgentId)
+      } catch (err) {
+        console.warn(`[server] taskIndex.setPlanner failed for ${taskId}:`, err)
+      }
+    }
   })
 
   deps.network.on(EventType.SUBTASK_CLAIMED, (event: any) => {
@@ -694,14 +706,56 @@ export default async function createServer(deps: ServerDeps) {
       reply.code(404)
       return { error: 'Task not found in storage or DB', taskId }
     }
+
+    // Planner resolution. Prefer the in-memory cache (live tasks), fall
+    // back to the persisted column on the user_tasks row (deep-link
+    // reload after restart), and last to the chain-rebuild we just did.
+    // Without the DB fallback the explorer shows "Awaiting planner…"
+    // forever for any task whose DAG_READY fired in a prior process.
+    const indexRow = taskIndex.listForOwner(user.address, 200).find(r => r.taskId === taskId)
+    const plannerAgentId =
+      plannerByTask.get(taskId) ?? indexRow?.plannerId ?? undefined
+
+    // Slash overlay. Each row tells the UI which node was slashed, why,
+    // how much, and (when known) the local agentId so the explorer can
+    // still resolve the agent's display name. Empty array = clean run.
+    let slashes: ReturnType<typeof taskState.getSlashesForTask> = []
+    try {
+      slashes = taskState.getSlashesForTask(taskId)
+    } catch (err) {
+      console.warn(`[GET /task/${taskId}] getSlashesForTask failed:`, err)
+    }
+    const plannerSlashed = plannerAgentId
+      ? slashes.find(s => s.agentId === plannerAgentId)
+      : undefined
+
     return {
       ...(task as any ?? {}),
       // useSwarmEvents.fetchState reads data.dag.nodes — keep the shape.
       dag: dagNodes.length > 0
-        ? { nodes: dagNodes, plannerAgentId: plannerByTask.get(taskId) }
+        ? { nodes: dagNodes, plannerAgentId }
         : null,
       // Historical event log for replaying terminal output in the explorer.
       events: taskState.getEvents(taskId),
+      // Per-task slash overlay + planner state. Frontend renders these
+      // into red node badges + a "Planner slashed: <reason>" banner
+      // without needing to replay the whole event timeline.
+      slashes: slashes.map(s => ({
+        node_id: s.nodeId,
+        agent_id: s.agentId,
+        agent_address: s.agentAddress,
+        amount: s.amount,
+        reason: s.reason,
+        slashed_at: s.slashedAt,
+      })),
+      planner: plannerAgentId
+        ? {
+            agent_id: plannerAgentId,
+            slashed: !!plannerSlashed,
+            slash_reason: plannerSlashed?.reason ?? null,
+            slash_amount: plannerSlashed?.amount ?? null,
+          }
+        : null,
     };
   });
 
@@ -1100,10 +1154,18 @@ export default async function createServer(deps: ServerDeps) {
   await registerCctpRoutes(fastify, { requireAuth, relayer: cctpRelayer })
 
   // Webapp profile (SIWE-JWT) — owner-scoped task history + per-task result.
+  // taskState is passed so the DELETE routes can cascade-clean the dag /
+  // events tables; onTaskDeleted prunes the in-memory caches so a deleted
+  // task can't keep delivering events to its old owner over WS.
   await registerProfileRoutes(fastify, {
     taskIndex,
     requireAuth,
     taskResults: taskResultsAdapter as any,
+    taskState,
+    onTaskDeleted: (taskId) => {
+      taskOwners.delete(taskId)
+      plannerByTask.delete(taskId)
+    },
   })
 
   // Colony surface — same SQLite file as KeyStore / TaskIndex. Two mounts:
@@ -1151,6 +1213,21 @@ export default async function createServer(deps: ServerDeps) {
       return { address: ctx.userAddress }
     },
   })
+
+  // SlashWatcher mirrors SwarmEscrow.Slashed events into colony cleanup —
+  // a slashed agent loses trust, so we drop it from every colony it
+  // belonged to and broadcast the removal so peer agents stop honouring
+  // its membership immediately. Constructed here (not earlier) because we
+  // need colonyStore + manager + network all initialised. Background
+  // start: failure to boot is logged but does not block server startup,
+  // matching BridgeWatcher's contract.
+  const slashWatcher = new SlashWatcher({
+    colonyStore,
+    taskState,
+    manager: deps.manager,
+    network: deps.network,
+  })
+  slashWatcher.start().catch(err => console.error('[server] SlashWatcher start failed:', err))
 
   // Internal: agent self-reads its colony memberships every 30s. No auth —
   // only swarm_default Docker network can hit /internal/* endpoints. The
