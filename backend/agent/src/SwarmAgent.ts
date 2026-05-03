@@ -993,6 +993,35 @@ export class SwarmAgent {
 
       const selfClaimed = !!myAddr && !!claimant && myAddr.toLowerCase() === claimant.toLowerCase()
 
+      // Deterministic marker check runs BEFORE the self-claim shortcut so
+      // a worker-keeper can't bypass validation by trusting its own
+      // explicit failure output. Same regex as compute.judge() — keep them
+      // in sync. Fetched output may be the JSON envelope or a raw string;
+      // extractFinal normalizes both shapes.
+      const isExplicitFailure = (text: string): boolean => {
+        const t = text.trim()
+        return t.startsWith('[AGENT_NO_FINAL') ||
+               /^\{[\s\S]{0,200}"action"\s*:\s*"tool"/i.test(t)
+      }
+      let preFetchedFinal: string | null = null
+      try {
+        const lastOutput = await this.deps.storage.fetch(outputHash)
+        preFetchedFinal = extractFinal(lastOutput)
+      } catch (err) {
+        // Storage miss — fall through; the legacy non-self-claim path
+        // below will retry and the trust fallback handles it.
+        console.warn(`[Agent ${agentId}] KEEPER: pre-fetch for marker check failed:`, err)
+      }
+      if (preFetchedFinal && isExplicitFailure(preFetchedFinal)) {
+        console.warn(`[Agent ${agentId}] KEEPER: Last node ${lastNodeId} carries explicit failure marker — challenging regardless of self-claim.`)
+        const lastNode = task.nodes.find(n => n.id === lastNodeId)
+        if (lastNode) {
+          await this.challengeNode(lastNode, taskId)
+        }
+        challenged = true
+        return
+      }
+
       if (!selfClaimed) {
         // Storage fetch is the most common stall point — 0G storage node
         // sync gaps used to hang here forever. ZeroGStorage now caps each
@@ -1000,8 +1029,11 @@ export class SwarmAgent {
         // instead of pinning the whole settlement flow.
         let isValid = true
         try {
-          const lastOutput = await this.deps.storage.fetch(outputHash)
-          isValid = await this.deps.compute.judge(extractFinal(lastOutput))
+          // Reuse the pre-fetched output if available to avoid hitting 0G
+          // storage twice. judge() runs its own deterministic checks too,
+          // but the LLM step still adds value when content is borderline.
+          const finalText = preFetchedFinal ?? extractFinal(await this.deps.storage.fetch(outputHash))
+          isValid = await this.deps.compute.judge(finalText)
         } catch (err) {
           // Couldn't fetch / judge the output — treat as "trust the worker"
           // rather than aborting settlement. The chain already has the

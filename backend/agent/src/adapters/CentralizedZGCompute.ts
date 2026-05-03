@@ -141,6 +141,22 @@ Return your result as plain text.`
   async judge(output: string): Promise<boolean> {
     if (!output || output.trim().length < 10) return false
 
+    // Deterministic pre-reject for the explicit failure markers the agent
+    // loop emits when it can't produce a real answer. The LLM-judge prompt
+    // below already names these, but small/quantized models routinely
+    // ignore the instruction and return valid:true anyway. A regex check
+    // is the only reliable way to keep `[AGENT_NO_FINAL ...]` and raw
+    // unexecuted `{"action":"tool",...}` directives out of settlement.
+    const trimmed = output.trim()
+    if (trimmed.startsWith('[AGENT_NO_FINAL')) {
+      console.warn(`[CentralizedZGCompute] Judge: deterministic reject — AGENT_NO_FINAL marker`)
+      return false
+    }
+    if (/^\{[\s\S]{0,200}"action"\s*:\s*"tool"/i.test(trimmed)) {
+      console.warn(`[CentralizedZGCompute] Judge: deterministic reject — unexecuted tool-call directive`)
+      return false
+    }
+
     const prompt = `You are validating an AI agent's output. Default to valid:true. Reject ONLY for clear, unambiguous problems.
 
 Reject only if the output contains:

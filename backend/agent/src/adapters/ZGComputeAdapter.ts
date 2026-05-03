@@ -297,6 +297,20 @@ Return your result as plain text.`
     // Fail-closed shortcut: empty/short output is not trustworthy.
     if (!output || output.trim().length < 10) return false
 
+    // Deterministic pre-reject for the explicit failure markers — see
+    // CentralizedZGCompute.judge for rationale. Small models routinely
+    // ignore the LLM-judge prompt's reject rules; a regex check is the
+    // only reliable way to keep loop-failure sentinels out of settlement.
+    const trimmed = output.trim()
+    if (trimmed.startsWith('[AGENT_NO_FINAL')) {
+      console.warn(`[ZGComputeAdapter] Judge: deterministic reject — AGENT_NO_FINAL marker`)
+      return false
+    }
+    if (/^\{[\s\S]{0,200}"action"\s*:\s*"tool"/i.test(trimmed)) {
+      console.warn(`[ZGComputeAdapter] Judge: deterministic reject — unexecuted tool-call directive`)
+      return false
+    }
+
     const prompt = `You are validating an AI agent's output. Default to valid:true. Reject ONLY for clear, unambiguous problems.
 
 Reject only if the output contains:
