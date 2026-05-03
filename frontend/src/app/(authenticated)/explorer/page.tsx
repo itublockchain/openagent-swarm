@@ -242,9 +242,22 @@ function DashboardContent() {
     const currentY = 250;
     const spacingY = 100;
 
+    // Planner node label collapses three states into one row:
+    //   - planner known + clean       → "Planner: Decompose Intent"
+    //   - planner known + slashed     → "Planner: Slashed (<reason>)"
+    //   - planner unknown (live race) → "Planner: Decompose Intent" + "Awaiting..."
+    // The slashed state takes precedence over "awaiting" so a deep-link
+    // reload of a task whose planner was punished doesn't strip the
+    // explanation back to the generic placeholder.
+    const plannerLabel = dag.plannerSlash
+      ? `Planner: SLASHED — ${dag.plannerSlash.reason}`
+      : 'Planner: Decompose Intent'
+    const plannerAgent = dag.plannerId ?? (dag.plannerSlash ? 'slashed' : 'Awaiting...')
+    const plannerStatus: NodeData['status'] = dag.plannerSlash ? 'slashed' : 'planner'
+
     const newFlowNodes: Node<NodeData>[] = [
       { id: '1', type: 'task', position: { x: 400, y: 50 }, data: { label: `Active Task: ${dag.taskId.slice(0, 8)}...`, status: 'completed', agent: 'api-server' } },
-      { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: 'Planner: Decompose Intent', status: 'planner', agent: dag.plannerId || 'Awaiting...' } },
+      { id: '2', type: 'task', position: { x: 400, y: 150 }, data: { label: plannerLabel, status: plannerStatus, agent: plannerAgent } },
     ];
 
     const newFlowEdges: Edge[] = [
@@ -290,6 +303,12 @@ function DashboardContent() {
           iterations: box.iterations,
           stopReason: box.stopReason,
           outputHash: box.outputHash,
+          // Slash overlay — TaskNode renders the inline red badge with
+          // reason + amount when this is set. Carried from the hook's
+          // SLASH_EXECUTED handler / initial fetch hydration.
+          slash: box.slash
+            ? { reason: box.slash.reason, amount: box.slash.amount, agentId: box.slash.agentId }
+            : undefined,
         },
       });
 

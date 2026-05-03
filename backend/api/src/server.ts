@@ -88,7 +88,18 @@ export default async function createServer(deps: ServerDeps) {
       taskId,
       nodes.map((n: any) => ({ id: n.id, subtask: n.subtask })),
     )
-    if (plannerAgentId) plannerByTask.set(taskId, plannerAgentId)
+    if (plannerAgentId) {
+      plannerByTask.set(taskId, plannerAgentId)
+      // Persist for restart-survival. taskIndex is initialised below this
+      // listener — guard the call so the seed events that arrive in the
+      // ~ms-window before init don't crash. After init the call is cheap
+      // (UPDATE … WHERE planner_id IS NULL) and idempotent.
+      try {
+        taskIndex?.setPlanner(taskId, plannerAgentId)
+      } catch (err) {
+        console.warn(`[server] taskIndex.setPlanner failed for ${taskId}:`, err)
+      }
+    }
   })
 
   deps.network.on(EventType.SUBTASK_CLAIMED, (event: any) => {
@@ -695,14 +706,56 @@ export default async function createServer(deps: ServerDeps) {
       reply.code(404)
       return { error: 'Task not found in storage or DB', taskId }
     }
+
+    // Planner resolution. Prefer the in-memory cache (live tasks), fall
+    // back to the persisted column on the user_tasks row (deep-link
+    // reload after restart), and last to the chain-rebuild we just did.
+    // Without the DB fallback the explorer shows "Awaiting planner…"
+    // forever for any task whose DAG_READY fired in a prior process.
+    const indexRow = taskIndex.listForOwner(user.address, 200).find(r => r.taskId === taskId)
+    const plannerAgentId =
+      plannerByTask.get(taskId) ?? indexRow?.plannerId ?? undefined
+
+    // Slash overlay. Each row tells the UI which node was slashed, why,
+    // how much, and (when known) the local agentId so the explorer can
+    // still resolve the agent's display name. Empty array = clean run.
+    let slashes: ReturnType<typeof taskState.getSlashesForTask> = []
+    try {
+      slashes = taskState.getSlashesForTask(taskId)
+    } catch (err) {
+      console.warn(`[GET /task/${taskId}] getSlashesForTask failed:`, err)
+    }
+    const plannerSlashed = plannerAgentId
+      ? slashes.find(s => s.agentId === plannerAgentId)
+      : undefined
+
     return {
       ...(task as any ?? {}),
       // useSwarmEvents.fetchState reads data.dag.nodes — keep the shape.
       dag: dagNodes.length > 0
-        ? { nodes: dagNodes, plannerAgentId: plannerByTask.get(taskId) }
+        ? { nodes: dagNodes, plannerAgentId }
         : null,
       // Historical event log for replaying terminal output in the explorer.
       events: taskState.getEvents(taskId),
+      // Per-task slash overlay + planner state. Frontend renders these
+      // into red node badges + a "Planner slashed: <reason>" banner
+      // without needing to replay the whole event timeline.
+      slashes: slashes.map(s => ({
+        node_id: s.nodeId,
+        agent_id: s.agentId,
+        agent_address: s.agentAddress,
+        amount: s.amount,
+        reason: s.reason,
+        slashed_at: s.slashedAt,
+      })),
+      planner: plannerAgentId
+        ? {
+            agent_id: plannerAgentId,
+            slashed: !!plannerSlashed,
+            slash_reason: plannerSlashed?.reason ?? null,
+            slash_amount: plannerSlashed?.amount ?? null,
+          }
+        : null,
     };
   });
 
@@ -1170,6 +1223,7 @@ export default async function createServer(deps: ServerDeps) {
   // matching BridgeWatcher's contract.
   const slashWatcher = new SlashWatcher({
     colonyStore,
+    taskState,
     manager: deps.manager,
     network: deps.network,
   })

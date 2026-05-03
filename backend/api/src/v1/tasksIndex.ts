@@ -103,6 +103,22 @@ export class TaskIndex {
       .run(ts, finalResult ?? null, taskId)
   }
 
+  /** Stamps the planner agent on the task row so the explorer can show
+   *  who the planner was after an API restart (the in-memory
+   *  `plannerByTask` map evaporates on every redeploy, leaving deep-link
+   *  reloads stuck on "Awaiting planner…" forever). Called from the
+   *  DAG_READY handler — first writer wins, later overrides are ignored
+   *  so a re-broadcast can't rewrite history.
+   *  Returns true iff a row was actually updated (false when the task
+   *  isn't in our index yet, or already has a planner stamped). */
+  setPlanner(taskId: string, plannerAgentId: string): boolean {
+    if (!plannerAgentId) return false
+    const result = this.db
+      .prepare(`UPDATE user_tasks SET planner_id = ? WHERE task_id = ? AND planner_id IS NULL`)
+      .run(plannerAgentId, taskId)
+    return result.changes > 0
+  }
+
   /** Idempotent on conflict — re-broadcast of the same content-addressed
    *  task spec yields the same taskId and we just keep the original row.
    *  Callers don't supply completedAt — it's filled in later by markCompleted

@@ -80,6 +80,25 @@ export class MockChain implements IChainPort {
     return '100000000000000000000'; // 100 mUSDC (18 decimals)
   }
 
+  async isTaskFinalized(taskId: string): Promise<boolean> {
+    // The keeper-timeout watchdog reads this before paying gas on
+    // forceComplete. Reuse the existing completedTasks map — it's set
+    // by completeTask + syncTaskCompletion, which is the closest mock
+    // analogue to "tasks[taskId].finalized" on the real escrow.
+    return MockChain.completedTasks.has(taskId);
+  }
+
+  async forceComplete(taskId: string): Promise<void> {
+    // Apply the same end-state the on-chain forceComplete would: mark
+    // every node validated and finalize the task. No payouts to surface
+    // because mock has no escrow ledger; tests can still assert that
+    // the watchdog reached this method by inspecting completedTasks.
+    const nodeIds = MockChain.dagRegistry.get(taskId) ?? [];
+    for (const nid of nodeIds) MockChain.validated.add(nid);
+    MockChain.completedTasks.set(taskId, this.agentId);
+    console.log(`[MockChain] forceComplete fired for ${taskId} by ${this.agentId} (nodes=${nodeIds.length})`);
+  }
+
   async settleTask(taskId: string, winners: string[], amounts: string[]): Promise<void> {
     console.log(`[MockChain] settleTask ${taskId}:`,
       winners.map((w, i) => `${w}=${amounts[i]}`).join(', '));

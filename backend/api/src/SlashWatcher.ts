@@ -3,6 +3,7 @@ import * as path from 'path'
 import { ethers } from 'ethers'
 import { getChainClient, USDC_DECIMALS } from './v1/chain'
 import type { ColonyStore } from './v1/colonyStore'
+import type { TaskStateStore } from './v1/taskStateStore'
 import type { AgentManager } from './AgentRunner'
 import type { INetworkPort } from '../../../shared/ports'
 import { EventType } from '../../../shared/types'
@@ -53,6 +54,10 @@ interface PersistedState {
 
 interface SlashWatcherDeps {
   colonyStore: ColonyStore
+  /** Persistent DAG + slash mirror. SlashWatcher writes the slash record
+   *  here AND flips the affected node's status to 'failed' so a deep-link
+   *  reload after WS state evaporated still shows the red node + reason. */
+  taskState: TaskStateStore
   manager: AgentManager
   network: INetworkPort
 }
@@ -145,22 +150,79 @@ export class SlashWatcher {
     this.persistState()
 
     const agentId = this.deps.manager.findAgentIdByAddress(agentAddr)
+
+    // Best-effort node correlation. The Slashed event doesn't carry a
+    // nodeId — we infer it from the DAG by which node this agent was
+    // claiming. findNodeByAgent returns null when the agent claimed
+    // multiple nodes (rare), in which case the slash is recorded
+    // task-level and the UI shows a generic banner instead of a per-node
+    // overlay.
+    const nodeId =
+      taskId && agentId ? this.deps.taskState.findNodeByAgent(taskId, agentId) : null
+
+    // Reason inference: pull the matching CHALLENGE event's reason if
+    // there is one. Slashes that bypass challenges (e.g. direct vault
+    // execution after a peer-validation failure) fall through to a
+    // generic 'on_chain_slash' so the row never has an empty string.
+    const reason =
+      taskId && nodeId
+        ? this.deps.taskState.getLastChallengeReason(taskId, nodeId) ?? 'on_chain_slash'
+        : 'on_chain_slash'
+
+    const formattedAmount =
+      amount !== undefined ? ethers.formatUnits(amount, USDC_DECIMALS) : '0'
+
+    if (taskId) {
+      try {
+        this.deps.taskState.recordSlash({
+          taskId,
+          nodeId,
+          agentId,
+          agentAddress: agentAddr,
+          amount: formattedAmount,
+          reason,
+          txKey: key,
+        })
+      } catch (err) {
+        console.warn('[SlashWatcher] taskState.recordSlash failed:', err)
+      }
+
+      // Flip the affected node's status to 'failed' so deep-link reloads
+      // (which read taskState.getDag) repaint the slashed node red even
+      // after the WS state buffer drained. Skipped when nodeId couldn't
+      // be inferred — rather not corrupt a healthy DAG row than guess.
+      if (nodeId) {
+        try {
+          this.deps.taskState.setStatus(taskId, nodeId, { status: 'failed' })
+        } catch (err) {
+          console.warn('[SlashWatcher] taskState.setStatus failed:', err)
+        }
+      }
+    }
+
     if (!agentId) {
       // Slashed agent belongs to a different operator (or its secret was
-      // already purged). No local colony membership to clean up — but
-      // surface a SLASH_EXECUTED event so the explorer log still shows
-      // it for transparency.
+      // already purged). No local colony membership to clean up — slash
+      // is still persisted + broadcast above, surface SLASH_EXECUTED for
+      // explorer transparency.
       console.log(
         `[SlashWatcher] Slashed ${agentAddr} (task ${taskId?.slice(0, 12) ?? '?'}) — no local agent secret, skipping colony cleanup`,
       )
-      await this.broadcastSlashExecuted({ taskId, agentId: null, agentAddr, amount, removedFromColonies: [] })
+      await this.broadcastSlashExecuted({
+        taskId,
+        nodeId,
+        agentId: null,
+        agentAddr,
+        amount,
+        reason,
+        removedFromColonies: [],
+      })
       return
     }
 
     const removedColonies = this.deps.colonyStore.removeAgentFromAllColonies(agentId)
-    const formattedAmount = amount !== undefined ? ethers.formatUnits(amount, USDC_DECIMALS) : '?'
     console.log(
-      `[SlashWatcher] Slashed agent ${agentId} (${agentAddr}) amount=${formattedAmount} task=${taskId?.slice(0, 12) ?? '?'} removed_from=[${removedColonies.join(', ') || '(none)'}]`,
+      `[SlashWatcher] Slashed agent ${agentId} (${agentAddr}) amount=${formattedAmount} task=${taskId?.slice(0, 12) ?? '?'} node=${nodeId ?? '?'} reason=${reason} removed_from=[${removedColonies.join(', ') || '(none)'}]`,
     )
 
     // Per-colony broadcast lets each member agent's local `myColonies`
@@ -182,18 +244,22 @@ export class SlashWatcher {
 
     await this.broadcastSlashExecuted({
       taskId,
+      nodeId,
       agentId,
       agentAddr,
       amount,
+      reason,
       removedFromColonies: removedColonies,
     })
   }
 
   private async broadcastSlashExecuted(opts: {
     taskId: string | undefined
+    nodeId: string | null
     agentId: string | null
     agentAddr: string
     amount: bigint | undefined
+    reason: string
     removedFromColonies: string[]
   }): Promise<void> {
     await this.deps.network
@@ -201,9 +267,11 @@ export class SlashWatcher {
         type: EventType.SLASH_EXECUTED,
         payload: {
           taskId: opts.taskId,
+          nodeId: opts.nodeId,
           agentId: opts.agentId,
           agentAddress: opts.agentAddr,
           amount: opts.amount?.toString() ?? '0',
+          reason: opts.reason,
           removedFromColonies: opts.removedFromColonies,
         },
         timestamp: Date.now(),

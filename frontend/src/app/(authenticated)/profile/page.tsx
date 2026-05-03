@@ -40,6 +40,21 @@ interface UserTask {
   status: 'pending' | 'completed'
   node_count: number
   final_result: string | null
+  /** Planner summary hydrated by /v1/me/tasks. `null` means we still
+   *  haven't seen DAG_READY for this task (or its planner column was
+   *  never written before the migration that started persisting it).
+   *  When `slashed`, the user sees the slash reason inline so a deleted
+   *  agent doesn't disappear without explanation. */
+  planner: {
+    agent_id: string
+    slashed: boolean
+    slash_reason: string | null
+    slash_amount: string | null
+  } | null
+  /** Total slash records on this task (across all subtasks + planner).
+   *  Drives the row-level "N slashes" badge — clicking the row still
+   *  takes the user to the explorer for full details. */
+  slash_count: number
 }
 
 interface NodeResult {
@@ -642,6 +657,39 @@ export default function ProfilePage() {
                               <span>{new Date(t.submitted_at).toLocaleString()}</span>
                               {t.node_count > 0 && <span>{t.node_count} nodes</span>}
                             </div>
+                            {/* Planner footer. Three states matching the
+                                explorer planner node:
+                                  - missing       → "Planner pending — DAG not built yet"
+                                  - clean         → "Planner: 0xab…cd"
+                                  - slashed       → red badge + reason
+                                Without this row the user can't tell who ran
+                                their task, especially after the slashed
+                                agent's record was removed from colonies. */}
+                            {t.planner ? (
+                              <div className="mt-1.5 flex items-center gap-1.5 text-[10px] font-mono">
+                                <span className="text-muted-foreground">Planner:</span>
+                                {t.planner.slashed ? (
+                                  <span
+                                    className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
+                                    title={`Slashed ${t.planner.slash_amount ?? '?'} USDC — ${t.planner.slash_reason ?? 'unknown reason'}`}
+                                  >
+                                    <ShieldAlert className="w-3 h-3" />
+                                    {shortHash(t.planner.agent_id, 6, 4)} · slashed ({t.planner.slash_reason ?? 'reason unknown'})
+                                  </span>
+                                ) : (
+                                  <span className="text-foreground/80">{shortHash(t.planner.agent_id, 6, 4)}</span>
+                                )}
+                                {t.slash_count > 0 && !t.planner.slashed && (
+                                  <span className="ml-1 px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 border border-red-500/30">
+                                    {t.slash_count} slash{t.slash_count > 1 ? 'es' : ''}
+                                  </span>
+                                )}
+                              </div>
+                            ) : t.status === 'pending' ? (
+                              <div className="mt-1.5 text-[10px] font-mono text-muted-foreground italic">
+                                Planner pending — DAG not built yet
+                              </div>
+                            ) : null}
                             {t.final_result && (
                               <p className="mt-1.5 text-[11px] text-muted-foreground/80 italic line-clamp-1 border-l-2 border-primary/20 pl-2">
                                 &ldquo;{t.final_result.length > 120 ? t.final_result.slice(0, 117) + '…' : t.final_result}&rdquo;

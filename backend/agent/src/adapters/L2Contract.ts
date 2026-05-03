@@ -235,6 +235,32 @@ export class L2Contract implements IChainPort {
   }
 
   /**
+   * Cheap "did the planner settle yet?" probe used by the keeper-timeout
+   * watchdog before it pays gas on a forceComplete attempt. Reads the
+   * `finalized` field on the Task struct — bool 4th tuple slot in the
+   * canonical struct order (owner, budget, stakedTotal, finalized).
+   */
+  async isTaskFinalized(taskId: string): Promise<boolean> {
+    const task = await this.callWithRetry(() => this.escrow.tasks(this.formatId(taskId)))
+    return Boolean(task.finalized)
+  }
+
+  /**
+   * Permissionless settle for stuck tasks. Calls into DAGRegistry where
+   * the contract enforces the keeper-timeout, reads the canonical claim
+   * list, and pays workers a flat budget/N share with the planner share
+   * forfeit (their stake still refunds). Common reverts the watchdog can
+   * safely swallow:
+   *   - "Keeper still has time"     — too early, will retry
+   *   - "Task already finalized"    — racing peer beat us; success either way
+   *   - "Node missing output"       — can't recover without expireClaim path
+   * We don't translate these here — let the caller decide what to log.
+   */
+  async forceComplete(taskId: string): Promise<void> {
+    await this.sendTxWithRetry(this.registry, 'forceComplete', [this.formatId(taskId)])
+  }
+
+  /**
    * How many `stakeAmount`-sized stakes the agent's Escrow ledger balance
    * can cover. Returns 0 on read failure — fail-closed so the agent
    * doesn't burn through the stake locked at deploy.

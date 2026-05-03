@@ -28,6 +28,15 @@ export type NodeData = {
   iterations?: number;
   stopReason?: 'final' | 'max_iter' | 'deadline' | 'parse_error' | 'no_chat';
   outputHash?: string;
+  /** Slash overlay — set when SlashWatcher recorded a Slashed event for
+   *  this node's claimant. Drives the inline "Slashed: <reason>" badge
+   *  beneath the agent line so the user sees WHY the node went red
+   *  instead of just the bare red border. */
+  slash?: {
+    reason: string;
+    amount: string;
+    agentId?: string | null;
+  };
 };
 
 export type TaskNodeType = Node<NodeData, 'task'>;
@@ -79,6 +88,16 @@ const TaskNode = ({ data, isConnectable, selected }: NodeProps<TaskNodeType>) =>
           title={data.agent}
         >
           Agent: {data.agent.length > 16 ? shortHash(data.agent, 6, 4) : data.agent}
+        </div>
+      )}
+
+      {data.slash && (
+        <div
+          className="text-[10px] font-mono bg-red-500/15 text-red-600 dark:text-red-400 px-2 py-1 rounded-md border border-red-500/30 flex items-center gap-1.5 max-w-[200px]"
+          title={`Slashed ${data.slash.amount} USDC — ${data.slash.reason}`}
+        >
+          <AlertOctagon className="w-3 h-3 shrink-0" />
+          <span className="truncate">Slashed: {data.slash.reason}</span>
         </div>
       )}
 

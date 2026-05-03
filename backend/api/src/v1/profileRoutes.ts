@@ -33,7 +33,9 @@ export async function registerProfileRoutes(app: FastifyInstance, opts: Register
 
   // GET /v1/me/tasks — list tasks the connected wallet has submitted,
   // newest first. Status is derived at read time from taskResults so the
-  // index never lies.
+  // index never lies. Planner + slash summary are hydrated inline so the
+  // profile page can render the "Planner X (slashed: reason)" footer
+  // without a follow-up call per row.
   app.get('/v1/me/tasks', async (request, reply) => {
     const user = requireAuth(request, reply)
     if (!user) return
@@ -45,6 +47,21 @@ export async function registerProfileRoutes(app: FastifyInstance, opts: Register
       // to in-memory presence for the brief window between DAG_COMPLETED
       // and the markCompleted write landing.
       const isCompleted = !!r.completedAt || !!result
+
+      // Slash hydration. Most tasks have zero slashes — query is indexed
+      // on task_id so the per-task overhead is a single empty SELECT.
+      // We pull the planner-specific row out separately so the UI can
+      // tag the planner badge red without scanning the slashes array.
+      let slashes: ReturnType<typeof taskState.getSlashesForTask> = []
+      try {
+        slashes = taskState.getSlashesForTask(r.taskId)
+      } catch (err) {
+        console.warn(`[/v1/me/tasks] getSlashesForTask failed for ${r.taskId}:`, err)
+      }
+      const plannerSlashed = r.plannerId
+        ? slashes.find(s => s.agentId === r.plannerId)
+        : undefined
+
       return {
         task_id: r.taskId,
         spec: r.spec,
@@ -55,6 +72,16 @@ export async function registerProfileRoutes(app: FastifyInstance, opts: Register
         completed_at: r.completedAt,
         status: isCompleted ? 'completed' : 'pending',
         node_count: result?.nodes.length ?? 0,
+        final_result: r.finalResult,
+        planner: r.plannerId
+          ? {
+              agent_id: r.plannerId,
+              slashed: !!plannerSlashed,
+              slash_reason: plannerSlashed?.reason ?? null,
+              slash_amount: plannerSlashed?.amount ?? null,
+            }
+          : null,
+        slash_count: slashes.length,
       }
     })
     reply.send({ tasks })
